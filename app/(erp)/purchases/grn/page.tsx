@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle } from 'lucide-react';
+import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, Printer, TrendingUp, CircleCheck as CheckCircle2 } from 'lucide-react';
 import type { Supplier, Warehouse } from '@/lib/types';
 
 interface PurchaseOrder {
@@ -39,11 +39,22 @@ interface GRN {
   warehouse?: { name: string };
 }
 
+interface GRNItem {
+  id: string;
+  product_id: string;
+  quantity: number;
+  unit_cost: number;
+  product?: { name: string; sku: string; unit: string };
+}
+
 export default function GRNPage() {
   const [grns, setGrns] = useState<GRN[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [viewingGRN, setViewingGRN] = useState<GRN | null>(null);
+  const [grnItems, setGrnItems] = useState<GRNItem[]>([]);
+  const [stats, setStats] = useState({ total: 0, posted: 0, verified: 0, totalValue: 0 });
 
   useEffect(() => { loadGRNs(); }, []);
 
@@ -54,7 +65,43 @@ export default function GRNPage() {
       .select('*, supplier:suppliers(name), purchase_order:purchase_orders(po_number), warehouse:warehouses(name)')
       .order('created_at', { ascending: false });
     setGrns(data || []);
+
+    const all = data || [];
+    // Fetch stock movements linked to GRNs to compute total value
+    const grnIds = all.map((g: any) => g.id);
+    let totalValue = 0;
+    if (grnIds.length > 0) {
+      const { data: movements } = await supabase
+        .from('stock_movements')
+        .select('quantity, unit_cost')
+        .in('reference_id', grnIds)
+        .eq('movement_type', 'purchase');
+      totalValue = (movements || []).reduce((s: number, m: any) => s + Math.abs(Number(m.quantity)) * Number(m.unit_cost || 0), 0);
+    }
+
+    setStats({
+      total: all.length,
+      posted: all.filter((g: any) => g.status === 'posted').length,
+      verified: all.filter((g: any) => g.status === 'verified').length,
+      totalValue,
+    });
     setLoading(false);
+  }
+
+  async function viewGRNDetails(grn: GRN) {
+    const { data } = await supabase
+      .from('stock_movements')
+      .select('quantity, unit_cost, product:products(name, sku, unit)')
+      .eq('reference_id', grn.id)
+      .eq('movement_type', 'purchase');
+    setGrnItems((data || []).map((m: any) => ({
+      id: m.id || crypto.randomUUID(),
+      product_id: '',
+      quantity: Math.abs(Number(m.quantity)),
+      unit_cost: Number(m.unit_cost),
+      product: m.product,
+    })));
+    setViewingGRN(grn);
   }
 
   const filtered = grns.filter(g =>
@@ -75,6 +122,24 @@ export default function GRNPage() {
           <Plus className="w-4 h-4" />
           New GRN
         </button>
+      </div>
+
+      {/* Stat Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: 'Total GRNs', value: stats.total, icon: Package, color: 'text-blue-500 bg-blue-50' },
+          { label: 'Posted', value: stats.posted, icon: CheckCircle, color: 'text-green-500 bg-green-50' },
+          { label: 'Verified', value: stats.verified, icon: CheckCircle2, color: 'text-teal-500 bg-teal-50' },
+          { label: 'Total Value', value: formatCurrency(stats.totalValue), icon: TrendingUp, color: 'text-purple-500 bg-purple-50' },
+        ].map(s => (
+          <div key={s.label} className="stat-card flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color} shrink-0`}><s.icon className="w-5 h-5" /></div>
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground whitespace-nowrap">{s.label}</p>
+              <p className="text-lg font-bold text-foreground whitespace-nowrap">{s.value}</p>
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="bg-white rounded-xl border border-border p-4 shadow-sm flex flex-wrap gap-3">
@@ -103,20 +168,21 @@ export default function GRNPage() {
               <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Warehouse</th>
               <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
               <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Status</th>
+              <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {loading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <tr key={i}>
-                  {Array.from({ length: 6 }).map((_, j) => (
+                  {Array.from({ length: 7 }).map((_, j) => (
                     <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>
                   ))}
                 </tr>
               ))
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-12 text-center text-muted-foreground text-sm">No GRNs recorded yet</td>
+                <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground text-sm">No GRNs recorded yet</td>
               </tr>
             ) : (
               filtered.map(g => (
@@ -131,6 +197,16 @@ export default function GRNPage() {
                       {g.status}
                     </span>
                   </td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <button onClick={() => viewGRNDetails(g)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="View Details">
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => viewGRNDetails(g)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition" title="Print" onClickCapture={() => setTimeout(() => window.print(), 100)}>
+                        <Printer className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))
             )}
@@ -141,6 +217,86 @@ export default function GRNPage() {
       {showModal && (
         <GRNModal onClose={() => setShowModal(false)} onSaved={loadGRNs} />
       )}
+
+      {viewingGRN && (
+        <ViewGRNModal
+          grn={viewingGRN}
+          items={grnItems}
+          onClose={() => setViewingGRN(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ViewGRNModal({ grn, items, onClose }: { grn: GRN; items: GRNItem[]; onClose: () => void }) {
+  const totalValue = items.reduce((sum, item) => sum + item.quantity * item.unit_cost, 0);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="print-modal bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white no-print">
+          <h2 className="text-base font-bold">GRN {grn.grn_number}</h2>
+          <div className="flex items-center gap-2">
+            <button onClick={() => window.print()} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-muted transition">
+              <Printer className="w-4 h-4" />Print
+            </button>
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {/* Info grid */}
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div className="space-y-2">
+              <div className="flex justify-between"><span className="text-muted-foreground">Supplier</span><span className="font-medium text-foreground">{grn.supplier?.name || '—'}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">PO Number</span><span className="font-medium text-foreground">{grn.purchase_order?.po_number || 'Direct'}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Warehouse</span><span className="font-medium text-foreground">{grn.warehouse?.name || '—'}</span></div>
+            </div>
+            <div className="space-y-2">
+              <div className="flex justify-between"><span className="text-muted-foreground">Received Date</span><span className="font-medium text-foreground">{formatDate(grn.received_date)}</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Status</span>
+                <span className={`badge-status ${grn.status === 'posted' ? 'bg-green-50 text-green-600' : grn.status === 'verified' ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'}`}>{grn.status}</span>
+              </div>
+              {grn.notes && <div className="flex justify-between"><span className="text-muted-foreground">Notes</span><span className="font-medium text-foreground text-right">{grn.notes}</span></div>}
+            </div>
+          </div>
+
+          {/* Items table */}
+          <div className="border border-border rounded-lg overflow-hidden">
+            <table className="w-full">
+              <thead className="bg-muted/40">
+                <tr>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-2">Product</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-2">SKU</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-2">Qty</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-2">Unit Cost</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-2">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {items.length === 0 ? (
+                  <tr><td colSpan={5} className="px-4 py-6 text-center text-sm text-muted-foreground">No items found</td></tr>
+                ) : items.map((item, i) => (
+                  <tr key={i}>
+                    <td className="px-4 py-2 text-sm text-foreground">{item.product?.name || '—'}</td>
+                    <td className="px-4 py-2 text-xs text-muted-foreground font-mono">{item.product?.sku || '—'}</td>
+                    <td className="px-4 py-2 text-sm text-right text-foreground">{item.quantity}</td>
+                    <td className="px-4 py-2 text-sm text-right text-foreground">{formatCurrency(item.unit_cost)}</td>
+                    <td className="px-4 py-2 text-sm text-right font-semibold text-foreground">{formatCurrency(item.quantity * item.unit_cost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="bg-muted/30">
+                <tr>
+                  <td colSpan={4} className="px-4 py-2 text-sm font-semibold text-right text-foreground">Total Value</td>
+                  <td className="px-4 py-2 text-sm text-right font-bold text-foreground">{formatCurrency(totalValue)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

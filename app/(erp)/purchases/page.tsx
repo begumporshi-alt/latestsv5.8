@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus } from 'lucide-react';
+import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban } from 'lucide-react';
 import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod } from '@/lib/types';
 
 const statusConfig: Record<PurchaseOrderStatus, { label: string; color: string; bg: string }> = {
@@ -34,6 +34,8 @@ export default function PurchasesPage() {
   const [orderItems, setOrderItems] = useState<any[]>([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentOrder, setPaymentOrder] = useState<PurchaseOrderWithSupplier | null>(null);
+  const [editingOrder, setEditingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
+  const [cancellingOrder, setCancellingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -70,6 +72,45 @@ export default function PurchasesPage() {
   function openPaymentModal(order: PurchaseOrderWithSupplier) {
     setPaymentOrder(order);
     setShowPaymentModal(true);
+  }
+
+  function openEditModal(order: PurchaseOrderWithSupplier) {
+    setEditingOrder(order);
+  }
+
+  async function cancelOrder(order: PurchaseOrderWithSupplier) {
+    const { error } = await supabase
+      .from('purchase_orders')
+      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .eq('id', order.id);
+    if (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      return;
+    }
+
+    // Reverse supplier outstanding balance for unpaid portion
+    const balance = Number(order.total_amount) - Number(order.amount_paid);
+    if (balance > 0) {
+      const { data: supplier } = await supabase
+        .from('suppliers')
+        .select('outstanding_balance, total_purchases')
+        .eq('id', order.supplier_id)
+        .single();
+      if (supplier) {
+        await supabase
+          .from('suppliers')
+          .update({
+            outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) - balance),
+            total_purchases: Math.max(0, (supplier.total_purchases || 0) - Number(order.total_amount)),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', order.supplier_id);
+      }
+    }
+
+    toast({ title: 'Success', description: `Purchase order ${order.po_number} cancelled` });
+    setCancellingOrder(null);
+    loadData();
   }
 
   async function updateOrderStatus(order: PurchaseOrderWithSupplier, newStatus: PurchaseOrderStatus) {
@@ -241,6 +282,16 @@ export default function PurchasesPage() {
                             <DollarSign className="w-3.5 h-3.5" />
                           </button>
                         )}
+                        {(o.status === 'draft' || o.status === 'approved') && (
+                          <button onClick={() => openEditModal(o)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="Edit Order">
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {(o.status === 'draft' || o.status === 'approved') && (
+                          <button onClick={() => setCancellingOrder(o)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Cancel Order">
+                            <Ban className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button onClick={() => viewOrderDetails(o)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="View Details">
                           <Eye className="w-3.5 h-3.5" />
                         </button>
@@ -271,6 +322,8 @@ export default function PurchasesPage() {
           onClose={() => setViewingOrder(null)}
           onUpdateStatus={(status) => updateOrderStatus(viewingOrder, status)}
           onRecordPayment={() => { setViewingOrder(null); openPaymentModal(viewingOrder); }}
+          onEdit={() => { const o = viewingOrder; setViewingOrder(null); openEditModal(o); }}
+          onCancel={() => { const o = viewingOrder; setViewingOrder(null); setCancellingOrder(o); }}
         />
       )}
 
@@ -279,6 +332,24 @@ export default function PurchasesPage() {
           order={paymentOrder}
           onClose={() => { setShowPaymentModal(false); setPaymentOrder(null); }}
           onSaved={() => { setShowPaymentModal(false); setPaymentOrder(null); loadData(); }}
+        />
+      )}
+
+      {editingOrder && (
+        <EditPOModal
+          order={editingOrder}
+          suppliers={suppliers}
+          products={products}
+          onClose={() => setEditingOrder(null)}
+          onSaved={() => { setEditingOrder(null); loadData(); }}
+        />
+      )}
+
+      {cancellingOrder && (
+        <CancelPOConfirmModal
+          order={cancellingOrder}
+          onClose={() => setCancellingOrder(null)}
+          onConfirm={() => cancelOrder(cancellingOrder)}
         />
       )}
     </div>
@@ -627,15 +698,18 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
   );
 }
 
-function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment }: {
+function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, onEdit, onCancel }: {
   order: PurchaseOrderWithSupplier;
   items: any[];
   onClose: () => void;
   onUpdateStatus: (status: PurchaseOrderStatus) => void;
   onRecordPayment: () => void;
+  onEdit: () => void;
+  onCancel: () => void;
 }) {
   const cfg = statusConfig[order.status as PurchaseOrderStatus] || statusConfig.draft;
   const balance = Number(order.total_amount) - Number(order.amount_paid);
+  const canEdit = order.status === 'draft' || order.status === 'approved';
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -643,6 +717,16 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment }:
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white">
           <h2 className="text-base font-bold">Purchase Order {order.po_number}</h2>
           <div className="no-print flex items-center gap-2">
+            {canEdit && (
+              <button onClick={onEdit} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-blue-50 hover:text-blue-600 transition">
+                <Pencil className="w-4 h-4" />Edit
+              </button>
+            )}
+            {canEdit && (
+              <button onClick={onCancel} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-red-50 hover:text-red-600 transition">
+                <Ban className="w-4 h-4" />Cancel
+              </button>
+            )}
             <button onClick={() => window.print()} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-muted transition">
               <Printer className="w-4 h-4" />Print
             </button>
@@ -878,6 +962,289 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
+  order: PurchaseOrderWithSupplier;
+  suppliers: Supplier[];
+  products: Product[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    supplier_id: order.supplier_id,
+    order_date: order.order_date,
+    expected_date: order.expected_date || '',
+    notes: (order as any).notes || '',
+  });
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from('purchase_order_items')
+        .select('*, product:products(name, sku)')
+        .eq('purchase_order_id', order.id);
+      setItems((data || []).map((it: any) => ({
+        id: it.id,
+        product_id: it.product_id,
+        quantity: Number(it.quantity),
+        unit_price: Number(it.unit_cost),
+      })));
+      setLoading(false);
+    })();
+  }, [order.id]);
+
+  function addItem() {
+    setItems([...items, { product_id: '', quantity: 1, unit_price: 0 }]);
+  }
+
+  function updateItem(index: number, field: string, value: any) {
+    const updated = [...items];
+    if (field === 'product_id') {
+      const product = products.find(p => p.id === value);
+      updated[index] = { ...updated[index], product_id: value, unit_price: product?.cost_price || 0 };
+    } else {
+      updated[index] = { ...updated[index], [field]: value };
+    }
+    setItems(updated);
+  }
+
+  function removeItem(index: number) {
+    setItems(items.filter((_, i) => i !== index));
+  }
+
+  const subtotal = items.reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.supplier_id) { setError('Please select a supplier'); return; }
+    if (items.length === 0) { setError('Please add at least one item'); return; }
+    if (items.some(it => !it.product_id)) { setError('All items must have a product selected'); return; }
+
+    setSaving(true);
+    setError('');
+
+    const oldTotal = Number(order.total_amount);
+    const oldPaid = Number(order.amount_paid);
+    const totalDiff = subtotal - oldTotal;
+
+    const { error: poError } = await supabase
+      .from('purchase_orders')
+      .update({
+        supplier_id: form.supplier_id,
+        order_date: form.order_date,
+        expected_date: form.expected_date || null,
+        subtotal,
+        total_amount: subtotal,
+        notes: form.notes || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', order.id);
+
+    if (poError) { setError(poError.message); setSaving(false); return; }
+
+    // Delete old items and insert new ones
+    await supabase.from('purchase_order_items').delete().eq('purchase_order_id', order.id);
+    const poItems = items.map(item => ({
+      purchase_order_id: order.id,
+      product_id: item.product_id,
+      quantity: item.quantity,
+      unit_cost: item.unit_price,
+      subtotal: item.quantity * item.unit_price,
+    }));
+    const { error: itemsError } = await supabase.from('purchase_order_items').insert(poItems);
+    if (itemsError) { setError(itemsError.message); setSaving(false); return; }
+
+    // Adjust supplier outstanding balance if total changed and PO isn't fully paid
+    if (totalDiff !== 0) {
+      const unpaidDiff = subtotal - oldPaid;
+      const oldUnpaid = oldTotal - oldPaid;
+      const { data: supplier } = await supabase
+        .from('suppliers')
+        .select('outstanding_balance, total_purchases')
+        .eq('id', form.supplier_id)
+        .single();
+
+      if (supplier) {
+        const balanceAdjustment = unpaidDiff - oldUnpaid;
+        await supabase
+          .from('suppliers')
+          .update({
+            outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) + balanceAdjustment),
+            total_purchases: Math.max(0, (supplier.total_purchases || 0) + totalDiff),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', form.supplier_id);
+      }
+    }
+
+    toast({ title: 'Success', description: `Purchase order ${order.po_number} updated` });
+    onSaved();
+    onClose();
+  }
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl p-8 text-center text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
+          <div>
+            <h2 className="text-base font-bold">Edit Purchase Order</h2>
+            <p className="text-xs text-muted-foreground">{order.po_number}</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSave} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+
+          {(order.status === 'approved') && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+              This order is already approved. Editing will update the order details and adjust the supplier balance if the total changes.
+            </div>
+          )}
+
+          <div className="grid grid-cols-3 gap-4">
+            <div className="col-span-2">
+              <label className="block text-xs font-medium mb-1">Supplier *</label>
+              <select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+                <option value="">Select supplier</option>
+                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs font-medium mb-1">Order Date</label>
+                <input type="date" value={form.order_date} onChange={e => setForm({ ...form, order_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Expected</label>
+                <input type="date" value={form.expected_date} onChange={e => setForm({ ...form, expected_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-medium">Line Items</label>
+              <button type="button" onClick={addItem} className="text-xs text-blue-600 hover:text-blue-700 font-medium">+ Add Item</button>
+            </div>
+            <div className="border border-border rounded-lg overflow-hidden">
+              <table className="w-full">
+                <thead className="bg-muted/40">
+                  <tr>
+                    <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                    <th className="w-8"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {items.length === 0 ? (
+                    <tr><td colSpan={5} className="px-3 py-4 text-center text-xs text-muted-foreground">No items. Click &quot;Add Item&quot;.</td></tr>
+                  ) : items.map((item, index) => (
+                    <tr key={index}>
+                      <td className="px-3 py-2">
+                        <select value={item.product_id} onChange={e => updateItem(index, 'product_id', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm focus:outline-none">
+                          <option value="">Select product</option>
+                          {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', parseInt(e.target.value) || 1)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
+                      </td>
+                      <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price)}</td>
+                      <td className="px-2 py-2">
+                        <button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="flex justify-between items-center bg-muted/30 rounded-lg p-3">
+            <div className="text-sm text-muted-foreground">
+              Previous Total: <span className="font-semibold text-foreground">{formatCurrency(Number(order.total_amount))}</span>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground">New Total</p>
+              <p className="text-lg font-bold text-foreground">{formatCurrency(subtotal)}</p>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1">Notes</label>
+            <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function CancelPOConfirmModal({ order, onClose, onConfirm }: {
+  order: PurchaseOrderWithSupplier;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const balance = Number(order.total_amount) - Number(order.amount_paid);
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" style={{ zIndex: 60 }}>
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold">Cancel Purchase Order</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-foreground">
+            Are you sure you want to cancel purchase order <span className="font-semibold">{order.po_number}</span>?
+          </p>
+          <div className="bg-muted/30 rounded-lg p-3 space-y-2 text-sm">
+            <div className="flex justify-between"><span className="text-muted-foreground">Supplier</span><span className="font-medium">{order.supplier?.name || '-'}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Total Amount</span><span className="font-medium">{formatCurrency(order.total_amount)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Amount Paid</span><span className="font-medium text-green-600">{formatCurrency(order.amount_paid)}</span></div>
+            {balance > 0 && (
+              <div className="flex justify-between"><span className="text-muted-foreground">Unpaid Balance</span><span className="font-medium text-red-600">{formatCurrency(balance)}</span></div>
+            )}
+          </div>
+          {balance > 0 && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+              The unpaid balance of {formatCurrency(balance)} will be removed from the supplier&apos;s outstanding payables.
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Close</button>
+            <button onClick={onConfirm} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition">
+              Yes, Cancel Order
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

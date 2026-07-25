@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Edit, Eye, Package, FileText } from 'lucide-react';
+import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, CreditCard as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt } from 'lucide-react';
 import type { Supplier, PurchaseOrder } from '@/lib/types';
 
 interface ManualPayable {
@@ -43,7 +43,10 @@ export default function SupplierDetailPage() {
   });
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [manualPayables, setManualPayables] = useState<ManualPayable[]>([]);
-  const [activeTab, setActiveTab] = useState<'purchase_orders' | 'payables'>('purchase_orders');
+  const [purchaseReturns, setPurchaseReturns] = useState<any[]>([]);
+  const [grns, setGrns] = useState<any[]>([]);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'purchase_orders' | 'payables' | 'returns' | 'grns' | 'payments'>('purchase_orders');
 
   useEffect(() => { loadSupplierData(); }, [supplierId]);
 
@@ -63,10 +66,13 @@ export default function SupplierDetailPage() {
     }
     setSupplier(supData);
 
-    const [poRes, payableRes, payablePaymentsRes] = await Promise.all([
-      supabase.from('purchase_orders').select('*').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(20),
+    const [poRes, payableRes, payablePaymentsRes, returnsRes, grnRes, paymentsRes] = await Promise.all([
+      supabase.from('purchase_orders').select('*').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
       supabase.from('journal_entries').select('id, entry_number, entry_date, description, total_credit, created_at').eq('supplier_id', supplierId).eq('reference_type', 'payable').eq('is_posted', true).order('entry_date', { ascending: false }),
       supabase.from('payments').select('reference_id, amount').eq('reference_type', 'payable'),
+      supabase.from('purchase_returns').select('*, purchase_order:purchase_orders(po_number), warehouse:warehouses(name)').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
+      supabase.from('goods_receipt_notes').select('*, warehouse:warehouses(name), purchase_order:purchase_orders(po_number)').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
+      supabase.from('payments').select('id, amount, payment_date, payment_method, reference_number, reference_type, created_at').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
     ]);
 
     setPurchaseOrders(poRes.data || []);
@@ -88,6 +94,18 @@ export default function SupplierDetailPage() {
     });
 
     setManualPayables(payablesWithPayments);
+
+    setPurchaseReturns((returnsRes.data || []).map((r: any) => ({
+      ...r,
+      purchase_order: Array.isArray(r.purchase_order) ? r.purchase_order[0] : r.purchase_order,
+      warehouse: Array.isArray(r.warehouse) ? r.warehouse[0] : r.warehouse,
+    })));
+    setGrns((grnRes.data || []).map((g: any) => ({
+      ...g,
+      purchase_order: Array.isArray(g.purchase_order) ? g.purchase_order[0] : g.purchase_order,
+      warehouse: Array.isArray(g.warehouse) ? g.warehouse[0] : g.warehouse,
+    })));
+    setPayments(paymentsRes.data || []);
 
     const poList = poRes.data || [];
     const totalPaid = poList.reduce((s, po) => s + Number(po.amount_paid), 0);
@@ -137,9 +155,17 @@ export default function SupplierDetailPage() {
           <h1 className="text-2xl font-bold text-foreground">{supplier.name}</h1>
           <p className="text-sm text-muted-foreground">{supplier.code} - {supplier.company_name || supplier.name}</p>
         </div>
-        <Link href={`/suppliers?edit=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">
-          <Edit className="w-4 h-4" />Edit
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href={`/purchases?new=1&supplier=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition">
+            <Plus className="w-4 h-4" />New PO
+          </Link>
+          <Link href={`/purchases/grn?new=1&supplier=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">
+            <Package className="w-4 h-4" />New GRN
+          </Link>
+          <Link href={`/suppliers?edit=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">
+            <Edit className="w-4 h-4" />Edit
+          </Link>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -251,6 +277,9 @@ export default function SupplierDetailPage() {
               {[
                 { key: 'purchase_orders', label: 'Purchase Orders', icon: Package },
                 { key: 'payables', label: 'Manual Payables', icon: Building2 },
+                { key: 'returns', label: 'Returns', icon: RotateCcw },
+                { key: 'grns', label: 'GRNs', icon: Truck },
+                { key: 'payments', label: 'Payments', icon: Receipt },
               ].map(tab => (
                 <button
                   key={tab.key}
@@ -346,6 +375,114 @@ export default function SupplierDetailPage() {
                             <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(pay.total_credit)}</td>
                             <td className="px-3 py-2 text-sm text-right text-green-600">{formatCurrency(pay.paid_amount)}</td>
                             <td className="px-3 py-2 text-sm text-right text-red-600 font-bold">{formatCurrency(pay.outstanding_balance)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'returns' && (
+                <div className="overflow-x-auto">
+                  {purchaseReturns.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground text-sm">
+                      <RotateCcw className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      No purchase returns
+                    </div>
+                  ) : (
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Return #</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">PO #</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Warehouse</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Date</th>
+                          <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Amount</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {purchaseReturns.map((r: any) => (
+                          <tr key={r.id} className="hover:bg-muted/30">
+                            <td className="px-3 py-2 text-sm font-semibold text-orange-600">{r.return_number}</td>
+                            <td className="px-3 py-2 text-sm text-muted-foreground">{r.purchase_order?.po_number || 'Direct'}</td>
+                            <td className="px-3 py-2 text-sm text-foreground">{r.warehouse?.name || '—'}</td>
+                            <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(r.return_date)}</td>
+                            <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(r.total_amount)}</td>
+                            <td className="px-3 py-2">
+                              <span className={`badge-status ${r.status === 'completed' ? 'bg-green-100 text-green-700' : r.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>{r.status}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'grns' && (
+                <div className="overflow-x-auto">
+                  {grns.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground text-sm">
+                      <Truck className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      No goods receipt notes
+                    </div>
+                  ) : (
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">GRN #</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">PO #</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Warehouse</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Date</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {grns.map((g: any) => (
+                          <tr key={g.id} className="hover:bg-muted/30">
+                            <td className="px-3 py-2 text-sm font-semibold text-blue-600">{g.grn_number}</td>
+                            <td className="px-3 py-2 text-sm text-muted-foreground">{g.purchase_order?.po_number || 'Direct'}</td>
+                            <td className="px-3 py-2 text-sm text-foreground">{g.warehouse?.name || '—'}</td>
+                            <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(g.received_date)}</td>
+                            <td className="px-3 py-2">
+                              <span className={`badge-status ${g.status === 'posted' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{g.status}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {activeTab === 'payments' && (
+                <div className="overflow-x-auto">
+                  {payments.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground text-sm">
+                      <Receipt className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      No payments recorded
+                    </div>
+                  ) : (
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-border">
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Date</th>
+                          <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Amount</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Method</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Reference</th>
+                          <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Type</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {payments.map((p: any) => (
+                          <tr key={p.id} className="hover:bg-muted/30">
+                            <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(p.payment_date || p.created_at)}</td>
+                            <td className="px-3 py-2 text-sm text-right font-semibold text-green-600">{formatCurrency(p.amount)}</td>
+                            <td className="px-3 py-2 text-sm text-foreground capitalize">{p.payment_method?.replace(/_/g, ' ') || '—'}</td>
+                            <td className="px-3 py-2 text-sm text-muted-foreground">{p.reference_number || '—'}</td>
+                            <td className="px-3 py-2 text-sm text-foreground capitalize">{p.reference_type?.replace(/_/g, ' ') || '—'}</td>
                           </tr>
                         ))}
                       </tbody>

@@ -923,13 +923,13 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
                 });
               }
 
-              // Record movement
+              // Record movement — store signed diff so increases are + and decreases are -
               await supabase.from('stock_movements').insert({
                 tenant_id: '00000000-0000-0000-0000-000000000001',
                 product_id: productId,
                 warehouse_id: warehouseId,
                 movement_type: 'adjustment',
-                quantity: Math.abs(diff),
+                quantity: diff,
                 unit_cost: Number(form.cost_price) || 0,
                 reference_type: 'stock_adjustment',
                 reference_id: productId,
