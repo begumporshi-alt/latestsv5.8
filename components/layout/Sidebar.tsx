@@ -40,6 +40,7 @@ const navItems: NavItem[] = [
       { title: 'Returns', href: '/sales/returns' },
       { title: 'Refunds', href: '/sales/refunds' },
       { title: 'Store Credit', href: '/sales/store-credit' },
+      { title: 'Customer Advances', href: '/sales/advances' },
     ],
   },
   {
