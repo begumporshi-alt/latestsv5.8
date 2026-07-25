@@ -76,7 +76,7 @@ export default function SalesPage() {
   const [productFilteredIds, setProductFilteredIds] = useState<Set<string> | null>(null);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0 });
+  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
   const [viewingInvoice, setViewingInvoice] = useState<InvoiceWithCustomer | null>(null);
@@ -192,6 +192,7 @@ export default function SalesPage() {
       outstanding: activeInv.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0),
       overdue: activeInv.filter((i: any) => i.status === 'overdue').length,
       storeCreditBalance,
+      badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
     });
     setLoading(false);
   }
@@ -505,27 +506,30 @@ export default function SalesPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-        {[
-          { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false },
-          { label: 'Collected', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false },
-          { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false },
-          { label: 'Net Collected', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true },
-          { label: 'Store Credit', value: formatCurrency(stats.storeCreditBalance), icon: Wallet, color: 'text-indigo-500 bg-indigo-50', clickable: false },
-          { label: 'Outstanding', value: formatCurrency(stats.outstanding), icon: Clock, color: 'text-amber-500 bg-amber-50', clickable: false },
-        ].map(s => (
-          <div
-            key={s.label}
-            className={`stat-card flex items-center gap-3 ${s.clickable ? 'cursor-pointer hover:shadow-md hover:border-teal-300 transition-all' : ''}`}
-            onClick={s.clickable ? () => setShowNetCollectedModal(true) : undefined}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color}`}><s.icon className="w-5 h-5" /></div>
-            <div>
-              <p className="text-xs text-muted-foreground">{s.label}</p>
-              <p className="text-lg font-bold text-foreground">{s.value}</p>
+      <div className="overflow-x-auto pb-2 -mx-1 px-1">
+        <div className="flex gap-4 min-w-min">
+          {[
+            { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false },
+            { label: 'Collected', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false },
+            { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false },
+            { label: 'Net Collected', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true },
+            { label: 'Store Credit', value: formatCurrency(stats.storeCreditBalance), icon: Wallet, color: 'text-indigo-500 bg-indigo-50', clickable: false },
+            { label: 'Outstanding', value: formatCurrency(stats.outstanding), icon: Clock, color: 'text-amber-500 bg-amber-50', clickable: false },
+            { label: 'Bad Debt', value: formatCurrency(stats.badDebt), icon: AlertTriangle, color: 'text-red-500 bg-red-50', clickable: false },
+          ].map(s => (
+            <div
+              key={s.label}
+              className={`stat-card flex items-center gap-3 shrink-0 min-w-[180px] ${s.clickable ? 'cursor-pointer hover:shadow-md hover:border-teal-300 transition-all' : ''}`}
+              onClick={s.clickable ? () => setShowNetCollectedModal(true) : undefined}
+            >
+              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color} shrink-0`}><s.icon className="w-5 h-5" /></div>
+              <div className="min-w-0">
+                <p className="text-xs text-muted-foreground whitespace-nowrap">{s.label}</p>
+                <p className="text-lg font-bold text-foreground whitespace-nowrap">{s.value}</p>
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
       {/* Period filter */}
@@ -637,6 +641,7 @@ export default function SalesPage() {
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Amount</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Paid</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Balance</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Bad Debt</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Status</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Delivery</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Actions</th>
@@ -644,9 +649,9 @@ export default function SalesPage() {
             </thead>
             <tbody className="divide-y divide-border">
               {loading ? Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i}>{Array.from({ length: 10 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
+                <tr key={i}>{Array.from({ length: 11 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
               )) : displayInvoices.length === 0 ? (
-                <tr><td colSpan={10} className="px-4 py-12 text-center text-muted-foreground text-sm">
+                <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground text-sm">
                   {period === 'today' ? 'No invoices for today. Try "Last 7 Days" to see more.' : 'No invoices found'}
                 </td></tr>
               ) : pagedInvoices.map((inv) => {
@@ -692,6 +697,7 @@ export default function SalesPage() {
                     <td className="px-4 py-3 text-right text-sm font-semibold text-foreground">{formatCurrency(inv.total_amount)}</td>
                     <td className="px-4 py-3 text-right text-sm text-green-600 font-semibold">{formatCurrency(inv.amount_paid)}</td>
                     <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{formatCurrency(inv.balance_due ?? (inv.total_amount - inv.amount_paid))}</td>
+                    <td className="px-4 py-3 text-right text-sm font-medium text-red-500">{Number(inv.bad_debt_amount) > 0 ? formatCurrency(inv.bad_debt_amount) : <span className="text-muted-foreground">—</span>}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1 items-center">
                         <span className={`badge-status ${cfg.bg} ${cfg.color} whitespace-nowrap`}>{cfg.label}</span>
