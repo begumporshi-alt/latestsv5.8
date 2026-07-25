@@ -549,8 +549,8 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
                         }`}>{m.movement_type.replace(/_/g, ' ')}</span>
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground">{m.warehouse?.name || '—'}</td>
-                      <td className={`px-4 py-3 text-sm text-right font-medium ${['purchase', 'transfer_in', 'return_in', 'opening'].includes(m.movement_type) ? 'text-green-600' : 'text-red-600'}`}>
-                        {['purchase', 'transfer_in', 'return_in', 'opening'].includes(m.movement_type) ? '+' : '-'}{Number(m.quantity)}
+                      <td className={`px-4 py-3 text-sm text-right font-medium ${Number(m.quantity) > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {Number(m.quantity) > 0 ? '+' : '-'}{Math.abs(Number(m.quantity))}
                       </td>
                       <td className="px-4 py-3 text-sm text-right text-muted-foreground">{m.unit_cost ? formatCurrency(Number(m.unit_cost)) : '—'}</td>
                       <td className="px-4 py-3 text-sm text-blue-600">{m.reference_number || '—'}</td>

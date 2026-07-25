@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
-import { formatRelativeTime, formatDate } from '@/lib/format';
+import { formatRelativeTime } from '@/lib/format';
 import { ArrowUpDown, TrendingUp, TrendingDown, Package, Search, X, Filter, ChevronLeft, ChevronRight, Calendar, Download } from 'lucide-react';
 import Link from 'next/link';
 
@@ -19,6 +19,9 @@ const typeConfig: Record<string, { label: string; color: string; bg: string; sig
 };
 
 const movementTypes = Object.keys(typeConfig);
+
+// Types that carry a reason/notes worth showing as a tooltip on the badge
+const TOOLTIP_TYPES = new Set(['adjustment', 'return_in', 'return_out', 'damage']);
 
 type FilterState = {
   search: string;
@@ -39,77 +42,115 @@ const initialFilters: FilterState = {
 const PAGE_SIZE = 25;
 
 export default function StockMovementsPage() {
-  const [allMovements, setAllMovements] = useState<any[]>([]);
+  const [movements, setMovements] = useState<any[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [warehouses, setWarehouses] = useState<any[]>([]);
   const [productStocks, setProductStocks] = useState<Record<string, { warehouse_id: string; warehouse_name: string; qty: number }[]>>({});
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<FilterState>(initialFilters);
   const [currentPage, setCurrentPage] = useState(1);
   const [showFilters, setShowFilters] = useState(true);
+  const [stats, setStats] = useState({ inCount: 0, outCount: 0, totalIn: 0, totalOut: 0 });
 
+  // Load warehouses once
   useEffect(() => {
-    async function load() {
-      const [movRes, whRes] = await Promise.all([
-        supabase.from('stock_movements').select('*, product:products(name, sku), warehouse:warehouses(name)').order('created_at', { ascending: false }).limit(500),
-        supabase.from('warehouses').select('id, name').order('name'),
-      ]);
-      setAllMovements(movRes.data || []);
-      setWarehouses(whRes.data || []);
-
-      // Fetch current stock per product across warehouses
-      const productIds = [...new Set((movRes.data || []).map((m: any) => m.product_id).filter(Boolean))];
-      if (productIds.length > 0) {
-        const { data: invData } = await supabase
-          .from('inventory_items')
-          .select('product_id, warehouse_id, quantity_on_hand, warehouse:warehouses(name)')
-          .in('product_id', productIds);
-        const stocks: Record<string, { warehouse_id: string; warehouse_name: string; qty: number }[]> = {};
-        (invData || []).forEach((inv: any) => {
-          if (!stocks[inv.product_id]) stocks[inv.product_id] = [];
-          stocks[inv.product_id].push({
-            warehouse_id: inv.warehouse_id,
-            warehouse_name: inv.warehouse?.name || '—',
-            qty: Number(inv.quantity_on_hand),
-          });
-        });
-        setProductStocks(stocks);
-      }
-
-      setLoading(false);
-    }
-    load();
+    supabase.from('warehouses').select('id, name').order('name').then(({ data }) => setWarehouses(data || []));
   }, []);
 
-  const filtered = useMemo(() => {
-    return allMovements.filter((m) => {
-      if (filters.search) {
-        const q = filters.search.toLowerCase();
-        const productName = (m.product?.name || '').toLowerCase();
-        const sku = (m.product?.sku || '').toLowerCase();
-        const refNum = (m.reference_number || '').toLowerCase();
-        const notes = (m.notes || '').toLowerCase();
-        if (!productName.includes(q) && !sku.includes(q) && !refNum.includes(q) && !notes.includes(q)) return false;
-      }
-      if (filters.movementType !== 'all' && m.movement_type !== filters.movementType) return false;
-      if (filters.warehouseId !== 'all' && m.warehouse_id !== filters.warehouseId) return false;
-      if (filters.dateFrom) {
-        const moveDate = new Date(m.created_at).toISOString().split('T')[0];
-        if (moveDate < filters.dateFrom) return false;
-      }
-      if (filters.dateTo) {
-        const moveDate = new Date(m.created_at).toISOString().split('T')[0];
-        if (moveDate > filters.dateTo) return false;
-      }
-      return true;
-    });
-  }, [allMovements, filters]);
-
-  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
-
+  // Reset to page 1 when filters change
   useEffect(() => {
     setCurrentPage(1);
   }, [filters]);
+
+  const loadMovements = useCallback(async () => {
+    setLoading(true);
+
+    let countQuery = supabase.from('stock_movements').select('*', { count: 'exact', head: true });
+    let dataQuery = supabase
+      .from('stock_movements')
+      .select('*, product:products(name, sku), warehouse:warehouses(name)', { count: 'exact' });
+
+    // Apply filters to both queries
+    const applyFilters = (q: any) => {
+      if (filters.movementType !== 'all') q = q.eq('movement_type', filters.movementType);
+      if (filters.warehouseId !== 'all') q = q.eq('warehouse_id', filters.warehouseId);
+      if (filters.dateFrom) q = q.gte('created_at', `${filters.dateFrom}T00:00:00`);
+      if (filters.dateTo) q = q.lte('created_at', `${filters.dateTo}T23:59:59`);
+      if (filters.search) {
+        const s = filters.search.trim();
+        if (s) q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+      }
+      return q;
+    };
+
+    countQuery = applyFilters(countQuery);
+    dataQuery = applyFilters(dataQuery);
+
+    const from = (currentPage - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    dataQuery = dataQuery.order('created_at', { ascending: false }).range(from, to);
+
+    const [countRes, dataRes] = await Promise.all([countQuery, dataQuery]);
+
+    setTotalCount(countRes.count || 0);
+    const rows = dataRes.data || [];
+    setMovements(rows);
+
+    // Fetch current stock per product for this page's products
+    const productIds = [...new Set(rows.map((m: any) => m.product_id).filter(Boolean))];
+    if (productIds.length > 0) {
+      const { data: invData } = await supabase
+        .from('inventory_items')
+        .select('product_id, warehouse_id, quantity_on_hand, warehouse:warehouses(name)')
+        .in('product_id', productIds);
+      const stocks: Record<string, { warehouse_id: string; warehouse_name: string; qty: number }[]> = {};
+      (invData || []).forEach((inv: any) => {
+        if (!stocks[inv.product_id]) stocks[inv.product_id] = [];
+        stocks[inv.product_id].push({
+          warehouse_id: inv.warehouse_id,
+          warehouse_name: inv.warehouse?.name || '—',
+          qty: Number(inv.quantity_on_hand),
+        });
+      });
+      setProductStocks(stocks);
+    } else {
+      setProductStocks({});
+    }
+
+    setLoading(false);
+  }, [currentPage, filters]);
+
+  useEffect(() => {
+    loadMovements();
+  }, [loadMovements]);
+
+  // Load summary stats (computed server-side from all matching rows, not just current page)
+  useEffect(() => {
+    async function loadStats() {
+      let q = supabase.from('stock_movements').select('quantity');
+      if (filters.movementType !== 'all') q = q.eq('movement_type', filters.movementType);
+      if (filters.warehouseId !== 'all') q = q.eq('warehouse_id', filters.warehouseId);
+      if (filters.dateFrom) q = q.gte('created_at', `${filters.dateFrom}T00:00:00`);
+      if (filters.dateTo) q = q.lte('created_at', `${filters.dateTo}T23:59:59`);
+      if (filters.search) {
+        const s = filters.search.trim();
+        if (s) q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+      }
+      const { data } = await q;
+      const all = data || [];
+      const inRows = all.filter((m: any) => Number(m.quantity) > 0);
+      const outRows = all.filter((m: any) => Number(m.quantity) < 0);
+      setStats({
+        inCount: inRows.length,
+        outCount: outRows.length,
+        totalIn: inRows.reduce((s: number, m: any) => s + Math.abs(Number(m.quantity)), 0),
+        totalOut: outRows.reduce((s: number, m: any) => s + Math.abs(Number(m.quantity)), 0),
+      });
+    }
+    loadStats();
+  }, [filters]);
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   const activeFilterCount = useMemo(() => {
     let count = 0;
@@ -129,9 +170,19 @@ export default function StockMovementsPage() {
     setFilters(initialFilters);
   }, []);
 
-  const exportCSV = useCallback(() => {
-    const headers = ['Date', 'Product', 'SKU', 'Warehouse', 'Type', 'Quantity', 'Reference', 'Notes'];
-    const rows = filtered.map((m) => {
+  const exportCSV = useCallback(async () => {
+    let q = supabase.from('stock_movements').select('*, product:products(name, sku), warehouse:warehouses(name)');
+    if (filters.movementType !== 'all') q = q.eq('movement_type', filters.movementType);
+    if (filters.warehouseId !== 'all') q = q.eq('warehouse_id', filters.warehouseId);
+    if (filters.dateFrom) q = q.gte('created_at', `${filters.dateFrom}T00:00:00`);
+    if (filters.dateTo) q = q.lte('created_at', `${filters.dateTo}T23:59:59`);
+    if (filters.search) {
+      const s = filters.search.trim();
+      if (s) q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+    }
+    q = q.order('created_at', { ascending: false }).limit(10000);
+    const { data } = await q;
+    const rows = (data || []).map((m: any) => {
       const cfg = typeConfig[m.movement_type] || typeConfig.adjustment;
       return [
         new Date(m.created_at).toISOString(),
@@ -139,11 +190,12 @@ export default function StockMovementsPage() {
         m.product?.sku || '',
         m.warehouse?.name || '',
         cfg.label,
-        `${cfg.sign}${Math.abs(m.quantity)}`,
+        `${cfg.sign}${Math.abs(Number(m.quantity))}`,
         m.reference_number || '',
         m.notes || '',
       ];
     });
+    const headers = ['Date', 'Product', 'SKU', 'Warehouse', 'Type', 'Quantity', 'Reference', 'Notes'];
     const csv = [headers, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -152,12 +204,7 @@ export default function StockMovementsPage() {
     a.download = `stock_movements_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [filtered]);
-
-  const inCount = filtered.filter((m) => m.quantity > 0).length;
-  const outCount = filtered.filter((m) => m.quantity < 0).length;
-  const totalIn = filtered.filter((m) => m.quantity > 0).reduce((s, m) => s + Math.abs(m.quantity), 0);
-  const totalOut = filtered.filter((m) => m.quantity < 0).reduce((s, m) => s + Math.abs(m.quantity), 0);
+  }, [filters]);
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -179,7 +226,7 @@ export default function StockMovementsPage() {
           </button>
           <button
             onClick={exportCSV}
-            disabled={filtered.length === 0}
+            disabled={totalCount === 0}
             className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-border bg-background hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Download className="w-4 h-4" />
@@ -194,28 +241,28 @@ export default function StockMovementsPage() {
           <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
             <Package className="w-4 h-4" /> Total Movements
           </div>
-          <div className="text-2xl font-bold text-foreground">{filtered.length.toLocaleString()}</div>
+          <div className="text-2xl font-bold text-foreground">{totalCount.toLocaleString()}</div>
         </div>
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="flex items-center gap-2 text-green-600 text-xs font-medium mb-1">
             <TrendingUp className="w-4 h-4" /> Stock In
           </div>
-          <div className="text-2xl font-bold text-green-600">{totalIn.toLocaleString()}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">{inCount} movements</div>
+          <div className="text-2xl font-bold text-green-600">{stats.totalIn.toLocaleString()}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">{stats.inCount} movements</div>
         </div>
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="flex items-center gap-2 text-red-600 text-xs font-medium mb-1">
             <TrendingDown className="w-4 h-4" /> Stock Out
           </div>
-          <div className="text-2xl font-bold text-red-600">{totalOut.toLocaleString()}</div>
-          <div className="text-xs text-muted-foreground mt-0.5">{outCount} movements</div>
+          <div className="text-2xl font-bold text-red-600">{stats.totalOut.toLocaleString()}</div>
+          <div className="text-xs text-muted-foreground mt-0.5">{stats.outCount} movements</div>
         </div>
         <div className="rounded-xl border border-border bg-card p-4">
           <div className="flex items-center gap-2 text-muted-foreground text-xs font-medium mb-1">
             <ArrowUpDown className="w-4 h-4" /> Net Change
           </div>
-          <div className={`text-2xl font-bold ${(totalIn - totalOut) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-            {(totalIn - totalOut) >= 0 ? '+' : ''}{(totalIn - totalOut).toLocaleString()}
+          <div className={`text-2xl font-bold ${(stats.totalIn - stats.totalOut) >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {(stats.totalIn - stats.totalOut) >= 0 ? '+' : ''}{(stats.totalIn - stats.totalOut).toLocaleString()}
           </div>
         </div>
       </div>
@@ -237,12 +284,12 @@ export default function StockMovementsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {/* Search */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Search</label>
+              <label className="text-xs font-medium text-muted-foreground">Search (ref no. / notes)</label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <input
                   type="text"
-                  placeholder="Product, SKU, ref no..."
+                  placeholder="Reference or notes..."
                   value={filters.search}
                   onChange={(e) => handleFilterChange('search', e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
@@ -348,12 +395,14 @@ export default function StockMovementsPage() {
           <tbody className="divide-y divide-border">
             {loading ? Array.from({length: 8}).map((_, i) => (
               <tr key={i}>{Array.from({length: 7}).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
-            )) : paginated.length === 0 ? (
+            )) : movements.length === 0 ? (
               <tr><td colSpan={7} className="px-4 py-12 text-center text-muted-foreground text-sm">
                 {activeFilterCount > 0 ? 'No stock movements match your filters' : 'No stock movements recorded yet'}
               </td></tr>
-            ) : paginated.map((m: any) => {
+            ) : movements.map((m: any) => {
               const cfg = typeConfig[m.movement_type] || typeConfig.adjustment;
+              const qty = Number(m.quantity);
+              const showTooltip = TOOLTIP_TYPES.has(m.movement_type) && m.notes;
               return (
                 <tr key={m.id} className="hover:bg-muted/30 transition-colors">
                   <td className="px-4 py-3 text-sm font-medium text-foreground">
@@ -376,8 +425,15 @@ export default function StockMovementsPage() {
                   </td>
                   <td className="px-4 py-3 text-xs font-mono text-muted-foreground">{m.product?.sku || '—'}</td>
                   <td className="px-4 py-3 text-sm text-foreground">{m.warehouse?.name || '—'}</td>
-                  <td className="px-4 py-3"><span className={`badge-status ${cfg.bg} ${cfg.color}`}>{cfg.label}</span></td>
-                  <td className="px-4 py-3 text-sm font-bold"><span className={m.quantity > 0 ? 'text-green-600' : 'text-red-600'}>{cfg.sign}{Math.abs(m.quantity)}</span></td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`badge-status ${cfg.bg} ${cfg.color} ${showTooltip ? 'cursor-help border border-dashed border-current/30' : ''}`}
+                      title={showTooltip ? `${cfg.label}: ${m.notes}` : undefined}
+                    >
+                      {cfg.label}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm font-bold"><span className={qty > 0 ? 'text-green-600' : 'text-red-600'}>{qty > 0 ? '+' : qty < 0 ? '-' : '±'}{Math.abs(qty)}</span></td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{m.reference_number || '—'}</td>
                   <td className="px-4 py-3 text-xs text-muted-foreground">{formatRelativeTime(m.created_at)}</td>
                 </tr>
@@ -388,10 +444,10 @@ export default function StockMovementsPage() {
       </div>
 
       {/* Pagination */}
-      {filtered.length > 0 && (
+      {totalCount > 0 && (
         <div className="flex items-center justify-between flex-wrap gap-2">
           <span className="text-sm text-muted-foreground">
-            Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)} of {filtered.length} movements
+            Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, totalCount)} of {totalCount.toLocaleString()} movements
           </span>
           <div className="flex items-center gap-1">
             <button
@@ -402,11 +458,11 @@ export default function StockMovementsPage() {
               <ChevronLeft className="w-4 h-4" /> Prev
             </button>
             <span className="px-3 py-1.5 text-sm font-medium text-muted-foreground">
-              Page {currentPage} / {totalPages || 1}
+              Page {currentPage} / {totalPages}
             </span>
             <button
               onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-              disabled={currentPage === totalPages || totalPages === 0}
+              disabled={currentPage >= totalPages}
               className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium rounded-lg border border-border bg-background hover:bg-muted/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Next <ChevronRight className="w-4 h-4" />
