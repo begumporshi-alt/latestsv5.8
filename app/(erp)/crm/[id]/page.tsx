@@ -58,6 +58,7 @@ interface CustomerStats {
   manualReceivables: number;
   manualReceivablesOutstanding: number;
   storeCreditBalance: number;
+  advanceBalance: number;
 }
 
 export default function CustomerDetailPage() {
@@ -70,7 +71,7 @@ export default function CustomerDetailPage() {
   const [stats, setStats] = useState<CustomerStats>({
     totalInvoices: 0, totalPaid: 0, totalOutstanding: 0, totalPurchases: 0,
     totalRefunds: 0, netPurchases: 0, activeDeliveries: 0,
-    manualReceivables: 0, manualReceivablesOutstanding: 0, storeCreditBalance: 0
+    manualReceivables: 0, manualReceivablesOutstanding: 0, storeCreditBalance: 0, advanceBalance: 0
   });
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [quotations, setQuotations] = useState<Quotation[]>([]);
@@ -104,7 +105,7 @@ export default function CustomerDetailPage() {
     }
     setCustomer(custData);
 
-    const [invRes, invTotalsRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes, returnsRes, creditRes, payRes] = await Promise.all([
+    const [invRes, invTotalsRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes, returnsRes, creditRes, payRes, advancesRes] = await Promise.all([
       supabase.from('invoices').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(20),
       supabase.from('invoices').select('total_amount').eq('customer_id', customerId).neq('status', 'cancelled'),
       supabase.from('quotations').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(10),
@@ -114,6 +115,7 @@ export default function CustomerDetailPage() {
       supabase.from('sales_returns').select('*, invoice:invoices(invoice_number)').eq('customer_id', customerId).order('created_at', { ascending: false }),
       supabase.from('customer_store_credits').select('balance').eq('customer_id', customerId).eq('status', 'active'),
       supabase.from('payments').select('*').eq('customer_id', customerId).order('payment_date', { ascending: false }).limit(50),
+      supabase.from('customer_advances').select('balance').eq('customer_id', customerId).eq('status', 'active'),
     ]);
 
     setInvoices(invRes.data || []);
@@ -161,6 +163,7 @@ export default function CustomerDetailPage() {
       manualReceivables: receivablesWithPayments.length,
       manualReceivablesOutstanding,
       storeCreditBalance: (creditRes.data || []).reduce((s: number, c: any) => s + Number(c.balance), 0),
+      advanceBalance: ((advancesRes as any).data || []).reduce((s: number, a: any) => s + Number(a.balance), 0),
     });
 
     setLoading(false);
@@ -368,6 +371,12 @@ export default function CustomerDetailPage() {
                 <div className="bg-purple-50 rounded-lg p-3 text-center col-span-2 border border-purple-100">
                   <p className="text-lg font-bold text-purple-600">{formatCurrency(stats.storeCreditBalance)}</p>
                   <p className="text-xs text-purple-700 font-medium">Store Credit Available</p>
+                </div>
+              )}
+              {stats.advanceBalance > 0 && (
+                <div className="bg-cyan-50 rounded-lg p-3 text-center col-span-2 border border-cyan-100">
+                  <p className="text-lg font-bold text-cyan-600">{formatCurrency(stats.advanceBalance)}</p>
+                  <p className="text-xs text-cyan-700 font-medium">Advance Balance Available</p>
                 </div>
               )}
             </div>
