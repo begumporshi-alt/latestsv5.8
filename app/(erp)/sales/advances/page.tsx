@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { useToast } from '@/hooks/use-toast';
-import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, Plus, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle, HandCoins, ArrowRightLeft } from 'lucide-react';
+import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, Plus, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle, HandCoins, ArrowRightLeft, RotateCcw } from 'lucide-react';
 
 interface Advance {
   id: string;
@@ -51,6 +51,7 @@ export default function CustomerAdvancesPage() {
   const [detailApplications, setDetailApplications] = useState<Application[]>([]);
   const [showRecord, setShowRecord] = useState(false);
   const [showApply, setShowApply] = useState<Advance | null>(null);
+  const [showRefund, setShowRefund] = useState<Advance | null>(null);
   const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
 
   useEffect(() => { loadData(); }, []);
@@ -228,6 +229,7 @@ export default function CustomerAdvancesPage() {
             <option value="all">All Statuses</option>
             <option value="active">Active</option>
             <option value="applied">Fully Applied</option>
+            <option value="refunded">Refunded</option>
           </select>
         )}
       </div>
@@ -267,10 +269,12 @@ export default function CustomerAdvancesPage() {
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
                         a.status === 'active' ? 'bg-green-50 text-green-700' :
                         a.status === 'applied' ? 'bg-blue-50 text-blue-700' :
+                        a.status === 'refunded' ? 'bg-red-50 text-red-700' :
                         'bg-gray-50 text-gray-700'
                       }`}>
                         {a.status === 'active' && <CheckCircle2 className="w-3 h-3" />}
                         {a.status === 'applied' && <CheckCircle2 className="w-3 h-3" />}
+                        {a.status === 'refunded' && <RotateCcw className="w-3 h-3" />}
                         {a.status.charAt(0).toUpperCase() + a.status.slice(1)}
                       </span>
                     </td>
@@ -287,6 +291,15 @@ export default function CustomerAdvancesPage() {
                             title="Apply to invoice"
                           >
                             <ArrowRightLeft className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {a.status === 'active' && a.balance > 0 && (
+                          <button
+                            onClick={() => setShowRefund(a)}
+                            className="p-1.5 hover:bg-red-50 rounded text-red-600"
+                            title="Refund advance"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
@@ -385,12 +398,20 @@ export default function CustomerAdvancesPage() {
                 </div>
               )}
               {detailAdvance.status === 'active' && detailAdvance.balance > 0 && (
-                <button
-                  onClick={() => { setShowApply(detailAdvance); setDetailAdvance(null); }}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition"
-                >
-                  <ArrowRightLeft className="w-4 h-4" /> Apply to Invoice
-                </button>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => { setShowApply(detailAdvance); setDetailAdvance(null); }}
+                    className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition"
+                  >
+                    <ArrowRightLeft className="w-4 h-4" /> Apply to Invoice
+                  </button>
+                  <button
+                    onClick={() => { setShowRefund(detailAdvance); setDetailAdvance(null); }}
+                    className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition"
+                  >
+                    <RotateCcw className="w-4 h-4" /> Refund
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -410,6 +431,15 @@ export default function CustomerAdvancesPage() {
           advance={showApply}
           onClose={() => setShowApply(null)}
           onApplied={() => { setShowApply(null); loadData(); }}
+        />
+      )}
+
+      {showRefund && (
+        <RefundAdvanceModal
+          advance={showRefund}
+          paymentMethods={paymentMethods}
+          onClose={() => setShowRefund(null)}
+          onRefunded={() => { setShowRefund(null); loadData(); }}
         />
       )}
     </div>
@@ -794,6 +824,201 @@ function ApplyAdvanceModal({ advance, onClose, onApplied }: {
             <button type="submit" disabled={saving || unpaidInvoices.length === 0} className="flex items-center gap-2 px-5 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
               <ArrowRightLeft className="w-4 h-4" />
               {saving ? 'Applying...' : 'Apply Advance'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Refund Advance Modal
+// ============================================================
+function RefundAdvanceModal({ advance, paymentMethods, onClose, onRefunded }: {
+  advance: Advance;
+  paymentMethods: PaymentMethod[];
+  onClose: () => void;
+  onRefunded: () => void;
+}) {
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({
+    amount: advance.balance.toString(),
+    refund_method: advance.payment_method,
+    refund_date: new Date().toISOString().split('T')[0],
+    reference_number: '',
+    notes: '',
+  });
+
+  async function handleRefund(e: React.FormEvent) {
+    e.preventDefault();
+    const amount = Number(form.amount);
+    if (!amount || amount <= 0) { setError('Enter a valid amount'); return; }
+    if (amount > advance.balance) { setError(`Amount cannot exceed ${formatCurrency(advance.balance)}`); return; }
+
+    setSaving(true); setError('');
+    try {
+      // 1. Record the refund
+      const { error: refundError } = await supabase.from('customer_advance_refunds').insert({
+        advance_id: advance.id,
+        customer_id: advance.customer_id,
+        amount,
+        refund_method: form.refund_method,
+        refund_date: form.refund_date,
+        reference_number: form.reference_number || null,
+        notes: form.notes || null,
+      });
+      if (refundError) throw refundError;
+
+      // 2. Update advance balance and status
+      const newBalance = advance.balance - amount;
+      const isFullRefund = newBalance <= 0.001;
+      await supabase.from('customer_advances').update({
+        balance: newBalance,
+        status: isFullRefund ? 'refunded' : 'active',
+        updated_at: new Date().toISOString(),
+      }).eq('id', advance.id);
+
+      // 3. Post journal entry: Dr Customer Advances (2300), Cr Cash/Bank
+      const { data: advanceAccount } = await supabase.from('accounts').select('id').eq('code', '2300').maybeSingle();
+
+      let cashAccountId: string | null = null;
+      const { data: pmAccount } = await supabase
+        .from('payment_methods')
+        .select('account_id')
+        .eq('code', form.refund_method)
+        .eq('is_active', true)
+        .maybeSingle();
+
+      if (pmAccount?.account_id) {
+        cashAccountId = pmAccount.account_id;
+      } else {
+        const { data: cashAccount } = await supabase.from('accounts').select('id').eq('code', '1001').maybeSingle();
+        cashAccountId = cashAccount?.id || null;
+      }
+
+      if (advanceAccount && cashAccountId) {
+        const { data: jeNum } = await supabase.rpc('get_next_journal_number');
+        const { data: jeRow, error: jeError } = await supabase.from('journal_entries').insert({
+          entry_number: jeNum,
+          entry_date: form.refund_date,
+          description: `Advance refund - ${advance.advance_number}`,
+          reference_type: 'advance_refund',
+          reference_id: advance.id,
+          total_debit: amount,
+          total_credit: amount,
+          is_posted: true,
+          customer_id: advance.customer_id,
+        }).select().single();
+
+        if (jeError) throw jeError;
+
+        if (jeRow) {
+          await supabase.from('journal_lines').insert([
+            { journal_entry_id: jeRow.id, account_id: advanceAccount.id, description: `Advance refunded - ${advance.advance_number}`, debit: amount, credit: 0, sort_order: 0 },
+            { journal_entry_id: jeRow.id, account_id: cashAccountId, description: `Cash/Bank paid out - refund ${advance.advance_number}`, debit: 0, credit: amount, sort_order: 1 },
+          ]);
+
+          // Update account balances: advance liability decreases, cash decreases
+          await supabase.rpc('increment_account_balance', { p_account_id: advanceAccount.id, p_delta: -amount });
+          await supabase.rpc('increment_account_balance', { p_account_id: cashAccountId, p_delta: -amount });
+        }
+      }
+
+      toast({ title: 'Success', description: isFullRefund ? 'Advance fully refunded' : `Refunded ${formatCurrency(amount)} from advance` });
+      onRefunded();
+    } catch (err: any) {
+      setError(err.message || 'Failed to process refund');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
+          <div>
+            <h2 className="text-base font-bold">Refund Customer Advance</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">{advance.advance_number} - {advance.customer_name}</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleRefund} className="p-6 space-y-5">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+
+          <div className="bg-amber-50 rounded-lg p-4 flex items-center justify-between">
+            <div>
+              <p className="text-xs text-muted-foreground">Available Advance Balance</p>
+              <p className="text-2xl font-bold text-amber-600">{formatCurrency(advance.balance)}</p>
+            </div>
+            <RotateCcw className="w-8 h-8 text-amber-400" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Refund Amount *</label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                max={advance.balance}
+                value={form.amount}
+                onChange={e => setForm({ ...form, amount: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                required
+              />
+              <button type="button" onClick={() => setForm({ ...form, amount: advance.balance.toString() })} className="mt-1.5 px-3 py-1 text-xs bg-amber-50 text-amber-600 rounded-md hover:bg-amber-100 transition">
+                Refund Full Balance
+              </button>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Refund Method *</label>
+              <select value={form.refund_method} onChange={e => setForm({ ...form, refund_method: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
+                {paymentMethods.length > 0
+                  ? paymentMethods.map(m => <option key={m.code} value={m.code}>{m.name}</option>)
+                  : <>
+                      <option value="cash">Cash</option>
+                      <option value="bank_transfer">Bank Transfer</option>
+                      <option value="card">Card</option>
+                      <option value="mobile_banking">Mobile Banking</option>
+                      <option value="cheque">Cheque</option>
+                    </>
+                }
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Refund Date *</label>
+              <input type="date" value={form.refund_date} onChange={e => setForm({ ...form, refund_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" required />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Reference Number</label>
+              <input value={form.reference_number} onChange={e => setForm({ ...form, reference_number: e.target.value })} placeholder="Cheque no., transaction ID..." className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1">Notes</label>
+            <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Reason for refund, etc..." className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+          </div>
+
+          {Number(form.amount) > 0 && Number(form.amount) <= advance.balance && (
+            <div className="bg-muted/30 rounded-lg p-3 space-y-1.5 text-sm">
+              <div className="flex justify-between"><span className="text-muted-foreground">Refunding</span><span className="font-semibold text-red-600">{formatCurrency(Number(form.amount) || 0)}</span></div>
+              <div className="flex justify-between border-t border-border pt-1.5"><span className="text-muted-foreground">Remaining Advance Balance After Refund</span><span className="font-bold text-amber-600">{formatCurrency(advance.balance - (Number(form.amount) || 0))}</span></div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-3">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex items-center gap-2 px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              <RotateCcw className="w-4 h-4" />
+              {saving ? 'Processing...' : 'Process Refund'}
             </button>
           </div>
         </form>
