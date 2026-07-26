@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban } from 'lucide-react';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
@@ -45,6 +45,8 @@ export default function QuotationsPage() {
   const [viewingQuotation, setViewingQuotation] = useState<QuotationWithCustomer | null>(null);
   const [quotationItems, setQuotationItems] = useState<any[]>([]);
   const [convertingQuotation, setConvertingQuotation] = useState<QuotationWithCustomer | null>(null);
+  const [editingQuotation, setEditingQuotation] = useState<QuotationWithCustomer | null>(null);
+  const [deletingQuotation, setDeletingQuotation] = useState<QuotationWithCustomer | null>(null);
   const [companySettings, setCompanySettings] = useState<any>({});
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
 
@@ -96,6 +98,24 @@ export default function QuotationsPage() {
     }
     setViewingQuotation(null);
     setConvertingQuotation(quotation);
+  }
+
+  function openEditModal(quotation: QuotationWithCustomer) {
+    setViewingQuotation(null);
+    setEditingQuotation(quotation);
+  }
+
+  async function deleteQuotation(quotation: QuotationWithCustomer) {
+    await supabase.from('quotation_items').delete().eq('quotation_id', quotation.id);
+    await supabase.from('cost_price_history').delete().eq('quotation_id', quotation.id);
+    const { error } = await supabase.from('quotations').delete().eq('id', quotation.id);
+    if (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      return;
+    }
+    toast({ title: 'Success', description: `Quotation ${quotation.quote_number} deleted` });
+    setDeletingQuotation(null);
+    loadData();
   }
 
   const filtered = quotations.filter(q => {
@@ -281,8 +301,14 @@ export default function QuotationsPage() {
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <button onClick={() => viewQuotationDetails(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition"><Eye className="w-3.5 h-3.5" /></button>
+                        {(q.status === 'draft' || q.status === 'sent') && (
+                          <button onClick={() => openEditModal(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="Edit Quotation"><Pencil className="w-3.5 h-3.5" /></button>
+                        )}
                         {q.status === 'draft' && (
                           <button onClick={() => sendQuotation(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition"><Send className="w-3.5 h-3.5" /></button>
+                        )}
+                        {(q.status === 'draft' || q.status === 'sent') && (
+                          <button onClick={() => setDeletingQuotation(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Delete Quotation"><Trash2 className="w-3.5 h-3.5" /></button>
                         )}
                         {q.status !== 'converted' && q.status !== 'rejected' && q.status !== 'expired' && (
                           <button onClick={() => initiateConvert(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-teal-50 text-muted-foreground hover:text-teal-600 transition" title="Convert to Invoice"><ArrowRight className="w-3.5 h-3.5" /></button>
@@ -320,6 +346,8 @@ export default function QuotationsPage() {
           items={quotationItems}
           onClose={() => setViewingQuotation(null)}
           onConvert={() => initiateConvert(viewingQuotation)}
+          onEdit={() => openEditModal(viewingQuotation)}
+          onDelete={() => setDeletingQuotation(viewingQuotation)}
           companySettings={companySettings}
         />
       )}
@@ -329,6 +357,25 @@ export default function QuotationsPage() {
           quotation={convertingQuotation}
           onClose={() => setConvertingQuotation(null)}
           onConverted={() => { setConvertingQuotation(null); loadData(); }}
+        />
+      )}
+
+      {editingQuotation && (
+        <EditQuotationModal
+          quotation={editingQuotation}
+          customers={customers}
+          products={products}
+          warehouses={warehouses}
+          onClose={() => setEditingQuotation(null)}
+          onSaved={() => { setEditingQuotation(null); loadData(); }}
+        />
+      )}
+
+      {deletingQuotation && (
+        <DeleteQuotationConfirmModal
+          quotation={deletingQuotation}
+          onClose={() => setDeletingQuotation(null)}
+          onConfirm={() => deleteQuotation(deletingQuotation)}
         />
       )}
     </div>
@@ -743,7 +790,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                                 <select
                                   value={item.selected_unit.id}
                                   onChange={e => {
-                                    const unit = item.available_units?.find(u => u.id === e.target.value);
+                                    const unit = item.available_units?.find((u: any) => u.id === e.target.value);
                                     if (unit) updateItem(index, 'selected_unit', unit);
                                   }}
                                   className="w-full border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
@@ -934,6 +981,286 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
         />
       )}
     </>
+  );
+}
+
+function EditQuotationModal({ quotation, customers, products, warehouses, onClose, onSaved }: {
+  quotation: QuotationWithCustomer;
+  customers: Customer[];
+  products: Product[];
+  warehouses: { id: string; name: string; code: string }[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    customer_id: quotation.customer_id,
+    issue_date: quotation.issue_date,
+    expiry_date: quotation.expiry_date || '',
+    notes: (quotation as any).notes || '',
+    extra_discount: Number((quotation as any).extra_discount) || 0,
+    cart_discount_percent: Number((quotation as any).cart_discount_percent) || 0,
+    reference: (quotation as any).reference || '',
+  });
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from('quotation_items')
+        .select('*, product:products(name, sku, unit, base_unit, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand))')
+        .eq('quotation_id', quotation.id);
+      setItems((data || []).map((it: any) => {
+        const prod = Array.isArray(it.product) ? it.product[0] : it.product;
+        const units = Array.isArray(it.units) ? it.units : (prod?.units || []);
+        const selectedUnit = units.find((u: any) => u.unit_name === it.unit_name) || null;
+        return {
+          id: it.id,
+          product_id: it.product_id,
+          product_name: prod?.name || '—',
+          product_sku: prod?.sku || '',
+          product_unit: prod?.unit,
+          product_base_unit: prod?.base_unit,
+          stock_qty: null,
+          quantity: Number(it.quantity),
+          unit_price: Number(it.unit_price),
+          discount_percent: Number(it.discount_percent) || 0,
+          selected_unit: selectedUnit,
+          available_units: units.filter((u: any) => u.is_active),
+          base_quantity: Number(it.base_quantity) || Number(it.quantity),
+          cost_price: selectedUnit?.cost_price || 0,
+          warehouse_id: it.warehouse_id || undefined,
+        };
+      }));
+      setLoading(false);
+    })();
+  }, [quotation.id]);
+
+  function updateItem(index: number, field: string, value: any) {
+    const updated = [...items];
+    if (field === 'selected_unit') {
+      const unit = value as ProductUnit;
+      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit) };
+    } else if (field === 'quantity') {
+      const qty = parseInt(value) || 1;
+      const unit = updated[index].selected_unit;
+      updated[index] = { ...updated[index], quantity: qty, base_quantity: unit ? convertToBaseUnit(qty, unit) : qty };
+    } else if (field === 'discount_percent') {
+      updated[index] = { ...updated[index], discount_percent: Math.min(100, Math.max(0, parseFloat(value) || 0)) };
+    } else {
+      (updated[index] as any)[field] = value;
+    }
+    setItems(updated);
+  }
+
+  function removeItem(index: number) {
+    setItems(items.filter((_, i) => i !== index));
+  }
+
+  const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.unit_price * (1 - item.discount_percent / 100)), 0);
+  const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
+  const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.customer_id) { setError('Please select a customer'); return; }
+    if (items.length === 0) { setError('Please add at least one item'); return; }
+    setSaving(true);
+    setError('');
+
+    const { error: qError } = await supabase.from('quotations').update({
+      customer_id: form.customer_id,
+      issue_date: form.issue_date,
+      expiry_date: form.expiry_date || null,
+      subtotal,
+      cart_discount_percent: form.cart_discount_percent || 0,
+      extra_discount: form.extra_discount || 0,
+      discount_amount: cartDiscountAmount,
+      total_amount: totalAmount,
+      notes: form.notes || null,
+      reference: form.reference || null,
+      updated_at: new Date().toISOString(),
+    }).eq('id', quotation.id);
+    if (qError) { setError(qError.message); setSaving(false); return; }
+
+    await supabase.from('quotation_items').delete().eq('quotation_id', quotation.id);
+    const quoteItems = items.map(item => {
+      const discount = (item.unit_price * item.quantity * item.discount_percent) / 100;
+      return {
+        quotation_id: quotation.id,
+        product_id: item.product_id,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        discount_percent: item.discount_percent,
+        tax_rate: 0,
+        subtotal: item.quantity * item.unit_price - discount,
+        unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+        unit_conversion_factor: item.selected_unit?.conversion_factor,
+        base_quantity: item.base_quantity,
+        warehouse_id: item.warehouse_id || null,
+      };
+    });
+    const { error: itemsError } = await supabase.from('quotation_items').insert(quoteItems);
+    if (itemsError) { setError(itemsError.message); setSaving(false); return; }
+
+    toast({ title: 'Success', description: 'Quotation updated successfully' });
+    onSaved();
+    onClose();
+  }
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl p-8 text-center text-muted-foreground">Loading...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
+          <div>
+            <h2 className="text-base font-bold">Edit Quotation</h2>
+            <p className="text-xs text-muted-foreground">{quotation.quote_number}</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSave} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Customer *</label>
+              <CustomerSearchInput
+                onSelect={(c) => setForm({ ...form, customer_id: c.id })}
+                selectedName={customers.find(c => c.id === form.customer_id)?.name}
+                placeholder="Search customer..."
+                className="w-full"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Issue Date</label>
+              <input type="date" value={form.issue_date} onChange={e => setForm({ ...form, issue_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Expiry Date</label>
+              <input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Reference</label>
+            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name" />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-medium">Line Items</label>
+              {items.length > 0 && <span className="text-xs text-muted-foreground">{items.length} item{items.length !== 1 ? 's' : ''}</span>}
+            </div>
+            {items.length > 0 && (
+              <div className="border border-border rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Price</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                      <th className="w-8"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {items.map((item, index) => (
+                      <tr key={index}>
+                        <td className="px-3 py-2">
+                          <p className="text-sm font-medium text-foreground">{item.product_name}</p>
+                          <p className="text-[10px] text-muted-foreground">{item.product_sku}</p>
+                          {item.available_units && item.available_units.length > 0 && item.selected_unit && (
+                            <select
+                              value={item.selected_unit.id}
+                              onChange={e => {
+                                const unit = item.available_units?.find((u: any) => u.id === e.target.value);
+                                if (unit) updateItem(index, 'selected_unit', unit);
+                              }}
+                              className="mt-1 w-full border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                            >
+                              {item.available_units.map((u: any) => <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>)}
+                            </select>
+                          )}
+                        </td>
+                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
+                        <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-end bg-muted/30 rounded-lg p-3">
+            <div className="text-right w-full max-w-xs space-y-2">
+              <div className="flex justify-between items-center"><p className="text-xs text-muted-foreground">Subtotal</p><p className="text-sm font-semibold text-foreground">{formatCurrency(subtotal)}</p></div>
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Cart Discount %</label>
+                <input type="number" min="0" max="100" step="0.5" value={form.cart_discount_percent || 0} onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+              </div>
+              {(form.cart_discount_percent || 0) > 0 && (
+                <div className="flex justify-between text-xs text-red-500"><span>Cart Discount ({form.cart_discount_percent}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>
+              )}
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Extra Discount ৳</label>
+                <input type="number" min="0" step="0.01" value={form.extra_discount || 0} onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+              </div>
+              {(form.extra_discount || 0) > 0 && (
+                <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>
+              )}
+              <div className="flex justify-between items-center pt-1 border-t border-border"><p className="text-xs font-medium text-muted-foreground">Total</p><p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p></div>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">{saving ? 'Saving...' : 'Save Changes'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function DeleteQuotationConfirmModal({ quotation, onClose, onConfirm }: {
+  quotation: QuotationWithCustomer;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" style={{ zIndex: 60 }}>
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold">Delete Quotation</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-foreground">Are you sure you want to delete quotation <span className="font-semibold">{quotation.quote_number}</span>?</p>
+          <div className="bg-muted/30 rounded-lg p-3 space-y-2 text-sm">
+            <div className="flex justify-between"><span className="text-muted-foreground">Customer</span><span className="font-medium">{quotation.customer?.name || '—'}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Amount</span><span className="font-medium">{formatCurrency(quotation.total_amount)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Status</span><span className="font-medium capitalize">{quotation.status}</span></div>
+          </div>
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800">
+            This will permanently delete the quotation and all its line items. This action cannot be undone.
+          </div>
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button onClick={onConfirm} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition">Yes, Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1221,14 +1548,17 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
   );
 }
 
-function ViewQuotationModal({ quotation, items, onClose, onConvert, companySettings }: {
+function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDelete, companySettings }: {
   quotation: QuotationWithCustomer;
   items: any[];
   onClose: () => void;
   onConvert: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
   companySettings: any;
 }) {
   const cfg = statusConfig[quotation.status as QuotationStatus] || statusConfig.draft;
+  const canEdit = quotation.status === 'draft' || quotation.status === 'sent';
   const printRef = useRef<HTMLDivElement>(null);
   const [hideDiscountPercent, setHideDiscountPercent] = useState(false);
   const [hideRate, setHideRate] = useState(false);
@@ -1272,6 +1602,16 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, companySetti
         <div className="no-print flex items-center justify-between px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
           <span className="text-sm font-semibold text-muted-foreground">Quotation Preview</span>
           <div className="flex items-center gap-2">
+            {canEdit && (
+              <button onClick={onEdit} className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-sm font-medium hover:bg-blue-50 hover:text-blue-600 transition">
+                <Pencil className="w-3.5 h-3.5" />Edit
+              </button>
+            )}
+            {canEdit && (
+              <button onClick={onDelete} className="flex items-center gap-1.5 px-3 py-1.5 border border-border rounded-lg text-sm font-medium hover:bg-red-50 hover:text-red-600 transition">
+                <Trash2 className="w-3.5 h-3.5" />Delete
+              </button>
+            )}
             <button onClick={shareWhatsApp} className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition">
               <MessageCircle className="w-3.5 h-3.5" />WhatsApp
             </button>

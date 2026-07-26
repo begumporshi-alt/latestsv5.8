@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, Users, FolderKanban, Truck, Calculator, Store, UserRound, ChartBar as BarChart3, Settings, Building2, ChevronDown, ChevronRight, FileText, Receipt, TrendingUp, Boxes, Shield, ArrowRightLeft, BookOpen, Wallet, RotateCcw } from 'lucide-react';
+import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, Users, Truck, Calculator, Store, UserRound, ChartBar as BarChart3, Settings, Building2, ChevronDown, ChevronRight, FileText, Receipt, TrendingUp, Boxes, Shield, ArrowRightLeft, BookOpen, Wallet, RotateCcw, BookOpen as GuideIcon } from 'lucide-react';
 
 interface NavItem {
   title: string;
@@ -20,7 +20,6 @@ interface SidebarProps {
 
 const navItems: NavItem[] = [
   { title: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { title: 'Guide', href: '/guide', icon: BookOpen },
   {
     title: 'Inventory',
     icon: Package,
@@ -39,8 +38,6 @@ const navItems: NavItem[] = [
       { title: 'POS', href: '/sales/pos' },
       { title: 'Returns', href: '/sales/returns' },
       { title: 'Refunds', href: '/sales/refunds' },
-      { title: 'Store Credit', href: '/sales/store-credit' },
-      { title: 'Customer Advances', href: '/sales/advances' },
     ],
   },
   {
@@ -59,9 +56,11 @@ const navItems: NavItem[] = [
     children: [
       { title: 'Customers', href: '/crm' },
       { title: 'Quotations', href: '/quotations' },
+      { title: 'Store Credit', href: '/sales/store-credit' },
+      { title: 'Customer Advances', href: '/sales/advances' },
+      { title: 'Aging & Dues', href: '/accounting/aging' },
     ],
   },
-  { title: 'Projects', href: '/projects', icon: FolderKanban },
   { title: 'Delivery', href: '/delivery', icon: Truck },
   {
     title: 'Accounting',
@@ -70,12 +69,11 @@ const navItems: NavItem[] = [
       { title: 'Overview', href: '/accounting' },
       { title: 'Chart of Accounts', href: '/accounting/accounts' },
       { title: 'Journal Entries', href: '/accounting/journal' },
-      { title: 'Aging & Dues', href: '/accounting/aging' },
+      { title: 'Expenses', href: '/expenses' },
       { title: 'Payment Methods', href: '/accounting/payment-methods' },
       { title: 'JE Guide', href: '/accounting/journal-guide' },
     ],
   },
-  { title: 'Expenses', href: '/expenses', icon: Receipt },
   { title: 'Online Store', href: '/online-store', icon: Store, badge: 'New' },
   {
     title: 'HR Management',
@@ -96,12 +94,19 @@ const navItems: NavItem[] = [
       { title: 'Recent Activity', href: '/reports/activity' },
     ],
   },
-  { title: 'Settings', href: '/settings', icon: Settings },
+  {
+    title: 'Settings',
+    icon: Settings,
+    children: [
+      { title: 'General Settings', href: '/settings' },
+      { title: 'Guide', href: '/guide' },
+    ],
+  },
 ];
 
 export default function Sidebar({ collapsed }: SidebarProps) {
   const pathname = usePathname();
-  const [openMenus, setOpenMenus] = useState<string[]>(['Inventory', 'Sales', 'Purchases', 'CRM', 'HR Management']);
+  const [openMenus, setOpenMenus] = useState<string[]>(['Inventory', 'Sales', 'Purchases', 'CRM', 'Accounting', 'HR Management']);
 
   function toggleMenu(title: string) {
     setOpenMenus((prev) =>

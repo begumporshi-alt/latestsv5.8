@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, Printer, TrendingUp, CircleCheck as CheckCircle2 } from 'lucide-react';
+import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, Printer, TrendingUp } from 'lucide-react';
 import type { Supplier, Warehouse } from '@/lib/types';
 
 interface PurchaseOrder {
@@ -129,7 +129,7 @@ export default function GRNPage() {
         {[
           { label: 'Total GRNs', value: stats.total, icon: Package, color: 'text-blue-500 bg-blue-50' },
           { label: 'Posted', value: stats.posted, icon: CheckCircle, color: 'text-green-500 bg-green-50' },
-          { label: 'Verified', value: stats.verified, icon: CheckCircle2, color: 'text-teal-500 bg-teal-50' },
+          { label: 'Verified', value: stats.verified, icon: CheckCircle, color: 'text-teal-500 bg-teal-50' },
           { label: 'Total Value', value: formatCurrency(stats.totalValue), icon: TrendingUp, color: 'text-purple-500 bg-purple-50' },
         ].map(s => (
           <div key={s.label} className="stat-card flex items-center gap-3">

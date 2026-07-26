@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, CreditCard as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt } from 'lucide-react';
+import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt } from 'lucide-react';
 import type { Supplier, PurchaseOrder } from '@/lib/types';
 
 interface ManualPayable {

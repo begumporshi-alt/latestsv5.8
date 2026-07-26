@@ -5,7 +5,10 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban } from 'lucide-react';
-import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod } from '@/lib/types';
+import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit } from '@/lib/types';
+import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import ProductSearchInput from '@/components/ui/ProductSearchInput';
+import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
 
 const statusConfig: Record<PurchaseOrderStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
@@ -367,12 +370,15 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
     order_date: new Date().toISOString().split('T')[0],
     expected_date: '',
     notes: '',
+    reference: '',
     payment_type: 'credit' as 'credit' | 'partial' | 'full',
     amount_paid: 0,
     payment_method: 'bank_transfer' as PaymentMethod,
     payment_reference: '',
+    cart_discount_percent: 0,
+    extra_discount: 0,
   });
-  const [items, setItems] = useState<{ product_id: string; quantity: number; unit_price: number }[]>([]);
+  const [items, setItems] = useState<any[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showAddSupplier, setShowAddSupplier] = useState(false);
@@ -392,15 +398,52 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
     }
   }
 
-  function addItem() {
-    setItems([...items, { product_id: '', quantity: 1, unit_price: 0 }]);
+  function addProductToItems(product: any) {
+    const units = (product.units || []).filter((u: any) => u.is_active);
+    const multi = isMultiUnitEnabled(product);
+    const defaultUnit = multi ? getDefaultSaleUnit(units) : null;
+    const unitPrice = defaultUnit ? defaultUnit.cost_price : (product.cost_price || 0);
+    const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
+
+    // Deduplicate: if same product+unit already exists, increment quantity
+    const existingIdx = items.findIndex(it =>
+      it.product_id === product.id &&
+      (!defaultUnit || (it.selected_unit && it.selected_unit.id === defaultUnit.id))
+    );
+    if (existingIdx >= 0) {
+      const updated = [...items];
+      updated[existingIdx] = { ...updated[existingIdx], quantity: updated[existingIdx].quantity + 1 };
+      setItems(updated);
+      return;
+    }
+
+    setItems([...items, {
+      product_id: product.id,
+      product_name: product.name,
+      product_sku: product.sku,
+      product_unit: product.unit,
+      product_base_unit: product.base_unit,
+      quantity: 1,
+      unit_price: unitPrice,
+      discount_percent: 0,
+      selected_unit: defaultUnit,
+      available_units: units,
+      base_quantity: baseQty,
+      cost_price: unitPrice,
+    }]);
   }
 
   function updateItem(index: number, field: string, value: any) {
     const updated = [...items];
-    if (field === 'product_id') {
-      const product = products.find(p => p.id === value);
-      updated[index] = { product_id: value, quantity: 1, unit_price: product?.cost_price || 0 };
+    if (field === 'selected_unit') {
+      const unit = value as ProductUnit;
+      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0 };
+    } else if (field === 'quantity') {
+      const qty = parseInt(value) || 1;
+      const unit = updated[index].selected_unit;
+      updated[index] = { ...updated[index], quantity: qty, base_quantity: unit ? convertToBaseUnit(qty, unit) : qty };
+    } else if (field === 'discount_percent') {
+      updated[index] = { ...updated[index], discount_percent: Math.min(100, Math.max(0, parseFloat(value) || 0)) };
     } else {
       (updated[index] as any)[field] = value;
     }
@@ -411,19 +454,17 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
     setItems(items.filter((_, i) => i !== index));
   }
 
-  const subtotal = items.reduce((sum, item) => {
-    const product = products.find(p => p.id === item.product_id);
-    return sum + (item.quantity * (item.unit_price || product?.cost_price || 0));
-  }, 0);
-
-  const amountPaid = form.payment_type === 'full' ? subtotal : (form.payment_type === 'partial' ? form.amount_paid : 0);
+  const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.unit_price * (1 - item.discount_percent / 100)), 0);
+  const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
+  const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
+  const amountPaid = form.payment_type === 'full' ? totalAmount : (form.payment_type === 'partial' ? form.amount_paid : 0);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!form.supplier_id) { setError('Please select a supplier'); return; }
     if (items.length === 0) { setError('Please add at least one item'); return; }
     if (form.payment_type === 'partial' && form.amount_paid <= 0) { setError('Please enter payment amount for partial payment'); return; }
-    if (form.payment_type === 'partial' && form.amount_paid >= subtotal) { setError('Partial payment must be less than total. Use "Full Payment" instead.'); return; }
+    if (form.payment_type === 'partial' && form.amount_paid >= totalAmount) { setError('Partial payment must be less than total. Use "Full Payment" instead.'); return; }
 
     setSaving(true);
     setError('');
@@ -439,23 +480,34 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         order_date: form.order_date,
         expected_date: form.expected_date || null,
         subtotal,
-        total_amount: subtotal,
+        cart_discount_percent: form.cart_discount_percent || 0,
+        extra_discount: form.extra_discount || 0,
+        discount_amount: cartDiscountAmount,
+        total_amount: totalAmount,
         amount_paid: amountPaid,
         status: 'draft',
         notes: form.notes || null,
+        reference: form.reference || null,
       })
       .select()
       .single();
 
     if (poError) { setError(poError.message); setSaving(false); return; }
 
-    const poItems = items.map(item => ({
-      purchase_order_id: po.id,
-      product_id: item.product_id,
-      quantity: item.quantity,
-      unit_cost: item.unit_price,
-      subtotal: item.quantity * item.unit_price,
-    }));
+    const poItems = items.map(item => {
+      const discount = (item.unit_price * item.quantity * item.discount_percent) / 100;
+      return {
+        purchase_order_id: po.id,
+        product_id: item.product_id,
+        quantity: item.quantity,
+        unit_cost: item.unit_price,
+        discount_percent: item.discount_percent || 0,
+        subtotal: item.quantity * item.unit_price - discount,
+        unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+        unit_conversion_factor: item.selected_unit?.conversion_factor || null,
+        base_quantity: item.base_quantity,
+      };
+    });
 
     const { error: itemsError } = await supabase.from('purchase_order_items').insert(poItems);
     if (itemsError) { setError(itemsError.message); setSaving(false); return; }
@@ -477,7 +529,6 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         notes: form.payment_type === 'full' ? 'Full payment at order time' : 'Partial payment at order time',
       });
 
-      // Update supplier outstanding balance
       const { data: currentSupplier } = await supabase
         .from('suppliers')
         .select('outstanding_balance, total_purchases')
@@ -488,8 +539,8 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         await supabase
           .from('suppliers')
           .update({
-            outstanding_balance: (currentSupplier.outstanding_balance || 0) + (subtotal - amountPaid),
-            total_purchases: (currentSupplier.total_purchases || 0) + subtotal,
+            outstanding_balance: (currentSupplier.outstanding_balance || 0) + (totalAmount - amountPaid),
+            total_purchases: (currentSupplier.total_purchases || 0) + totalAmount,
             updated_at: new Date().toISOString()
           })
           .eq('id', form.supplier_id);
@@ -515,10 +566,12 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
             <div className="col-span-2">
               <label className="block text-xs font-medium mb-1">Supplier *</label>
               <div className="flex gap-2">
-                <select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="flex-1 border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
-                  <option value="">Select supplier</option>
-                  {supplierList.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
-                </select>
+                <SupplierSearchInput
+                  onSelect={(s) => setForm({ ...form, supplier_id: s.id })}
+                  selectedName={supplierList.find(s => s.id === form.supplier_id)?.name}
+                  placeholder="Search supplier by name or code..."
+                  className="flex-1"
+                />
                 <button
                   type="button"
                   onClick={() => setShowAddSupplier(true)}
@@ -534,61 +587,104 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
                 <input type="date" value={form.order_date} onChange={e => setForm({ ...form, order_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
               </div>
               <div>
-                <label className="block text-xs font-medium mb-1">Expected Date</label>
+                <label className="block text-xs font-medium mb-1">Expected</label>
                 <input type="date" value={form.expected_date} onChange={e => setForm({ ...form, expected_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
               </div>
             </div>
           </div>
 
           <div>
+            <label className="block text-xs font-medium mb-1">Reference</label>
+            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person or PO ref" />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-2">Add Products</label>
+            <ProductSearchInput
+              onSelect={addProductToItems}
+              placeholder="Search product by name or SKU..."
+              showStock
+              className="w-full"
+            />
+          </div>
+
+          <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-medium">Line Items</label>
-              <button type="button" onClick={addItem} className="text-xs text-blue-600 hover:text-blue-700 font-medium">+ Add Item</button>
+              <label className="text-xs font-medium">Line Items ({items.length})</label>
             </div>
-            <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-muted/40">
-                  <tr>
-                    <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
-                    <th className="w-8"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {items.length === 0 ? (
-                    <tr><td colSpan={5} className="px-3 py-4 text-center text-xs text-muted-foreground">No items added. Click &quot;Add Item&quot; to add products.</td></tr>
-                  ) : items.map((item, index) => (
-                    <tr key={index}>
-                      <td className="px-3 py-2">
-                        <select value={item.product_id} onChange={e => updateItem(index, 'product_id', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm focus:outline-none">
-                          <option value="">Select product</option>
-                          {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
-                        </select>
-                      </td>
-                      <td className="px-3 py-2">
-                        <input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', parseInt(e.target.value) || 1)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
-                      </td>
-                      <td className="px-3 py-2">
-                        <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
-                      </td>
-                      <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price)}</td>
-                      <td className="px-2 py-2">
-                        <button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
-                      </td>
+            {items.length > 0 ? (
+              <div className="border border-border rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                      <th className="w-8"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {items.map((item, index) => (
+                      <tr key={index}>
+                        <td className="px-3 py-2">
+                          <p className="text-sm font-medium text-foreground">{item.product_name}</p>
+                          <p className="text-[10px] text-muted-foreground">{item.product_sku}</p>
+                          {item.available_units && item.available_units.length > 0 && item.selected_unit && (
+                            <select
+                              value={item.selected_unit.id}
+                              onChange={e => {
+                                const unit = item.available_units?.find((u: any) => u.id === e.target.value);
+                                if (unit) updateItem(index, 'selected_unit', unit);
+                              }}
+                              className="mt-1 w-full border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                            >
+                              {item.available_units.map((u: any) => <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.cost_price || u.price)}</option>)}
+                            </select>
+                          )}
+                        </td>
+                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
+                        <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="border border-dashed border-border rounded-lg p-6 text-center text-sm text-muted-foreground">
+                Search and select products above to add them to this purchase order.
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end bg-muted/30 rounded-lg p-3">
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Total</p>
-              <p className="text-lg font-bold text-foreground">{formatCurrency(subtotal)}</p>
+            <div className="text-right w-full max-w-xs space-y-2">
+              <div className="flex justify-between items-center"><p className="text-xs text-muted-foreground">Subtotal</p><p className="text-sm font-semibold text-foreground">{formatCurrency(subtotal)}</p></div>
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Cart Discount %</label>
+                <input type="number" min="0" max="100" step="0.5" value={form.cart_discount_percent || 0} onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+              </div>
+              {(form.cart_discount_percent || 0) > 0 && (
+                <div className="flex justify-between text-xs text-red-500"><span>Cart Discount ({form.cart_discount_percent}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>
+              )}
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Extra Discount ৳</label>
+                <input type="number" min="0" step="0.01" value={form.extra_discount || 0} onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+              </div>
+              {(form.extra_discount || 0) > 0 && (
+                <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>
+              )}
+              <div className="flex justify-between items-center pt-1 border-t border-border"><p className="text-xs font-medium text-muted-foreground">Total</p><p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p></div>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1">Notes</label>
+            <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Internal notes for this purchase order..." />
           </div>
 
           <div className="border border-border rounded-lg p-4">
@@ -614,7 +710,7 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
               </button>
               <button
                 type="button"
-                onClick={() => setForm({ ...form, payment_type: 'full', amount_paid: subtotal })}
+                onClick={() => setForm({ ...form, payment_type: 'full', amount_paid: totalAmount })}
                 className={`p-3 border rounded-lg text-center transition ${form.payment_type === 'full' ? 'border-green-600 bg-green-50 text-green-700' : 'border-border hover:border-gray-300'}`}
               >
                 <CheckCircle className="w-5 h-5 mx-auto mb-1" />
@@ -663,15 +759,15 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
                     <input
                       type="number"
                       min="0.01"
-                      max={subtotal - 0.01}
+                      max={totalAmount - 0.01}
                       step="0.01"
                       value={form.amount_paid}
                       onChange={e => setForm({ ...form, amount_paid: parseFloat(e.target.value) || 0 })}
                       className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
-                      placeholder={`Enter amount (Max: ${formatCurrency(subtotal)})`}
+                      placeholder={`Enter amount (Max: ${formatCurrency(totalAmount)})`}
                     />
                     <p className="text-xs text-green-700 mt-1 font-medium">
-                      Balance Due After Payment: {formatCurrency(subtotal - form.amount_paid)}
+                      Balance Due After Payment: {formatCurrency(totalAmount - form.amount_paid)}
                     </p>
                   </div>
                 )}
@@ -771,17 +867,23 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
                     <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Qty</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Cost</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Disc%</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Total</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
                   {items.length === 0 ? (
-                    <tr><td colSpan={4} className="px-3 py-4 text-center text-xs text-muted-foreground">No items</td></tr>
+                    <tr><td colSpan={5} className="px-3 py-4 text-center text-xs text-muted-foreground">No items</td></tr>
                   ) : items.map((item, idx) => (
                     <tr key={idx}>
-                      <td className="px-3 py-2 text-sm">{item.product?.name || '-'}</td>
+                      <td className="px-3 py-2 text-sm">
+                        <p className="font-medium text-foreground">{item.product?.name || '-'}</p>
+                        {item.product?.sku && <p className="text-[10px] text-muted-foreground">{item.product.sku}</p>}
+                        {item.unit_name && <p className="text-[10px] text-blue-600">{item.unit_name}</p>}
+                      </td>
                       <td className="px-3 py-2 text-sm text-right">{item.quantity}</td>
                       <td className="px-3 py-2 text-sm text-right">{formatCurrency(item.unit_cost || item.unit_price)}</td>
+                      <td className="px-3 py-2 text-sm text-right">{item.discount_percent ? `${item.discount_percent}%` : '-'}</td>
                       <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(item.subtotal)}</td>
                     </tr>
                   ))}
@@ -791,9 +893,25 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
           </div>
 
           <div className="flex justify-end bg-muted/30 rounded-lg p-4">
-            <div className="w-48 space-y-2">
+            <div className="w-56 space-y-2">
               <div className="flex justify-between text-sm">
-                <span className="text-muted-foreground">Total</span>
+                <span className="text-muted-foreground">Subtotal</span>
+                <span>{formatCurrency(Number(order.subtotal) || Number(order.total_amount))}</span>
+              </div>
+              {(Number(order.discount_amount) || 0) > 0 && (
+                <div className="flex justify-between text-sm text-red-500">
+                  <span>Discount</span>
+                  <span>-{formatCurrency(order.discount_amount)}</span>
+                </div>
+              )}
+              {(Number((order as any).extra_discount) || 0) > 0 && (
+                <div className="flex justify-between text-sm text-red-500">
+                  <span>Extra Discount</span>
+                  <span>-{formatCurrency((order as any).extra_discount)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm font-semibold border-t border-border pt-1">
+                <span>Total</span>
                 <span>{formatCurrency(order.total_amount)}</span>
               </div>
               <div className="flex justify-between text-sm">

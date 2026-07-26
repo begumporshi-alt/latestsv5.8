@@ -8,7 +8,7 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
-import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, FileText, FolderKanban, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag } from 'lucide-react';
+import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, FileText, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet } from 'lucide-react';
 import type { Customer } from '@/lib/types';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280'];
@@ -27,7 +27,6 @@ const activityIcons: Record<string, { icon: React.ElementType; color: string }> 
   delivery: { icon: Truck, color: 'text-purple-600 bg-purple-50' },
   product: { icon: Package, color: 'text-teal-600 bg-teal-50' },
   quotation: { icon: FileText, color: 'text-indigo-600 bg-indigo-50' },
-  project: { icon: FolderKanban, color: 'text-pink-600 bg-pink-50' },
   online_order: { icon: ShoppingCart, color: 'text-yellow-600 bg-yellow-50' },
 };
 
@@ -42,8 +41,7 @@ export default function DashboardPage() {
     payables: 0,
     quotationTotal: 0,
     quotationAwaiting: 0,
-    projectTotal: 0,
-    projectActive: 0,
+    totalExpenses: 0,
     deliveryPending: 0,
     deliveryInTransit: 0,
     deliveryDelivered: 0,
@@ -56,7 +54,6 @@ export default function DashboardPage() {
   const [topCustomers, setTopCustomers] = useState<Customer[]>([]);
   const [outstandingDues, setOutstandingDues] = useState<Customer[]>([]);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
-  const [activeProjects, setActiveProjects] = useState<any[]>([]);
   const [recentActivities, setRecentActivities] = useState<any[]>([]);
 
   useEffect(() => {
@@ -70,22 +67,21 @@ export default function DashboardPage() {
 
     const [
       todayInvRes, monthlyInvRes, customersRes, suppliersRes,
-      quotRes, projRes, dlvRes, onlineOrdersRes, topCustRes, duesRes,
-      lowStockRes, activeProjRes, actRes
+      quotRes, dlvRes, onlineOrdersRes, topCustRes, duesRes,
+      lowStockRes, actRes, expensesRes
     ] = await Promise.all([
       supabase.from('invoices').select('total_amount').eq('invoice_date', today).neq('status', 'cancelled'),
       supabase.from('invoices').select('total_amount, created_at').gte('invoice_date', monthStart).neq('status', 'cancelled'),
       supabase.from('customers').select('outstanding_balance'),
       supabase.from('suppliers').select('outstanding_balance'),
       supabase.from('quotations').select('id, status'),
-      supabase.from('projects').select('id, status'),
       supabase.from('deliveries').select('status'),
       supabase.from('online_orders').select('total_amount, status').gte('created_at', monthStart),
       supabase.from('customers').select('*').order('total_purchases', { ascending: false }).limit(5),
       supabase.from('customers').select('*').gt('outstanding_balance', 0).order('outstanding_balance', { ascending: false }).limit(5),
       supabase.from('inventory_items').select('quantity_on_hand, product:products(id, name, sku, min_stock_level, image_url)').lt('quantity_on_hand', 20).limit(5),
-      supabase.from('projects').select('*').eq('status', 'active').order('progress_percent', { ascending: false }).limit(4),
       supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(5),
+      supabase.from('expenses').select('amount').gte('expense_date', monthStart).neq('status', 'cancelled'),
     ]);
 
     // Paginate inventory_items to avoid the 1000-row Supabase default cap
@@ -110,9 +106,9 @@ export default function DashboardPage() {
     const invValue = allInvItems.reduce((s: number, item: any) => s + (Number(item.quantity_on_hand) * Number(item.product?.cost_price || 0)), 0);
 
     const quotations = quotRes.data || [];
-    const projects = projRes.data || [];
     const deliveries = dlvRes.data || [];
     const onlineOrders = onlineOrdersRes.data || [];
+    const totalExpenses = (expensesRes.data || []).reduce((s: number, e: any) => s + Number(e.amount), 0);
 
     const deliveryStats: Record<string, number> = { pending: 0, in_transit: 0, delivered: 0, failed: 0 };
     deliveries.forEach((d: any) => { if (deliveryStats[d.status] !== undefined) deliveryStats[d.status]++; });
@@ -126,8 +122,7 @@ export default function DashboardPage() {
       payables,
       quotationTotal: quotations.length,
       quotationAwaiting: quotations.filter((q: any) => ['sent', 'viewed'].includes(q.status)).length,
-      projectTotal: projects.length,
-      projectActive: projects.filter((p: any) => p.status === 'active').length,
+      totalExpenses,
       deliveryPending: deliveryStats.pending,
       deliveryInTransit: deliveryStats.in_transit,
       deliveryDelivered: deliveryStats.delivered,
@@ -140,7 +135,6 @@ export default function DashboardPage() {
     setLowStockItems(lowStock.slice(0, 3));
     setTopCustomers(topCustRes.data || []);
     setOutstandingDues(duesRes.data || []);
-    setActiveProjects(activeProjRes.data || []);
     setRecentActivities(actRes.data || []);
 
     const chartData = await getSalesChartData();
@@ -208,7 +202,7 @@ export default function DashboardPage() {
     { label: 'Receivables', value: formatCurrency(stats.receivables), icon: Receipt, bg: 'bg-red-50', color: 'text-red-500' },
     { label: 'Payables', value: formatCurrency(stats.payables), icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500' },
     { label: 'Quotations', value: String(stats.quotationTotal), icon: FileText, bg: 'bg-cyan-50', color: 'text-cyan-500' },
-    { label: 'Active Projects', value: String(stats.projectActive), icon: FolderKanban, bg: 'bg-emerald-50', color: 'text-emerald-500' },
+    { label: 'Expenses', value: formatCurrency(stats.totalExpenses), icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500' },
   ];
 
   return (
@@ -348,7 +342,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold text-foreground">Low Stock Alert</h3>
@@ -367,33 +361,6 @@ export default function DashboardPage() {
                 <div className="text-right shrink-0">
                   <p className="text-xs font-bold text-red-500">{item.quantity_on_hand} pcs</p>
                   <p className="text-[10px] text-muted-foreground">Min: {item.product?.min_stock_level}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-foreground">Active Projects</h3>
-            <Link href="/projects" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
-          </div>
-          <div className="space-y-3">
-            {(activeProjects.length > 0 ? activeProjects : []).map((p: any) => (
-              <div key={p.id} className="flex items-center gap-2.5">
-                <div className="w-10 h-10 rounded-lg overflow-hidden bg-slate-100 shrink-0">
-                  {p.image_url ? (
-                    <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center"><FolderKanban className="w-4 h-4 text-slate-400" /></div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-foreground truncate">{p.name}</p>
-                  <div className="mt-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full ${p.progress_percent === 100 ? 'bg-green-500' : p.progress_percent >= 70 ? 'bg-blue-500' : p.progress_percent >= 40 ? 'bg-amber-500' : 'bg-red-500'}`} style={{ width: `${p.progress_percent}%` }} />
-                  </div>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">{p.progress_percent}%</p>
                 </div>
               </div>
             ))}
@@ -430,6 +397,21 @@ export default function DashboardPage() {
             })}
           </div>
         </div>
+
+        <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-foreground">Outstanding Dues</h3>
+            <Link href="/crm" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
+          </div>
+          <div className="space-y-2.5">
+            {(outstandingDues.length > 0 ? outstandingDues : []).slice(0, 5).map((c) => (
+              <div key={c.id} className="flex items-center justify-between">
+                <Link href={`/crm/${c.id}`} className="text-sm text-foreground truncate max-w-[130px] hover:text-blue-600 transition">{c.name}</Link>
+                <span className="text-sm font-semibold text-red-600">{formatCurrency(c.outstanding_balance)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
@@ -451,8 +433,8 @@ export default function DashboardPage() {
             <p className="text-lg font-bold text-foreground">{stats.deliveryPending + stats.deliveryInTransit}</p>
           </div>
           <div className="bg-muted/40 rounded-xl p-4 text-center">
-            <p className="text-xs text-muted-foreground mb-1">Active Projects</p>
-            <p className="text-lg font-bold text-foreground">{stats.projectActive}</p>
+            <p className="text-xs text-muted-foreground mb-1">Monthly Expenses</p>
+            <p className="text-lg font-bold text-foreground">{formatCurrency(stats.totalExpenses)}</p>
           </div>
         </div>
       </div>
