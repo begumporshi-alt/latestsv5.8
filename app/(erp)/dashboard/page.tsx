@@ -81,7 +81,7 @@ export default function DashboardPage() {
       supabase.from('customers').select('*').gt('outstanding_balance', 0).order('outstanding_balance', { ascending: false }).limit(5),
       supabase.from('inventory_items').select('quantity_on_hand, product:products(id, name, sku, min_stock_level, image_url)').lt('quantity_on_hand', 20).limit(5),
       supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(5),
-      supabase.from('expenses').select('amount').gte('expense_date', monthStart).neq('status', 'cancelled'),
+      supabase.from('journal_entries').select('total_debit, entry_date').eq('reference_type', 'manual').eq('is_posted', true).gte('entry_date', monthStart),
     ]);
 
     // Paginate inventory_items to avoid the 1000-row Supabase default cap
@@ -108,7 +108,7 @@ export default function DashboardPage() {
     const quotations = quotRes.data || [];
     const deliveries = dlvRes.data || [];
     const onlineOrders = onlineOrdersRes.data || [];
-    const totalExpenses = (expensesRes.data || []).reduce((s: number, e: any) => s + Number(e.amount), 0);
+    const totalExpenses = (expensesRes.data || []).reduce((s: number, e: any) => s + Number(e.total_debit), 0);
 
     const deliveryStats: Record<string, number> = { pending: 0, in_transit: 0, delivered: 0, failed: 0 };
     deliveries.forEach((d: any) => { if (deliveryStats[d.status] !== undefined) deliveryStats[d.status]++; });

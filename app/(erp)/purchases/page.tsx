@@ -91,23 +91,79 @@ export default function PurchasesPage() {
       return;
     }
 
-    // Reverse supplier outstanding balance for unpaid portion
+    // Reverse supplier outstanding balance and total_purchases
     const balance = Number(order.total_amount) - Number(order.amount_paid);
-    if (balance > 0) {
-      const { data: supplier } = await supabase
+    const { data: supplier } = await supabase
+      .from('suppliers')
+      .select('outstanding_balance, total_purchases')
+      .eq('id', order.supplier_id)
+      .single();
+    if (supplier) {
+      await supabase
         .from('suppliers')
-        .select('outstanding_balance, total_purchases')
-        .eq('id', order.supplier_id)
-        .single();
-      if (supplier) {
-        await supabase
-          .from('suppliers')
-          .update({
-            outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) - balance),
-            total_purchases: Math.max(0, (supplier.total_purchases || 0) - Number(order.total_amount)),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', order.supplier_id);
+        .update({
+          outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) - balance),
+          total_purchases: Math.max(0, (supplier.total_purchases || 0) - Number(order.total_amount)),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', order.supplier_id);
+    }
+
+    // Mark any payments for this PO as cancelled
+    if (Number(order.amount_paid) > 0) {
+      await supabase
+        .from('payments')
+        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+        .eq('reference_type', 'purchase_order')
+        .eq('reference_id', order.id);
+    }
+
+    // If order was received, reverse stock additions
+    if (order.status === 'received' || order.status === 'partially_received') {
+      const { data: poItems } = await supabase
+        .from('purchase_order_items')
+        .select('product_id, quantity, warehouse_id, base_quantity')
+        .eq('purchase_order_id', order.id);
+
+      const { data: whData } = await supabase
+        .from('warehouses')
+        .select('id')
+        .eq('is_default', true)
+        .limit(1);
+      const defaultWhId = whData && whData.length > 0 ? whData[0].id : null;
+
+      for (const item of poItems || []) {
+        const warehouseId = item.warehouse_id || defaultWhId;
+        if (!warehouseId) continue;
+        const qtyToReverse = Number(item.base_quantity || item.quantity);
+
+        const { data: invData } = await supabase
+          .from('inventory_items')
+          .select('id, quantity_on_hand')
+          .eq('product_id', item.product_id)
+          .eq('warehouse_id', warehouseId)
+          .limit(1);
+
+        if (invData && invData.length > 0) {
+          await supabase
+            .from('inventory_items')
+            .update({
+              quantity_on_hand: Math.max(0, (invData[0].quantity_on_hand || 0) - qtyToReverse),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', invData[0].id);
+        }
+
+        await supabase.from('stock_movements').insert({
+          product_id: item.product_id,
+          warehouse_id: warehouseId,
+          movement_type: 'purchase_return',
+          quantity: -qtyToReverse,
+          reference_type: 'purchase_order',
+          reference_id: order.id,
+          reference_number: order.po_number,
+          notes: 'Stock reversed on PO cancellation',
+        });
       }
     }
 
@@ -130,68 +186,62 @@ export default function PurchasesPage() {
     if (newStatus === 'received' || newStatus === 'partially_received') {
       const { data: poItems } = await supabase
         .from('purchase_order_items')
-        .select('*, product_id, quantity, unit_cost')
+        .select('*, product_id, quantity, unit_cost, warehouse_id, unit_name, unit_conversion_factor, base_quantity')
         .eq('purchase_order_id', order.id);
 
+      // Find default warehouse once
+      const { data: whData } = await supabase
+        .from('warehouses')
+        .select('id')
+        .eq('is_default', true)
+        .limit(1);
+      const defaultWhId = whData && whData.length > 0 ? whData[0].id : null;
+
       for (const item of poItems || []) {
-        // Find existing inventory for this product
+        const warehouseId = item.warehouse_id || defaultWhId;
+        if (!warehouseId) continue;
+
+        const qtyToAdd = Number(item.base_quantity || item.quantity);
+
+        // Find existing inventory for this product+warehouse
         const { data: invData } = await supabase
           .from('inventory_items')
           .select('id, quantity_on_hand')
           .eq('product_id', item.product_id)
+          .eq('warehouse_id', warehouseId)
           .limit(1);
 
         if (invData && invData.length > 0) {
-          // Update existing inventory
           const currentQty = invData[0].quantity_on_hand || 0;
           await supabase
             .from('inventory_items')
             .update({
-              quantity_on_hand: currentQty + Number(item.quantity),
+              quantity_on_hand: currentQty + qtyToAdd,
               updated_at: new Date().toISOString()
             })
             .eq('id', invData[0].id);
         } else {
-          // Find default warehouse
-          const { data: whData } = await supabase
-            .from('warehouses')
-            .select('id')
-            .eq('is_default', true)
-            .limit(1);
-
-          const warehouseId = whData && whData.length > 0 ? whData[0].id : null;
-          if (warehouseId) {
-            await supabase.from('inventory_items').insert({
-              product_id: item.product_id,
-              warehouse_id: warehouseId,
-              quantity_on_hand: Number(item.quantity),
-              quantity_reserved: 0,
-              quantity_incoming: 0,
-            });
-          }
+          await supabase.from('inventory_items').insert({
+            product_id: item.product_id,
+            warehouse_id: warehouseId,
+            quantity_on_hand: qtyToAdd,
+            quantity_reserved: 0,
+            quantity_incoming: 0,
+          });
         }
 
         // Record stock movement
-        const { data: warehouse } = await supabase
-          .from('warehouses')
-          .select('id')
-          .eq('is_default', true)
-          .limit(1);
-        const warehouseId = warehouse && warehouse.length > 0 ? warehouse[0].id : null;
-
-        if (warehouseId) {
-          await supabase.from('stock_movements').insert({
-            product_id: item.product_id,
-            warehouse_id: warehouseId,
-            movement_type: 'purchase',
-            quantity: Number(item.quantity),
-            unit_cost: item.unit_cost,
-            reference_type: 'purchase_order',
-            reference_id: order.id,
-            reference_number: order.po_number,
-            notes: 'Purchase received',
-          });
-        }
+        await supabase.from('stock_movements').insert({
+          product_id: item.product_id,
+          warehouse_id: warehouseId,
+          movement_type: 'purchase',
+          quantity: qtyToAdd,
+          unit_cost: item.unit_cost,
+          reference_type: 'purchase_order',
+          reference_id: order.id,
+          reference_number: order.po_number,
+          notes: 'Purchase received',
+        });
       }
     }
 
@@ -384,10 +434,13 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
   const [showAddSupplier, setShowAddSupplier] = useState(false);
   const [supplierList, setSupplierList] = useState(suppliers);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
 
   useEffect(() => {
     supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
       .then(({ data }) => { if (data) setPaymentMethods(data); });
+    supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('name')
+      .then(({ data }) => { if (data) setWarehouses(data as any); });
   }, []);
 
   async function handleAddSupplier(newSupplierId: string) {
@@ -405,10 +458,11 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
     const unitPrice = defaultUnit ? defaultUnit.cost_price : (product.cost_price || 0);
     const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
 
-    // Deduplicate: if same product+unit already exists, increment quantity
+    // Deduplicate: if same product+unit+warehouse already exists, increment quantity
     const existingIdx = items.findIndex(it =>
       it.product_id === product.id &&
-      (!defaultUnit || (it.selected_unit && it.selected_unit.id === defaultUnit.id))
+      (!defaultUnit || (it.selected_unit && it.selected_unit.id === defaultUnit.id)) &&
+      it.warehouse_id === (warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '')
     );
     if (existingIdx >= 0) {
       const updated = [...items];
@@ -416,6 +470,9 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
       setItems(updated);
       return;
     }
+
+    // Pick default warehouse (first warehouse or the default one)
+    const defaultWarehouseId = warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '';
 
     setItems([...items, {
       product_id: product.id,
@@ -430,6 +487,7 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
       available_units: units,
       base_quantity: baseQty,
       cost_price: unitPrice,
+      warehouse_id: defaultWarehouseId,
     }]);
   }
 
@@ -506,6 +564,7 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         unit_name: item.selected_unit?.unit_name || item.product_unit || null,
         unit_conversion_factor: item.selected_unit?.conversion_factor || null,
         base_quantity: item.base_quantity,
+        warehouse_id: item.warehouse_id || null,
       };
     });
 
@@ -618,6 +677,7 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
                   <thead className="bg-muted/40">
                     <tr>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Warehouse</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
@@ -643,6 +703,16 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
                               {item.available_units.map((u: any) => <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.cost_price || u.price)}</option>)}
                             </select>
                           )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <select
+                            value={item.warehouse_id || ''}
+                            onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
+                            className="w-full border border-border rounded px-2 py-1 text-xs focus:outline-none"
+                          >
+                            <option value="">Default</option>
+                            {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                          </select>
                         </td>
                         <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
@@ -1097,39 +1167,65 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
     order_date: order.order_date,
     expected_date: order.expected_date || '',
     notes: (order as any).notes || '',
+    reference: (order as any).reference || '',
+    cart_discount_percent: Number((order as any).cart_discount_percent) || 0,
+    extra_discount: Number((order as any).extra_discount) || 0,
   });
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [supplierList, setSupplierList] = useState(suppliers);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase
-        .from('purchase_order_items')
-        .select('*, product:products(name, sku)')
-        .eq('purchase_order_id', order.id);
-      setItems((data || []).map((it: any) => ({
-        id: it.id,
-        product_id: it.product_id,
-        quantity: Number(it.quantity),
-        unit_price: Number(it.unit_cost),
-      })));
+      const [itemsRes, whRes] = await Promise.all([
+        supabase
+          .from('purchase_order_items')
+          .select('*, product:products(name, sku, unit, base_unit, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order))')
+          .eq('purchase_order_id', order.id),
+        supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('name'),
+      ]);
+      setWarehouses((whRes.data as any) || []);
+      setItems((itemsRes.data || []).map((it: any) => {
+        const prod = Array.isArray(it.product) ? it.product[0] : it.product;
+        const units = Array.isArray(it.units) ? it.units : (prod?.units || []);
+        const selectedUnit = units.find((u: any) => u.unit_name === it.unit_name) || null;
+        return {
+          id: it.id,
+          product_id: it.product_id,
+          product_name: prod?.name || '—',
+          product_sku: prod?.sku || '',
+          product_unit: prod?.unit,
+          product_base_unit: prod?.base_unit,
+          quantity: Number(it.quantity),
+          unit_price: Number(it.unit_cost),
+          discount_percent: Number(it.discount_percent) || 0,
+          selected_unit: selectedUnit,
+          available_units: units.filter((u: any) => u.is_active),
+          base_quantity: Number(it.base_quantity) || Number(it.quantity),
+          cost_price: selectedUnit?.cost_price || 0,
+          warehouse_id: it.warehouse_id || '',
+        };
+      }));
       setLoading(false);
     })();
   }, [order.id]);
 
-  function addItem() {
-    setItems([...items, { product_id: '', quantity: 1, unit_price: 0 }]);
-  }
-
   function updateItem(index: number, field: string, value: any) {
     const updated = [...items];
-    if (field === 'product_id') {
-      const product = products.find(p => p.id === value);
-      updated[index] = { ...updated[index], product_id: value, unit_price: product?.cost_price || 0 };
+    if (field === 'selected_unit') {
+      const unit = value as ProductUnit;
+      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0 };
+    } else if (field === 'quantity') {
+      const qty = parseInt(value) || 1;
+      const unit = updated[index].selected_unit;
+      updated[index] = { ...updated[index], quantity: qty, base_quantity: unit ? convertToBaseUnit(qty, unit) : qty };
+    } else if (field === 'discount_percent') {
+      updated[index] = { ...updated[index], discount_percent: Math.min(100, Math.max(0, parseFloat(value) || 0)) };
     } else {
-      updated[index] = { ...updated[index], [field]: value };
+      (updated[index] as any)[field] = value;
     }
     setItems(updated);
   }
@@ -1138,20 +1234,58 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
     setItems(items.filter((_, i) => i !== index));
   }
 
-  const subtotal = items.reduce((sum, item) => sum + (item.quantity * (item.unit_price || 0)), 0);
+  function addProductToItems(product: any) {
+    const units = (product.units || []).filter((u: any) => u.is_active);
+    const multi = isMultiUnitEnabled(product);
+    const defaultUnit = multi ? getDefaultSaleUnit(units) : null;
+    const unitPrice = defaultUnit ? defaultUnit.cost_price : (product.cost_price || 0);
+    const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
+    const defaultWhId = warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '';
+
+    const existingIdx = items.findIndex(it =>
+      it.product_id === product.id &&
+      (!defaultUnit || (it.selected_unit && it.selected_unit.id === defaultUnit.id)) &&
+      it.warehouse_id === defaultWhId
+    );
+    if (existingIdx >= 0) {
+      const updated = [...items];
+      updated[existingIdx] = { ...updated[existingIdx], quantity: updated[existingIdx].quantity + 1 };
+      setItems(updated);
+      return;
+    }
+
+    setItems([...items, {
+      product_id: product.id,
+      product_name: product.name,
+      product_sku: product.sku,
+      product_unit: product.unit,
+      product_base_unit: product.base_unit,
+      quantity: 1,
+      unit_price: unitPrice,
+      discount_percent: 0,
+      selected_unit: defaultUnit,
+      available_units: units,
+      base_quantity: baseQty,
+      cost_price: unitPrice,
+      warehouse_id: defaultWhId,
+    }]);
+  }
+
+  const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.unit_price * (1 - item.discount_percent / 100)), 0);
+  const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
+  const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!form.supplier_id) { setError('Please select a supplier'); return; }
     if (items.length === 0) { setError('Please add at least one item'); return; }
-    if (items.some(it => !it.product_id)) { setError('All items must have a product selected'); return; }
 
     setSaving(true);
     setError('');
 
     const oldTotal = Number(order.total_amount);
     const oldPaid = Number(order.amount_paid);
-    const totalDiff = subtotal - oldTotal;
+    const totalDiff = totalAmount - oldTotal;
 
     const { error: poError } = await supabase
       .from('purchase_orders')
@@ -1160,30 +1294,41 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
         order_date: form.order_date,
         expected_date: form.expected_date || null,
         subtotal,
-        total_amount: subtotal,
+        cart_discount_percent: form.cart_discount_percent || 0,
+        extra_discount: form.extra_discount || 0,
+        discount_amount: cartDiscountAmount,
+        total_amount: totalAmount,
         notes: form.notes || null,
+        reference: form.reference || null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', order.id);
 
     if (poError) { setError(poError.message); setSaving(false); return; }
 
-    // Delete old items and insert new ones
     await supabase.from('purchase_order_items').delete().eq('purchase_order_id', order.id);
-    const poItems = items.map(item => ({
-      purchase_order_id: order.id,
-      product_id: item.product_id,
-      quantity: item.quantity,
-      unit_cost: item.unit_price,
-      subtotal: item.quantity * item.unit_price,
-    }));
+    const poItems = items.map(item => {
+      const discount = (item.unit_price * item.quantity * item.discount_percent) / 100;
+      return {
+        purchase_order_id: order.id,
+        product_id: item.product_id,
+        quantity: item.quantity,
+        unit_cost: item.unit_price,
+        discount_percent: item.discount_percent || 0,
+        subtotal: item.quantity * item.unit_price - discount,
+        unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+        unit_conversion_factor: item.selected_unit?.conversion_factor || null,
+        base_quantity: item.base_quantity,
+        warehouse_id: item.warehouse_id || null,
+      };
+    });
     const { error: itemsError } = await supabase.from('purchase_order_items').insert(poItems);
     if (itemsError) { setError(itemsError.message); setSaving(false); return; }
 
-    // Adjust supplier outstanding balance if total changed and PO isn't fully paid
     if (totalDiff !== 0) {
-      const unpaidDiff = subtotal - oldPaid;
+      const newUnpaid = totalAmount - oldPaid;
       const oldUnpaid = oldTotal - oldPaid;
+      const balanceAdjustment = newUnpaid - oldUnpaid;
       const { data: supplier } = await supabase
         .from('suppliers')
         .select('outstanding_balance, total_purchases')
@@ -1191,7 +1336,6 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
         .single();
 
       if (supplier) {
-        const balanceAdjustment = unpaidDiff - oldUnpaid;
         await supabase
           .from('suppliers')
           .update({
@@ -1238,10 +1382,12 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           <div className="grid grid-cols-3 gap-4">
             <div className="col-span-2">
               <label className="block text-xs font-medium mb-1">Supplier *</label>
-              <select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
-                <option value="">Select supplier</option>
-                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
-              </select>
+              <SupplierSearchInput
+                onSelect={(s) => setForm({ ...form, supplier_id: s.id })}
+                selectedName={supplierList.find(s => s.id === form.supplier_id)?.name}
+                placeholder="Search supplier..."
+                className="w-full"
+              />
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -1256,56 +1402,113 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-medium">Line Items</label>
-              <button type="button" onClick={addItem} className="text-xs text-blue-600 hover:text-blue-700 font-medium">+ Add Item</button>
-            </div>
-            <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full">
-                <thead className="bg-muted/40">
-                  <tr>
-                    <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
-                    <th className="w-8"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {items.length === 0 ? (
-                    <tr><td colSpan={5} className="px-3 py-4 text-center text-xs text-muted-foreground">No items. Click &quot;Add Item&quot;.</td></tr>
-                  ) : items.map((item, index) => (
-                    <tr key={index}>
-                      <td className="px-3 py-2">
-                        <select value={item.product_id} onChange={e => updateItem(index, 'product_id', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm focus:outline-none">
-                          <option value="">Select product</option>
-                          {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.sku})</option>)}
-                        </select>
-                      </td>
-                      <td className="px-3 py-2">
-                        <input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', parseInt(e.target.value) || 1)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
-                      </td>
-                      <td className="px-3 py-2">
-                        <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
-                      </td>
-                      <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price)}</td>
-                      <td className="px-2 py-2">
-                        <button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <label className="block text-xs font-medium mb-1">Reference</label>
+            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person or PO ref" />
           </div>
 
-          <div className="flex justify-between items-center bg-muted/30 rounded-lg p-3">
-            <div className="text-sm text-muted-foreground">
-              Previous Total: <span className="font-semibold text-foreground">{formatCurrency(Number(order.total_amount))}</span>
+          <div>
+            <label className="block text-xs font-medium mb-2">Add Products</label>
+            <ProductSearchInput
+              onSelect={addProductToItems}
+              placeholder="Search product by name or SKU..."
+              showStock
+              className="w-full"
+            />
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-medium">Line Items ({items.length})</label>
             </div>
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">New Total</p>
-              <p className="text-lg font-bold text-foreground">{formatCurrency(subtotal)}</p>
+            {items.length > 0 ? (
+              <div className="border border-border rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Warehouse</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                      <th className="w-8"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {items.map((item, index) => (
+                      <tr key={index}>
+                        <td className="px-3 py-2">
+                          <p className="text-sm font-medium text-foreground">{item.product_name}</p>
+                          <p className="text-[10px] text-muted-foreground">{item.product_sku}</p>
+                          {item.available_units && item.available_units.length > 0 && item.selected_unit && (
+                            <select
+                              value={item.selected_unit.id}
+                              onChange={e => {
+                                const unit = item.available_units?.find((u: any) => u.id === e.target.value);
+                                if (unit) updateItem(index, 'selected_unit', unit);
+                              }}
+                              className="mt-1 w-full border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                            >
+                              {item.available_units.map((u: any) => <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.cost_price || u.price)}</option>)}
+                            </select>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          <select
+                            value={item.warehouse_id || ''}
+                            onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
+                            className="w-full border border-border rounded px-2 py-1 text-xs focus:outline-none"
+                          >
+                            <option value="">Default</option>
+                            {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
+                        <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="border border-dashed border-border rounded-lg p-6 text-center text-sm text-muted-foreground">
+                Search and select products above to add them to this purchase order.
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-end bg-muted/30 rounded-lg p-3">
+            <div className="text-right w-full max-w-xs space-y-2">
+              <div className="flex justify-between items-center"><p className="text-xs text-muted-foreground">Subtotal</p><p className="text-sm font-semibold text-foreground">{formatCurrency(subtotal)}</p></div>
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Cart Discount %</label>
+                <input type="number" min="0" max="100" step="0.5" value={form.cart_discount_percent || 0} onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+              </div>
+              {(form.cart_discount_percent || 0) > 0 && (
+                <div className="flex justify-between text-xs text-red-500"><span>Cart Discount ({form.cart_discount_percent}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>
+              )}
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Extra Discount ৳</label>
+                <input type="number" min="0" step="0.01" value={form.extra_discount || 0} onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+              </div>
+              {(form.extra_discount || 0) > 0 && (
+                <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>
+              )}
+              <div className="flex justify-between items-center pt-1 border-t border-border">
+                <p className="text-xs font-medium text-muted-foreground">New Total</p>
+                <p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Previous Total</span>
+                <span>{formatCurrency(Number(order.total_amount))}</span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-muted-foreground">Already Paid</span>
+                <span className="text-green-600">{formatCurrency(Number(order.amount_paid))}</span>
+              </div>
             </div>
           </div>
 
