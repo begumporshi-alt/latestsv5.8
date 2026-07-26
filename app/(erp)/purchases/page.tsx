@@ -84,15 +84,14 @@ export default function PurchasesPage() {
   async function cancelOrder(order: PurchaseOrderWithSupplier) {
     const { error } = await supabase
       .from('purchase_orders')
-      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .update({ status: 'cancelled', amount_paid: 0, updated_at: new Date().toISOString() })
       .eq('id', order.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
       return;
     }
 
-    // Reverse supplier outstanding balance and total_purchases
-    const balance = Number(order.total_amount) - Number(order.amount_paid);
+    // Reverse full supplier outstanding balance and total_purchases
     const { data: supplier } = await supabase
       .from('suppliers')
       .select('outstanding_balance, total_purchases')
@@ -102,7 +101,7 @@ export default function PurchasesPage() {
       await supabase
         .from('suppliers')
         .update({
-          outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) - balance),
+          outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) - Number(order.total_amount)),
           total_purchases: Math.max(0, (supplier.total_purchases || 0) - Number(order.total_amount)),
           updated_at: new Date().toISOString(),
         })
@@ -242,6 +241,20 @@ export default function PurchasesPage() {
           reference_number: order.po_number,
           notes: 'Purchase received',
         });
+      }
+
+      // Update received_quantity on all PO items to match ordered quantity
+      await supabase
+        .from('purchase_order_items')
+        .update({ received_quantity: poItems?.map((it: any) => ({ id: it.id, qty: Number(it.base_quantity || it.quantity) })) })
+        .in('id', poItems?.map((it: any) => it.id) || []);
+
+      // Set received_quantity per item individually (bulk update with different values not supported)
+      for (const item of (poItems || [])) {
+        await supabase
+          .from('purchase_order_items')
+          .update({ received_quantity: Number(item.base_quantity || item.quantity) })
+          .eq('id', item.id);
       }
     }
 
@@ -1326,9 +1339,22 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
     if (itemsError) { setError(itemsError.message); setSaving(false); return; }
 
     if (totalDiff !== 0) {
-      const newUnpaid = totalAmount - oldPaid;
+      // Cap amount_paid at the new total to prevent negative balances
+      const cappedPaid = Math.min(oldPaid, totalAmount);
+      const overpaymentRefund = oldPaid - cappedPaid;
+
+      const newUnpaid = totalAmount - cappedPaid;
       const oldUnpaid = oldTotal - oldPaid;
       const balanceAdjustment = newUnpaid - oldUnpaid;
+
+      // Update PO amount_paid if it needs capping
+      if (overpaymentRefund > 0) {
+        await supabase
+          .from('purchase_orders')
+          .update({ amount_paid: cappedPaid })
+          .eq('id', order.id);
+      }
+
       const { data: supplier } = await supabase
         .from('suppliers')
         .select('outstanding_balance, total_purchases')
@@ -1339,7 +1365,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
         await supabase
           .from('suppliers')
           .update({
-            outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) + balanceAdjustment),
+            outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) + balanceAdjustment - overpaymentRefund),
             total_purchases: Math.max(0, (supplier.total_purchases || 0) + totalDiff),
             updated_at: new Date().toISOString(),
           })

@@ -391,6 +391,7 @@ export default function JournalPage() {
             { value: 'payment', label: 'Payments' },
             { value: 'grn', label: 'Goods Receipt' },
             { value: 'purchase_receipt', label: 'Purchase Receipt' },
+            { value: 'purchase_return', label: 'Purchase Return' },
             { value: 'purchase_cancellation', label: 'PO Cancellation' },
             { value: 'manual', label: 'Manual' },
             { value: 'opening_balance', label: 'Opening' },
@@ -1042,6 +1043,9 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
           } else if (entry.reference_type === 'purchase_receipt') {
             const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'PO', label: data.po_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_return') {
+            const { data } = await supabase.from('purchase_returns').select('return_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'Return', label: data.return_number, detail: data.status });
           } else if (entry.reference_type === 'purchase_cancellation') {
             const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'PO', label: data.po_number, detail: 'Cancelled' });
@@ -1344,6 +1348,9 @@ function DeleteJournalEntryModal({ entry, accounts, onClose, onDeleted }: {
           } else if (entry.reference_type === 'purchase_receipt') {
             const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'PO', label: data.po_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_return') {
+            const { data } = await supabase.from('purchase_returns').select('return_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'Return', label: data.return_number, detail: data.status });
           } else if (entry.reference_type === 'purchase_cancellation') {
             const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'PO', label: data.po_number, detail: 'Cancelled' });

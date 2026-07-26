@@ -265,7 +265,6 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
     })));
     setStep(2);
   }
-
   const filteredPOs = purchaseOrders.filter(po =>
     !search ||
     po.po_number.toLowerCase().includes(search.toLowerCase()) ||
@@ -289,14 +288,13 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
       const returnNumber = `PRET-${Date.now().toString().slice(-6)}`;
       let totalRefund = 0;
 
-      // Get default warehouse
-      const { data: warehouse } = await supabase
+      // Get default warehouse as fallback
+      const { data: defWarehouse } = await supabase
         .from('warehouses')
         .select('id')
         .eq('is_default', true)
         .maybeSingle();
-
-      const warehouseId = warehouse?.id || '11000000-0000-0000-0000-000000000001';
+      const defaultWarehouseId = defWarehouse?.id || '11000000-0000-0000-0000-000000000001';
 
       // Build return items for insertion
       const returnItemRows: any[] = [];
@@ -306,6 +304,9 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
 
         const refundAmount = qty * item.unit_cost;
         totalRefund += refundAmount;
+
+        // Use the PO item's warehouse, fall back to default
+        const itemWarehouseId = (item as any).warehouse_id || defaultWarehouseId;
 
         returnItemRows.push({
           purchase_return_id: returnId,
@@ -320,7 +321,7 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
         await supabase.from('stock_movements').insert({
           tenant_id: '00000000-0000-0000-0000-000000000001',
           product_id: item.product_id,
-          warehouse_id: warehouseId,
+          warehouse_id: itemWarehouseId,
           movement_type: 'return_out',
           quantity: -qty,
           unit_cost: item.unit_cost,
@@ -330,12 +331,12 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
           notes: reason || `Return to supplier from PO ${selectedPO.po_number}`,
         });
 
-        // Update inventory - reduce stock
+        // Update inventory - reduce stock from the correct warehouse
         const { data: invItem } = await supabase
           .from('inventory_items')
           .select('id, quantity_on_hand')
           .eq('product_id', item.product_id)
-          .eq('warehouse_id', warehouseId)
+          .eq('warehouse_id', itemWarehouseId)
           .maybeSingle();
 
         if (invItem) {
@@ -345,9 +346,10 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
           }).eq('id', invItem.id);
         }
 
-        // Update received quantity on PO item
+        // Update received quantity on PO item (fall back to quantity if received_quantity was 0)
+        const currentReceived = Number(item.received_quantity) || Number(item.quantity);
         await supabase.from('purchase_order_items').update({
-          received_quantity: Math.max(0, item.received_quantity - qty),
+          received_quantity: Math.max(0, currentReceived - qty),
         }).eq('id', item.id);
       }
 
@@ -357,7 +359,7 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
         return_number: returnNumber,
         purchase_order_id: selectedPO.id,
         supplier_id: selectedPO.supplier_id,
-        warehouse_id: warehouseId,
+        warehouse_id: defaultWarehouseId,
         return_date: new Date().toISOString().split('T')[0],
         total_amount: totalRefund,
         status: 'completed',
@@ -365,6 +367,34 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
 
       // Insert return items
       await supabase.from('purchase_return_items').insert(returnItemRows);
+
+      // Post journal entry: Dr. Accounts Payable / Cr. Inventory
+      const { data: apAccount } = await supabase.from('accounts').select('id').eq('code', '2000').maybeSingle();
+      const { data: invAccount } = await supabase.from('accounts').select('id').eq('code', '1200').maybeSingle();
+      if (apAccount && invAccount && totalRefund > 0) {
+        const { data: jeNumber } = await supabase.rpc('get_next_journal_number');
+        const { data: je } = await supabase.from('journal_entries').insert({
+          entry_number: jeNumber || `JE-${Date.now().toString().slice(-6)}`,
+          entry_date: new Date().toISOString().split('T')[0],
+          description: `Purchase Return - ${returnNumber}`,
+          reference_type: 'purchase_return',
+          reference_id: returnId,
+          total_debit: totalRefund,
+          total_credit: totalRefund,
+          is_posted: true,
+          supplier_id: selectedPO.supplier_id,
+        }).select().single();
+
+        if (je) {
+          await supabase.from('journal_lines').insert([
+            { journal_entry_id: je.id, account_id: apAccount.id, debit: totalRefund, credit: 0, description: `AP reduced - ${returnNumber}`, sort_order: 0 },
+            { journal_entry_id: je.id, account_id: invAccount.id, debit: 0, credit: totalRefund, description: `Inventory returned - ${returnNumber}`, sort_order: 1 },
+          ]);
+          // Update account balances
+          await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: totalRefund });
+          await supabase.rpc('increment_account_balance', { p_account_id: invAccount.id, p_delta: -totalRefund });
+        }
+      }
 
       // Update PO amount_paid
       const newAmountPaid = Math.max(0, selectedPO.amount_paid - totalRefund);
@@ -461,17 +491,17 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
                       <div className="flex items-center justify-between mb-2">
                         <div>
                           <p className="font-medium text-foreground text-sm">{item.product?.name}</p>
-                          <p className="text-xs text-muted-foreground">SKU: {item.product?.sku} | Received: {item.received_quantity}</p>
+                          <p className="text-xs text-muted-foreground">SKU: {item.product?.sku} | Received: {item.received_quantity || item.quantity}</p>
                         </div>
                         <p className="font-semibold">{formatCurrency(item.unit_cost)}/unit</p>
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="flex-1">
-                          <label className="text-xs text-muted-foreground">Return Qty (max: {item.received_quantity})</label>
+                          <label className="text-xs text-muted-foreground">Return Qty (max: {item.received_quantity || item.quantity})</label>
                           <input
                             type="number"
                             min="0"
-                            max={item.received_quantity}
+                            max={item.received_quantity || item.quantity}
                             value={returnItems[item.id]?.qty || 0}
                             onChange={e => setReturnItems({
                               ...returnItems,
