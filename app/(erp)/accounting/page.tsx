@@ -224,17 +224,21 @@ export default function AccountingPage() {
 
   const totalAssets = assets.reduce((s, a) => s + Number(a.balance), 0);
   const totalLiabilities = liabilities.reduce((s, a) => s + Number(a.balance), 0);
-  // Revenue net of contra-revenue (Sales Returns 4050, Discount Given 4200) and COGS (5000)
-  const CONTRA_REVENUE_CODES = new Set(['4050', '4200', '5000']);
+  // Contra-revenue & COGS accounts: treated as debit-normal (expense type) but excluded from operating expenses
+  // 4050 = Sales Returns & Allowances, 4100 = Sales Returns & Allowances (legacy), 4200 = Discount Given, 5000 = COGS
+  const COGS_RETURN_CODES = new Set(['4050', '4100', '4200', '5000']);
   const netRevenue = revenue.reduce((s, a) => s + Number(a.balance), 0);
   const operatingExpenses = expenses
-    .filter(a => !CONTRA_REVENUE_CODES.has(a.code))
+    .filter(a => !COGS_RETURN_CODES.has(a.code))
     .reduce((s, a) => s + Number(a.balance), 0);
   // COGS account balance can be negative if reversal credits exceed original debits. Use max(0, balance) for display.
   const cogsBalance = expenses.filter(a => a.code === '5000').reduce((s, a) => s + Number(a.balance), 0);
-  const salesReturnsBalance = expenses.filter(a => a.code === '4050').reduce((s, a) => s + Number(a.balance), 0);
-  // Gross profit: revenue minus COGS (use max(0, balance) — positive balance = cost incurred)
-  const grossProfit = netRevenue - Math.max(0, salesReturnsBalance) - Math.max(0, cogsBalance);
+  // Aggregate all sales-return/discount contra-revenue accounts
+  const salesReturnsBalance = expenses
+    .filter(a => COGS_RETURN_CODES.has(a.code) && a.code !== '5000')
+    .reduce((s, a) => s + Math.max(0, Number(a.balance)), 0);
+  // Gross profit: revenue minus returns/discounts minus COGS
+  const grossProfit = netRevenue - salesReturnsBalance - Math.max(0, cogsBalance);
   const netProfit = grossProfit - Math.max(0, operatingExpenses);
 
   useEffect(() => {
@@ -255,7 +259,7 @@ export default function AccountingPage() {
         .from('accounts')
         .select('id')
         .eq('account_type', 'expense')
-        .not('code', 'in', '(5000,4050,4200)');
+        .not('code', 'in', '(5000,4050,4100,4200)');
 
       const expenseAccIds = (expenseAccounts || []).map(a => a.id);
       let expenseLines: any[] = [];
@@ -642,7 +646,7 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  const expenseAccounts = accounts.filter(a => a.account_type === 'expense' && !['5000', '4050', '4200'].includes(a.code));
+  const expenseAccounts = accounts.filter(a => a.account_type === 'expense' && !['5000', '4050', '4100', '4200'].includes(a.code));
   const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -871,22 +875,43 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
 
 function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[]; onSaved: () => void; onClose: () => void }) {
   const [suppliers, setSuppliers] = useState<any[]>([]);
-  const [form, setForm] = useState({ supplier_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0] });
+  const [form, setForm] = useState({
+    supplier_id: '',
+    amount: '',
+    description: '',
+    date: new Date().toISOString().split('T')[0],
+    debit_account_id: '',
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const apAccount = accounts.find(a => a.code === '2000');
 
+  // Debit account choices: asset accounts (inventory, prepaid, etc.) + expense accounts
+  const debitAccounts = accounts.filter(a =>
+    (a.account_type === 'asset' || a.account_type === 'expense') &&
+    !a.is_cash && !a.is_bank
+  );
+
+  const selectedDebit = accounts.find(a => a.id === form.debit_account_id);
+
   useEffect(() => {
     supabase.from('suppliers').select('id, name, code, outstanding_balance').eq('is_active', true).order('name')
       .then(({ data }) => setSuppliers(data || []));
-  }, []);
+    // Default debit account to Inventory (1200)
+    const invAccount = accounts.find(a => a.code === '1200');
+    if (invAccount) setForm(f => ({ ...f, debit_account_id: invAccount.id }));
+  }, [accounts]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     if (!form.supplier_id || !form.amount || parseFloat(form.amount) <= 0) {
       setError('Please select a supplier and enter an amount');
+      return;
+    }
+    if (!form.debit_account_id) {
+      setError('Please select a debit account');
       return;
     }
     setSaving(true);
@@ -908,16 +933,17 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
       }).select().single();
       if (entryError) throw entryError;
 
-      const inventoryAccount = accounts.find(a => a.code === '1200');
-      if (!apAccount || !inventoryAccount) throw new Error('Required accounts (2000, 1200) not found');
+      if (!apAccount) throw new Error('Accounts Payable account (2000) not found');
 
       await supabase.from('journal_lines').insert([
-        { journal_entry_id: entry.id, account_id: inventoryAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
+        { journal_entry_id: entry.id, account_id: form.debit_account_id, description: desc, debit: amount, credit: 0, sort_order: 0 },
         { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
       // Atomic balance updates
-      await supabase.rpc('increment_account_balance', { p_account_id: inventoryAccount.id, p_delta: amount });
+      const debitAcc = accounts.find(a => a.id === form.debit_account_id);
+      const debitDelta = (debitAcc?.account_type === 'asset' || debitAcc?.account_type === 'expense') ? amount : -amount;
+      await supabase.rpc('increment_account_balance', { p_account_id: form.debit_account_id, p_delta: debitDelta });
       await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: amount });
 
       if (supplier) {
@@ -926,7 +952,7 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
       }
 
       toast({ title: 'Success', description: `Payable of ${formatCurrency(amount)} recorded` });
-      setForm({ supplier_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0] });
+      setForm({ supplier_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0], debit_account_id: accounts.find(a => a.code === '1200')?.id || '' });
       onSaved();
       onClose();
     } catch (err: any) {
@@ -962,12 +988,20 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
               <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
           </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Debit Account (What you received) *</label>
+            <select required value={form.debit_account_id} onChange={e => setForm({ ...form, debit_account_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
+              <option value="">Select account</option>
+              {debitAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground mt-1">Inventory (1200) for goods, or an expense account for services like rent, repairs, etc.</p>
+          </div>
           <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
-            Dr. Inventory Asset (1200) &rarr; Cr. Accounts Payable ({apAccount?.code})
+            Dr. {selectedDebit ? `${selectedDebit.code} - ${selectedDebit.name}` : 'Select debit account'} &rarr; Cr. Accounts Payable ({apAccount?.code || '2000'})
           </div>
           <div>
             <label className="block text-xs font-medium mb-1">Description</label>
-            <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Goods received on credit, Purchase invoice..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            <input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="e.g. Goods received on credit, Service invoice..." className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
           </div>
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
@@ -1115,7 +1149,7 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
               <input type="number" required min="0" max={receivable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
             <div>
-              <label className="block text-xs font-medium mb-1 flex items-center gap-1">Bad Debt<span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay)</span></label>
+              <label className="flex items-center gap-1 text-xs font-medium mb-1">Bad Debt<span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay)</span></label>
               <input type="number" min="0" max={receivable.outstanding_balance} step="0.01" value={form.bad_debt_amount} onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
             </div>
           </div>

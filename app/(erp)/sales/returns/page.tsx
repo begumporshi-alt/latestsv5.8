@@ -504,7 +504,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
       }
 
       // Create journal entry
-      const { data: jeNum } = await supabase.rpc('generate_journal_number');
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
       const journalEntryNumber = jeNum || `JE-${Date.now().toString().slice(-6)}`;
       const journalLines: any[] = [];
 

@@ -498,7 +498,6 @@ export default function JournalPage() {
       {showDeleteConfirm && (
         <DeleteJournalEntryModal
           entry={showDeleteConfirm}
-          accounts={accounts}
           onClose={() => setShowDeleteConfirm(null)}
           onDeleted={() => { loadData(); setShowDeleteConfirm(null); }}
         />
@@ -688,8 +687,9 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
 
     if (mode === 'templates' && selectedTemplate) {
       finalLines = buildLinesFromTemplate();
-      if (finalLines.some(l => !l.accountId)) {
-        setError('Some accounts from this template are not set up in your chart of accounts. Use the custom mode instead.');
+      const missingLines = selectedTemplate.lines.filter(l => !accounts.find(a => a.code === l.accountCode));
+      if (missingLines.length > 0) {
+        setError(`Account(s) not found in your chart of accounts: ${missingLines.map(l => `${l.accountCode} (${l.accountName})`).join(', ')}. Please create them first or use Custom Entry.`);
         return;
       }
       if (!amount || parseFloat(amount) <= 0) {
@@ -714,7 +714,7 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
     setSaving(true);
     try {
       const totalAmt = finalLines.reduce((s, l) => s + l.debit, 0);
-      const { data: jeNum } = await supabase.rpc('generate_journal_number');
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
       const entryNumber = jeNum || `JE-${Date.now().toString().slice(-7)}`;
 
       const { data: entry, error: entryError } = await supabase
@@ -746,10 +746,10 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
 
         const account = accounts.find(a => a.id === line.accountId);
         if (account) {
-          const change = (account.account_type === 'asset' || account.account_type === 'expense')
+          const delta = (account.account_type === 'asset' || account.account_type === 'expense')
             ? line.debit - line.credit
             : line.credit - line.debit;
-          await supabase.from('accounts').update({ balance: (account.balance || 0) + change }).eq('id', line.accountId);
+          await supabase.rpc('increment_account_balance', { p_account_id: line.accountId, p_delta: delta });
         }
       }
 
@@ -1104,10 +1104,10 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
       for (const ol of originalLines) {
         const acc = accounts.find(a => a.id === ol.accountId);
         if (acc) {
-          const reverseChange = (acc.account_type === 'asset' || acc.account_type === 'expense')
+          const reverseDelta = (acc.account_type === 'asset' || acc.account_type === 'expense')
             ? -(ol.debit - ol.credit)
             : -(ol.credit - ol.debit);
-          await supabase.from('accounts').update({ balance: (acc.balance || 0) + reverseChange }).eq('id', ol.accountId);
+          await supabase.rpc('increment_account_balance', { p_account_id: ol.accountId, p_delta: reverseDelta });
         }
       }
 
@@ -1138,12 +1138,10 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
 
         const acc = accounts.find(a => a.id === line.accountId);
         if (acc) {
-          // Get fresh balance
-          const { data: freshAcc } = await supabase.from('accounts').select('balance').eq('id', line.accountId).single();
-          const change = (acc.account_type === 'asset' || acc.account_type === 'expense')
+          const delta = (acc.account_type === 'asset' || acc.account_type === 'expense')
             ? (parseFloat(line.debit) || 0) - (parseFloat(line.credit) || 0)
             : (parseFloat(line.credit) || 0) - (parseFloat(line.debit) || 0);
-          await supabase.from('accounts').update({ balance: (freshAcc?.balance || 0) + change }).eq('id', line.accountId);
+          await supabase.rpc('increment_account_balance', { p_account_id: line.accountId, p_delta: delta });
         }
       }
 
@@ -1300,14 +1298,13 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
 }
 
 // Delete Journal Entry Modal
-function DeleteJournalEntryModal({ entry, accounts, onClose, onDeleted }: {
+function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
   entry: JournalEntry;
-  accounts: Account[];
   onClose: () => void;
   onDeleted: () => void;
 }) {
   const [deleting, setDeleting] = useState(false);
-  const [impact, setImpact] = useState<{ account: string; change: number }[]>([]);
+  const [impact, setImpact] = useState<{ account: string; accountId: string; change: number }[]>([]);
   const [linkedRecords, setLinkedRecords] = useState<{ type: string; label: string; detail: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const isAuto = entry.reference_type !== 'manual' && entry.reference_type !== null;
@@ -1319,13 +1316,13 @@ function DeleteJournalEntryModal({ entry, accounts, onClose, onDeleted }: {
         .select('account_id, debit, credit, account:accounts(code, name, account_type)')
         .eq('journal_entry_id', entry.id);
 
-      const impacts: { account: string; change: number }[] = [];
+      const impacts: { account: string; accountId: string; change: number }[] = [];
       for (const l of lines || []) {
         const acc = Array.isArray(l.account) ? l.account[0] : l.account;
         if (acc) {
           const isAssetOrExpense = acc.account_type === 'asset' || acc.account_type === 'expense';
           const currentEffect = isAssetOrExpense ? (Number(l.debit) - Number(l.credit)) : (Number(l.credit) - Number(l.debit));
-          impacts.push({ account: `${acc.code} – ${acc.name}`, change: -currentEffect });
+          impacts.push({ account: `${acc.code} – ${acc.name}`, accountId: l.account_id, change: -currentEffect });
         }
       }
       setImpact(impacts);
@@ -1378,12 +1375,9 @@ function DeleteJournalEntryModal({ entry, accounts, onClose, onDeleted }: {
   async function handleDelete() {
     setDeleting(true);
     try {
-      // Reverse account balances
+      // Reverse account balances using atomic RPC
       for (const imp of impact) {
-        const acc = accounts.find(a => `${a.code} – ${a.name}` === imp.account);
-        if (acc) {
-          await supabase.from('accounts').update({ balance: (acc.balance || 0) + imp.change }).eq('id', acc.id);
-        }
+        await supabase.rpc('increment_account_balance', { p_account_id: imp.accountId, p_delta: imp.change });
       }
 
       // Delete journal lines

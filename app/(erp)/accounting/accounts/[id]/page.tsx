@@ -3,8 +3,9 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { toast } from '@/hooks/use-toast';
 import Link from 'next/link';
-import { ArrowLeft, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownLeft, Calendar, Filter, ExternalLink, ChevronLeft, ChevronRight, Wallet, ChartBar as BarChart3, Users, Building2, FileText, Receipt, Activity, BookOpen, Layers, ArrowRightLeft, CircleDot } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownLeft, Calendar, Filter, ExternalLink, ChevronLeft, ChevronRight, Wallet, ChartBar as BarChart3, Users, Building2, FileText, Receipt, Activity, BookOpen, Layers, ArrowRightLeft, CircleDot, Plus, X, AlertTriangle } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend,
@@ -241,18 +242,42 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
   }, [allLines]);
 
   const loadAuditTrail = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('activity_logs')
-      .select(`
-        id, action, entity_type, entity_label, created_at,
-        profiles:user_id(full_name)
-      `)
-      .or(`entity_type.eq.account,entity_type.eq.journal_entry,entity_type.eq.payment,entity_type.eq.invoice`)
-      .order('created_at', { ascending: false })
-      .limit(30);
+    // Scope audit trail to this account: direct account logs + journal entries that contain this account
+    const journalEntryIds = [...new Set(allLines.map(l => l.journal_entry_id))].slice(0, 50);
 
-    if (error) { setAuditTrail([]); return; }
-    setAuditTrail((data || []).map((d: any) => ({
+    // Build filter: activity on this account directly, or on journal entries that touch it
+    let orFilter = `entity_type.eq.account,entity_id.eq.${id}`;
+    if (journalEntryIds.length > 0) {
+      // activity_logs doesn't support .in() via .or(), so we fetch account logs then JE logs separately
+    }
+
+    const [accountLogsRes, jeLogsRes] = await Promise.all([
+      supabase
+        .from('activity_logs')
+        .select('id, action, entity_type, entity_label, created_at, profiles:user_id(full_name)')
+        .eq('entity_type', 'account')
+        .eq('entity_id', id)
+        .order('created_at', { ascending: false })
+        .limit(20),
+      journalEntryIds.length > 0
+        ? supabase
+            .from('activity_logs')
+            .select('id, action, entity_type, entity_label, created_at, profiles:user_id(full_name)')
+            .eq('entity_type', 'journal_entry')
+            .in('entity_id', journalEntryIds)
+            .order('created_at', { ascending: false })
+            .limit(20)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const combined = [
+      ...(accountLogsRes.data || []),
+      ...(jeLogsRes.data || []),
+    ]
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 30);
+
+    setAuditTrail(combined.map((d: any) => ({
       id: d.id,
       action: d.action,
       entity_type: d.entity_type,
@@ -260,7 +285,7 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
       created_at: d.created_at,
       user_name: d.profiles?.full_name || null,
     })));
-  }, []);
+  }, [id, allLines]);
 
   useEffect(() => {
     (async () => {
@@ -273,8 +298,10 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
   useEffect(() => {
     if (allLines.length > 0) {
       loadModuleUsage();
-      Promise.all([loadRelatedAccounts(), loadPartyBreakdown(), loadAuditTrail()]);
+      Promise.all([loadRelatedAccounts(), loadPartyBreakdown()]);
     }
+    // Audit trail loads independently (account logs don't require transactions)
+    loadAuditTrail();
   }, [allLines, loadModuleUsage, loadRelatedAccounts, loadPartyBreakdown, loadAuditTrail]);
 
   const dateRange = useMemo(() => {
@@ -310,7 +337,6 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
 
   const balanceSummary = useMemo(() => {
     const isDebitNormal = account?.account_type === 'asset' || account?.account_type === 'expense';
-    const currentBalance = Number(account?.balance || 0);
 
     let periodDebit = 0, periodCredit = 0;
     for (const l of filteredLines) {
@@ -318,17 +344,32 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
       periodCredit += Number(l.credit);
     }
     const periodNet = isDebitNormal ? periodDebit - periodCredit : periodCredit - periodDebit;
-    const openingBalance = currentBalance - periodNet;
+
+    // Compute opening balance from all transactions BEFORE the period start.
+    // This is accurate regardless of period filter, since allLines contains every transaction.
+    let openingBalance = 0;
+    if (dateRange.start) {
+      for (const l of allLines) {
+        if (l.journal_entries.entry_date < dateRange.start) {
+          const delta = isDebitNormal
+            ? Number(l.debit) - Number(l.credit)
+            : Number(l.credit) - Number(l.debit);
+          openingBalance += delta;
+        }
+      }
+    }
+    // For "All Time" (no start date), opening balance is 0 by definition
+    const closingBalance = openingBalance + periodNet;
 
     return {
       opening: openingBalance,
       totalDebit: periodDebit,
       totalCredit: periodCredit,
       net: periodNet,
-      closing: currentBalance,
+      closing: closingBalance,
       entryCount: filteredLines.length,
     };
-  }, [filteredLines, account]);
+  }, [filteredLines, allLines, account, dateRange.start]);
 
   const monthlyChart = useMemo(() => {
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -424,6 +465,9 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
           </div>
         </div>
       </div>
+
+      {/* Balance Adjustment Panel */}
+      {account && <BalanceAdjustmentPanel account={account} onAdjusted={() => { loadAccount(); loadTransactions(); }} />}
 
       {/* Period Filter Bar */}
       <div className="bg-white rounded-xl border border-border p-4 shadow-sm">
@@ -892,6 +936,253 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+
+// BALANCE ADJUSTMENT PANEL
+function BalanceAdjustmentPanel({ account, onAdjusted }: { account: Account; onAdjusted: () => void }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [form, setForm] = useState({
+    amount: '',
+    date: new Date().toISOString().split('T')[0],
+    description: '',
+    offsetAccountId: '',
+  });
+  const [offsetAccounts, setOffsetAccounts] = useState<Account[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    // Load equity accounts for offset (typically Opening Balance Equity 3900, or Retained Earnings)
+    supabase.from('accounts')
+      .select('*')
+      .eq('account_type', 'equity')
+      .eq('is_active', true)
+      .order('code')
+      .then(({ data }) => setOffsetAccounts((data || []) as Account[]));
+  }, []);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.offsetAccountId) {
+      setError('Please select an offset account');
+      return;
+    }
+
+    const amount = parseFloat(form.amount);
+    if (isNaN(amount) || amount === 0) {
+      setError('Please enter a valid amount');
+      return;
+    }
+
+    setError('');
+    setSaving(true);
+    try {
+      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
+      const isDebitNormal = account.account_type === 'asset' || account.account_type === 'expense';
+
+      // For positive adjustment: debit asset/expense accounts, credit liability/equity/revenue accounts
+      // For negative adjustment: flip the sides
+      const isPositiveAdjustment = amount > 0;
+      const absAmount = Math.abs(amount);
+
+      let targetDebit = 0, targetCredit = 0, offsetDebit = 0, offsetCredit = 0;
+
+      if (isDebitNormal) {
+        if (isPositiveAdjustment) {
+          targetDebit = absAmount;
+          offsetCredit = absAmount;
+        } else {
+          targetCredit = absAmount;
+          offsetDebit = absAmount;
+        }
+      } else {
+        if (isPositiveAdjustment) {
+          targetCredit = absAmount;
+          offsetDebit = absAmount;
+        } else {
+          targetDebit = absAmount;
+          offsetCredit = absAmount;
+        }
+      }
+
+      const { data: entry, error: entryError } = await supabase
+        .from('journal_entries')
+        .insert({
+          entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
+          entry_date: form.date,
+          description: form.description || `Balance adjustment for ${account.name}`,
+          reference_type: 'balance_adjustment',
+          total_debit: absAmount,
+          total_credit: absAmount,
+          is_posted: true,
+        })
+        .select()
+        .single();
+
+      if (entryError) throw entryError;
+
+      await supabase.from('journal_lines').insert([
+        {
+          journal_entry_id: entry.id,
+          account_id: account.id,
+          description: form.description || `Balance adjustment`,
+          debit: targetDebit,
+          credit: targetCredit,
+          sort_order: 0,
+        },
+        {
+          journal_entry_id: entry.id,
+          account_id: form.offsetAccountId,
+          description: form.description || `Balance adjustment - ${account.name}`,
+          debit: offsetDebit,
+          credit: offsetCredit,
+          sort_order: 1,
+        },
+      ]);
+
+      // Update balances using the RPC function
+      await supabase.rpc('increment_account_balance', {
+        p_account_id: account.id,
+        p_delta: isDebitNormal ? (targetDebit - targetCredit) : (targetCredit - targetDebit),
+      });
+      await supabase.rpc('increment_account_balance', {
+        p_account_id: form.offsetAccountId,
+        p_delta: offsetDebit - offsetCredit,
+      });
+
+      toast({ title: 'Balance adjusted', description: `Adjustment of ${formatCurrency(absAmount)} posted successfully` });
+      setIsOpen(false);
+      setForm({ amount: '', date: new Date().toISOString().split('T')[0], description: '', offsetAccountId: '' });
+      onAdjusted();
+    } catch (err: any) {
+      setError(err.message || 'Failed to post adjustment');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!isOpen) {
+    return (
+      <button
+        onClick={() => setIsOpen(true)}
+        className="w-full bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between hover:from-amber-100 hover:to-orange-100 transition group"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center group-hover:bg-amber-200 transition">
+            <Plus className="w-5 h-5 text-amber-600" />
+          </div>
+          <div className="text-left">
+            <p className="text-sm font-semibold text-foreground">Post Balance Adjustment</p>
+            <p className="text-xs text-muted-foreground">Correct the account balance via journal entry</p>
+          </div>
+        </div>
+        <div className="text-xs text-amber-600 font-medium">Click to adjust</div>
+      </button>
+    );
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-border p-6 shadow-sm">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="w-5 h-5 text-amber-600" />
+          <h3 className="text-base font-bold text-foreground">Balance Adjustment</h3>
+        </div>
+        <button onClick={() => setIsOpen(false)} className="text-muted-foreground hover:text-foreground">
+          <X className="w-5 h-5" />
+        </button>
+      </div>
+
+      <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
+        <p className="font-medium mb-1">⚠️ Use with caution</p>
+        <p className="text-xs">
+          This will post a journal entry to adjust the current balance. Use only for corrections, reconciliations, or
+          setting opening balances. The offset will be posted to an equity account (typically Opening Balance Equity).
+        </p>
+      </div>
+
+      {error && <div className="mb-4 p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium mb-1">Adjustment Amount *</label>
+            <input
+              type="number"
+              step="0.01"
+              required
+              value={form.amount}
+              onChange={e => setForm({ ...form, amount: e.target.value })}
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              placeholder="Enter amount (+ or -)"
+            />
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Positive = increase, Negative = decrease
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Date *</label>
+            <input
+              type="date"
+              required
+              value={form.date}
+              onChange={e => setForm({ ...form, date: e.target.value })}
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium mb-1">Offset Account *</label>
+          <select
+            required
+            value={form.offsetAccountId}
+            onChange={e => setForm({ ...form, offsetAccountId: e.target.value })}
+            className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+          >
+            <option value="">Select equity account...</option>
+            {offsetAccounts.map(acc => (
+              <option key={acc.id} value={acc.id}>
+                {acc.code} - {acc.name}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            The offsetting side of the entry. Usually "Opening Balance Equity" (3900).
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium mb-1">Description</label>
+          <textarea
+            value={form.description}
+            onChange={e => setForm({ ...form, description: e.target.value })}
+            rows={2}
+            className="w-full border border-border rounded-lg px-3 py-2 text-sm resize-none"
+            placeholder="Reason for adjustment..."
+          />
+        </div>
+
+        <div className="flex items-center gap-3 pt-2 border-t border-border">
+          <button
+            type="button"
+            onClick={() => setIsOpen(false)}
+            className="flex-1 px-4 py-2 border border-border rounded-lg text-sm font-medium hover:bg-muted/50 transition"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
+          >
+            {saving ? 'Posting...' : 'Post Adjustment'}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
