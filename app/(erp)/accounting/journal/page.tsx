@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, ChevronDown, ChevronRight, FileText, Receipt, CreditCard, Package, ArrowRightLeft, ShoppingBag, X, Trash2, Lightbulb, Banknote, Building2, Zap, Truck, Users, RotateCcw, Search, Filter, Pencil as Edit2, TriangleAlert as AlertTriangle, Info, User, Calendar, Link as LinkIcon } from 'lucide-react';
+import { Plus, ChevronDown, ChevronRight, FileText, Receipt, CreditCard, Package, ArrowRightLeft, ShoppingBag, X, Trash2, Lightbulb, Banknote, Building2, Zap, Truck, Users, RotateCcw, Search, Filter, Pencil as Edit2, TriangleAlert as AlertTriangle, Info, User, Calendar, Link as LinkIcon, Ban } from 'lucide-react';
 import type { Account } from '@/lib/types';
 import AppPagination from '@/components/ui/AppPagination';
 
@@ -41,6 +41,8 @@ const refIcons: Record<string, React.ElementType> = {
   grn: Package,
   sales_return: ArrowRightLeft,
   purchase_return: ShoppingBag,
+  purchase_receipt: Package,
+  purchase_cancellation: Ban,
   manual: FileText,
   opening_balance: Building2,
   receivable: User,
@@ -52,6 +54,8 @@ const refLabels: Record<string, string> = {
   grn: 'Goods Receipt',
   sales_return: 'Sales Return',
   purchase_return: 'Purchase Return',
+  purchase_receipt: 'Purchase Receipt',
+  purchase_cancellation: 'PO Cancellation',
   manual: 'Manual Entry',
   opening_balance: 'Opening Balance',
   receivable: 'Receivable',
@@ -63,6 +67,8 @@ const refColors: Record<string, string> = {
   grn: 'bg-orange-50 text-orange-600',
   sales_return: 'bg-red-50 text-red-600',
   purchase_return: 'bg-amber-50 text-amber-600',
+  purchase_receipt: 'bg-teal-50 text-teal-600',
+  purchase_cancellation: 'bg-rose-50 text-rose-600',
   manual: 'bg-gray-50 text-gray-600',
   opening_balance: 'bg-purple-50 text-purple-600',
   receivable: 'bg-indigo-50 text-indigo-600',
@@ -384,6 +390,9 @@ export default function JournalPage() {
             { value: 'invoice', label: 'Invoices' },
             { value: 'payment', label: 'Payments' },
             { value: 'grn', label: 'Goods Receipt' },
+            { value: 'purchase_receipt', label: 'Purchase Receipt' },
+            { value: 'purchase_return', label: 'Purchase Return' },
+            { value: 'purchase_cancellation', label: 'PO Cancellation' },
             { value: 'manual', label: 'Manual' },
             { value: 'opening_balance', label: 'Opening' },
           ].map(f => (
@@ -1031,6 +1040,15 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
           } else if (entry.reference_type === 'grn') {
             const { data } = await supabase.from('goods_receipt_notes').select('grn_number, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'GRN', label: data.grn_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_receipt') {
+            const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'PO', label: data.po_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_return') {
+            const { data } = await supabase.from('purchase_returns').select('return_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'Return', label: data.return_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_cancellation') {
+            const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'PO', label: data.po_number, detail: 'Cancelled' });
           } else if (entry.reference_type === 'sales_return') {
             const { data } = await supabase.from('sales_returns').select('return_number, total_refund_amount, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'Sales Return', label: data.return_number, detail: `${data.status} — ${formatCurrency(data.total_refund_amount)}` });
@@ -1327,6 +1345,15 @@ function DeleteJournalEntryModal({ entry, accounts, onClose, onDeleted }: {
           } else if (entry.reference_type === 'grn') {
             const { data } = await supabase.from('goods_receipt_notes').select('grn_number, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'GRN', label: data.grn_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_receipt') {
+            const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'PO', label: data.po_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_return') {
+            const { data } = await supabase.from('purchase_returns').select('return_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'Return', label: data.return_number, detail: data.status });
+          } else if (entry.reference_type === 'purchase_cancellation') {
+            const { data } = await supabase.from('purchase_orders').select('po_number, status').eq('id', entry.reference_id).maybeSingle();
+            if (data) linked.push({ type: 'PO', label: data.po_number, detail: 'Cancelled' });
           } else if (entry.reference_type === 'sales_return') {
             const { data } = await supabase.from('sales_returns').select('return_number, total_refund_amount, status').eq('id', entry.reference_id).maybeSingle();
             if (data) linked.push({ type: 'Sales Return', label: data.return_number, detail: `${data.status} — ${formatCurrency(data.total_refund_amount)}` });

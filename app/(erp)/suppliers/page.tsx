@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Truck, Plus, Search, Edit, Trash2, Phone, Mail, Star, X, Eye } from 'lucide-react';
+import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, CircleAlert as AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import type { Supplier } from '@/lib/types';
 
@@ -12,6 +12,7 @@ export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'inactive'>('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [deletingSupplier, setDeletingSupplier] = useState<Supplier | null>(null);
@@ -26,11 +27,21 @@ export default function SuppliersPage() {
   }
 
   const filtered = suppliers.filter(s =>
-    !search || s.name.toLowerCase().includes(search.toLowerCase()) || s.code.toLowerCase().includes(search.toLowerCase())
+    (!search ||
+      s.name.toLowerCase().includes(search.toLowerCase()) ||
+      s.code.toLowerCase().includes(search.toLowerCase()) ||
+      (s.phone || '').toLowerCase().includes(search.toLowerCase()) ||
+      (s.email || '').toLowerCase().includes(search.toLowerCase()) ||
+      (s.city || '').toLowerCase().includes(search.toLowerCase())
+    ) &&
+    (filterStatus === 'all' || (filterStatus === 'active' && s.is_active) || (filterStatus === 'inactive' && !s.is_active))
   );
 
-  const totalOutstanding = suppliers.filter(s => s.is_active).reduce((sum, s) => sum + s.outstanding_balance, 0);
-  const totalPurchases = suppliers.filter(s => s.is_active).reduce((sum, s) => sum + s.total_purchases, 0);
+  const activeSuppliers = suppliers.filter(s => s.is_active);
+  const inactiveCount = suppliers.filter(s => !s.is_active).length;
+  const totalOutstanding = activeSuppliers.reduce((sum, s) => sum + s.outstanding_balance, 0);
+  const totalPurchases = activeSuppliers.reduce((sum, s) => sum + s.total_purchases, 0);
+  const overdueCount = activeSuppliers.filter(s => s.outstanding_balance > 0).length;
 
   async function handleDelete() {
     if (!deletingSupplier) return;
@@ -58,23 +69,31 @@ export default function SuppliersPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Total Suppliers', value: suppliers.filter(s => s.is_active).length },
-          { label: 'Active', value: suppliers.filter(s => s.is_active).length },
-          { label: 'Total Purchases', value: formatCurrency(totalPurchases) },
-          { label: 'Outstanding Payables', value: formatCurrency(totalOutstanding) },
+          { label: 'Active Suppliers', value: activeSuppliers.length, icon: Building2, color: 'text-blue-500 bg-blue-50' },
+          { label: 'Inactive', value: inactiveCount, icon: AlertCircle, color: 'text-gray-500 bg-gray-50' },
+          { label: 'Total Purchases', value: formatCurrency(totalPurchases), icon: DollarSign, color: 'text-green-500 bg-green-50' },
+          { label: 'Outstanding Payables', value: formatCurrency(totalOutstanding), icon: AlertCircle, color: 'text-red-500 bg-red-50' },
         ].map(s => (
-          <div key={s.label} className="stat-card">
-            <p className="text-xs text-muted-foreground">{s.label}</p>
-            <p className="text-xl font-bold text-foreground mt-1">{s.value}</p>
+          <div key={s.label} className="stat-card flex items-center gap-3">
+            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color} shrink-0`}><s.icon className="w-5 h-5" /></div>
+            <div className="min-w-0">
+              <p className="text-xs text-muted-foreground whitespace-nowrap">{s.label}</p>
+              <p className="text-lg font-bold text-foreground whitespace-nowrap">{s.value}</p>
+            </div>
           </div>
         ))}
       </div>
 
-      <div className="bg-white rounded-xl border border-border p-4 shadow-sm">
-        <div className="relative">
+      <div className="bg-white rounded-xl border border-border p-4 shadow-sm flex flex-wrap gap-3">
+        <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search suppliers..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name, code, phone, email, or city..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
         </div>
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value as any)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+          <option value="all">All Suppliers</option>
+          <option value="active">Active Only</option>
+          <option value="inactive">Inactive Only</option>
+        </select>
       </div>
 
       <div className="table-wrapper">
