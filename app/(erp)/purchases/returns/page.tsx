@@ -296,13 +296,28 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
         .maybeSingle();
       const defaultWarehouseId = defWarehouse?.id || '11000000-0000-0000-0000-000000000001';
 
+      // Fetch the PO to get subtotal and total_amount for net-cost calculation
+      const { data: poRecord } = await supabase
+        .from('purchase_orders')
+        .select('subtotal, total_amount, discount_amount')
+        .eq('id', selectedPO.id)
+        .maybeSingle();
+
+      const poSubtotal = Number(poRecord?.subtotal || 0);
+      const poTotal = Number(poRecord?.total_amount || 0);
+      // Net cost ratio: if subtotal is 0 or no discount, ratio is 1 (use gross unit_cost)
+      const netCostRatio = poSubtotal > 0 ? (poTotal / poSubtotal) : 1;
+
       // Build return items for insertion
       const returnItemRows: any[] = [];
       for (const [itemId, { qty, reason }] of itemsToReturn) {
         const item = items.find(i => i.id === itemId);
         if (!item) continue;
 
-        const refundAmount = qty * item.unit_cost;
+        // Calculate net refund: qty * unit_cost * (poTotal / poSubtotal)
+        // This proportionally accounts for all discounts (line + cart + extra)
+        const grossAmount = qty * item.unit_cost;
+        const refundAmount = grossAmount * netCostRatio;
         totalRefund += refundAmount;
 
         // Use the PO item's warehouse, fall back to default

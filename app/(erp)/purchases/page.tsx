@@ -91,7 +91,13 @@ export default function PurchasesPage() {
       return;
     }
 
-    // Reverse full supplier outstanding balance and total_purchases
+    // The database trigger (purchase_order_cancellation_trigger) handles:
+    // - Reversing the receipt journal entry (Dr AP / Cr Inventory) using NET total
+    // - Reversing all payment journal entries (Dr Cash / Cr AP)
+    // - Reversing account balances
+    // We only handle stock and supplier balance here.
+
+    // Reverse supplier outstanding balance and total_purchases
     const { data: supplier } = await supabase
       .from('suppliers')
       .select('outstanding_balance, total_purchases')
