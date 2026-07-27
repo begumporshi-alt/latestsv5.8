@@ -296,13 +296,28 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
         .maybeSingle();
       const defaultWarehouseId = defWarehouse?.id || '11000000-0000-0000-0000-000000000001';
 
+      // Fetch the PO to get subtotal and total_amount for net-cost calculation
+      const { data: poRecord } = await supabase
+        .from('purchase_orders')
+        .select('subtotal, total_amount, discount_amount')
+        .eq('id', selectedPO.id)
+        .maybeSingle();
+
+      const poSubtotal = Number(poRecord?.subtotal || 0);
+      const poTotal = Number(poRecord?.total_amount || 0);
+      // Net cost ratio: if subtotal is 0 or no discount, ratio is 1 (use gross unit_cost)
+      const netCostRatio = poSubtotal > 0 ? (poTotal / poSubtotal) : 1;
+
       // Build return items for insertion
       const returnItemRows: any[] = [];
       for (const [itemId, { qty, reason }] of itemsToReturn) {
         const item = items.find(i => i.id === itemId);
         if (!item) continue;
 
-        const refundAmount = qty * item.unit_cost;
+        // Calculate net refund: qty * unit_cost * (poTotal / poSubtotal)
+        // This proportionally accounts for all discounts (line + cart + extra)
+        const grossAmount = qty * item.unit_cost;
+        const refundAmount = grossAmount * netCostRatio;
         totalRefund += refundAmount;
 
         // Use the PO item's warehouse, fall back to default
@@ -354,7 +369,8 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
       }
 
       // Create the purchase_returns record
-      await supabase.from('purchase_returns').insert({
+      // The database trigger (trg_purchase_return_accounting) will post the journal entry automatically
+      const { error: returnError } = await supabase.from('purchase_returns').insert({
         id: returnId,
         return_number: returnNumber,
         purchase_order_id: selectedPO.id,
@@ -365,45 +381,13 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
         status: 'completed',
       });
 
+      if (returnError) throw new Error(returnError.message);
+
       // Insert return items
       await supabase.from('purchase_return_items').insert(returnItemRows);
 
-      // Post journal entry: Dr. Accounts Payable / Cr. Inventory
-      const { data: apAccount } = await supabase.from('accounts').select('id').eq('code', '2000').maybeSingle();
-      const { data: invAccount } = await supabase.from('accounts').select('id').eq('code', '1200').maybeSingle();
-      if (apAccount && invAccount && totalRefund > 0) {
-        const { data: jeNumber } = await supabase.rpc('get_next_journal_number');
-        const { data: je } = await supabase.from('journal_entries').insert({
-          entry_number: jeNumber || `JE-${Date.now().toString().slice(-6)}`,
-          entry_date: new Date().toISOString().split('T')[0],
-          description: `Purchase Return - ${returnNumber}`,
-          reference_type: 'purchase_return',
-          reference_id: returnId,
-          total_debit: totalRefund,
-          total_credit: totalRefund,
-          is_posted: true,
-          supplier_id: selectedPO.supplier_id,
-        }).select().single();
-
-        if (je) {
-          await supabase.from('journal_lines').insert([
-            { journal_entry_id: je.id, account_id: apAccount.id, debit: totalRefund, credit: 0, description: `AP reduced - ${returnNumber}`, sort_order: 0 },
-            { journal_entry_id: je.id, account_id: invAccount.id, debit: 0, credit: totalRefund, description: `Inventory returned - ${returnNumber}`, sort_order: 1 },
-          ]);
-          // Update account balances
-          await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: totalRefund });
-          await supabase.rpc('increment_account_balance', { p_account_id: invAccount.id, p_delta: -totalRefund });
-        }
-      }
-
-      // Update PO amount_paid
-      const newAmountPaid = Math.max(0, selectedPO.amount_paid - totalRefund);
-      await supabase.from('purchase_orders').update({
-        amount_paid: newAmountPaid,
-        updated_at: new Date().toISOString(),
-      }).eq('id', selectedPO.id);
-
-      // Adjust supplier outstanding balance
+      // Adjust supplier outstanding balance (return creates a credit with supplier)
+      // Do NOT reduce amount_paid — that was actual cash paid. The return reduces what we OWE.
       const { data: supplier } = await supabase
         .from('suppliers')
         .select('outstanding_balance')

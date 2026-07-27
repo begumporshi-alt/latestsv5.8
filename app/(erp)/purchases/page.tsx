@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban } from 'lucide-react';
+import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban, Undo2, ChevronLeft, ChevronRight, Calendar } from 'lucide-react';
 import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
@@ -31,7 +31,7 @@ export default function PurchasesPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
-  const [stats, setStats] = useState({ total: 0, pending: 0, received: 0, outstanding: 0 });
+  const [stats, setStats] = useState({ total: 0, pending: 0, received: 0, outstanding: 0, returns: 0, returnAmount: 0, totalValue: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [viewingOrder, setViewingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
   const [orderItems, setOrderItems] = useState<any[]>([]);
@@ -39,28 +39,102 @@ export default function PurchasesPage() {
   const [paymentOrder, setPaymentOrder] = useState<PurchaseOrderWithSupplier | null>(null);
   const [editingOrder, setEditingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
   const [cancellingOrder, setCancellingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
+  const [poReturns, setPoReturns] = useState<Record<string, { return_number: string; total_amount: number }[]>>({});
+
+  // Date filter state
+  const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month' | 'quarter' | 'year' | 'custom'>('all');
+  const [customDateFrom, setCustomDateFrom] = useState('');
+  const [customDateTo, setCustomDateTo] = useState('');
+
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 10;
 
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {
     setLoading(true);
-    const [poRes, supRes, prodRes] = await Promise.all([
+    const [poRes, supRes, prodRes, returnsRes] = await Promise.all([
       supabase.from('purchase_orders').select('*, supplier:suppliers(name, code, phone)').order('created_at', { ascending: false }),
       supabase.from('suppliers').select('*').eq('is_active', true).order('name'),
       supabase.from('products').select('*').eq('is_active', true).order('name'),
+      supabase.from('purchase_returns').select('id, return_number, total_amount, status, purchase_order_id').order('created_at', { ascending: false }),
     ]);
     setOrders(poRes.data || []);
     setSuppliers(supRes.data || []);
     setProducts(prodRes.data || []);
+
+    // Build a map of PO ID -> returns for quick lookup
+    const returnsMap: Record<string, { return_number: string; total_amount: number }[]> = {};
+    (returnsRes.data || []).forEach((r: any) => {
+      if (r.status === 'completed' && r.purchase_order_id) {
+        if (!returnsMap[r.purchase_order_id]) returnsMap[r.purchase_order_id] = [];
+        returnsMap[r.purchase_order_id].push({ return_number: r.return_number, total_amount: Number(r.total_amount) });
+      }
+    });
+    setPoReturns(returnsMap);
 
     const all = poRes.data || [];
     setStats({
       total: all.length,
       pending: all.filter((o: any) => ['draft', 'pending_approval', 'approved'].includes(o.status)).length,
       received: all.filter((o: any) => o.status === 'received').length,
-      outstanding: all.reduce((s: number, o: any) => s + (Number(o.total_amount) - Number(o.amount_paid)), 0),
+      outstanding: all.filter((o: any) => o.status !== 'cancelled').reduce((s: number, o: any) => s + Math.max(0, Number(o.total_amount) - Number(o.amount_paid)), 0),
+      returns: (returnsRes.data || []).filter((r: any) => r.status === 'completed').length,
+      returnAmount: (returnsRes.data || []).filter((r: any) => r.status === 'completed').reduce((s: number, r: any) => s + Number(r.total_amount), 0),
+      totalValue: all.filter((o: any) => o.status !== 'cancelled').reduce((s: number, o: any) => s + Number(o.total_amount), 0),
     });
     setLoading(false);
+  }
+
+  // Date filtering helper
+  function getDateRange() {
+    if (dateFilter === 'all') return null;
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (dateFilter === 'today') return { from: today.toISOString().split('T')[0], to: today.toISOString().split('T')[0] };
+    if (dateFilter === 'week') {
+      const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7);
+      return { from: weekAgo.toISOString().split('T')[0], to: today.toISOString().split('T')[0] };
+    }
+    if (dateFilter === 'month') {
+      const monthAgo = new Date(today); monthAgo.setMonth(monthAgo.getMonth() - 1);
+      return { from: monthAgo.toISOString().split('T')[0], to: today.toISOString().split('T')[0] };
+    }
+    if (dateFilter === 'quarter') {
+      const quarterAgo = new Date(today); quarterAgo.setMonth(quarterAgo.getMonth() - 3);
+      return { from: quarterAgo.toISOString().split('T')[0], to: today.toISOString().split('T')[0] };
+    }
+    if (dateFilter === 'year') {
+      const yearAgo = new Date(today); yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+      return { from: yearAgo.toISOString().split('T')[0], to: today.toISOString().split('T')[0] };
+    }
+    if (dateFilter === 'custom' && customDateFrom && customDateTo) {
+      return { from: customDateFrom, to: customDateTo };
+    }
+    return null;
+  }
+
+  // Stats filtered by date range
+  function getFilteredStats(filteredOrders: PurchaseOrderWithSupplier[]) {
+    const active = filteredOrders.filter((o: any) => o.status !== 'cancelled');
+    let returnCount = 0;
+    let returnAmountTotal = 0;
+    Object.entries(poReturns).forEach(([poId, returns]) => {
+      if (filteredOrders.some((o: any) => o.id === poId)) {
+        returnCount += returns.length;
+        returnAmountTotal += returns.reduce((rs: number, r: any) => rs + r.total_amount, 0);
+      }
+    });
+    return {
+      total: filteredOrders.length,
+      pending: filteredOrders.filter((o: any) => ['draft', 'pending_approval', 'approved'].includes(o.status)).length,
+      received: filteredOrders.filter((o: any) => o.status === 'received').length,
+      outstanding: active.reduce((s: number, o: any) => s + Math.max(0, Number(o.total_amount) - Number(o.amount_paid)), 0),
+      returns: returnCount,
+      returnAmount: returnAmountTotal,
+      totalValue: active.reduce((s: number, o: any) => s + Number(o.total_amount), 0),
+    };
   }
 
   async function viewOrderDetails(order: PurchaseOrderWithSupplier) {
@@ -84,14 +158,20 @@ export default function PurchasesPage() {
   async function cancelOrder(order: PurchaseOrderWithSupplier) {
     const { error } = await supabase
       .from('purchase_orders')
-      .update({ status: 'cancelled', amount_paid: 0, updated_at: new Date().toISOString() })
+      .update({ status: 'cancelled', amount_paid: order.total_amount, updated_at: new Date().toISOString() })
       .eq('id', order.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
       return;
     }
 
-    // Reverse full supplier outstanding balance and total_purchases
+    // The database trigger (purchase_order_cancellation_trigger) handles:
+    // - Reversing the receipt journal entry (Dr AP / Cr Inventory) using NET total
+    // - Reversing all payment journal entries (Dr Cash / Cr AP)
+    // - Reversing account balances
+    // We only handle stock and supplier balance here.
+
+    // Reverse supplier outstanding balance and total_purchases
     const { data: supplier } = await supabase
       .from('suppliers')
       .select('outstanding_balance, total_purchases')
@@ -265,10 +345,20 @@ export default function PurchasesPage() {
     }
   }
 
-  const filtered = orders.filter(o =>
-    (!search || o.po_number.toLowerCase().includes(search.toLowerCase()) || o.supplier?.name?.toLowerCase().includes(search.toLowerCase())) &&
-    (!filterStatus || o.status === filterStatus)
-  );
+  const dateRange = getDateRange();
+  const filtered = orders.filter(o => {
+    const matchSearch = !search || o.po_number.toLowerCase().includes(search.toLowerCase()) || o.supplier?.name?.toLowerCase().includes(search.toLowerCase());
+    const matchStatus = !filterStatus || o.status === filterStatus;
+    const matchDate = !dateRange || (o.order_date >= dateRange.from && o.order_date <= dateRange.to);
+    return matchSearch && matchStatus && matchDate;
+  });
+
+  // Reset to page 1 when filters change
+  useEffect(() => { setCurrentPage(1); }, [search, filterStatus, dateFilter, customDateFrom, customDateTo]);
+
+  const dateFilteredStats = getFilteredStats(filtered);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const paginatedOrders = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -282,21 +372,24 @@ export default function PurchasesPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         {[
-          { label: 'Total Orders', value: stats.total, color: 'text-blue-500' },
-          { label: 'Pending', value: stats.pending, color: 'text-amber-500' },
-          { label: 'Received', value: stats.received, color: 'text-green-500' },
-          { label: 'Outstanding', value: formatCurrency(stats.outstanding), color: 'text-red-500' },
+          { label: 'Total Orders', value: dateFilteredStats.total, color: 'text-blue-500' },
+          { label: 'Total Value', value: formatCurrency(dateFilteredStats.totalValue), color: 'text-blue-600' },
+          { label: 'Pending', value: dateFilteredStats.pending, color: 'text-amber-500' },
+          { label: 'Received', value: dateFilteredStats.received, color: 'text-green-500' },
+          { label: 'Outstanding', value: formatCurrency(dateFilteredStats.outstanding), color: 'text-red-500' },
+          { label: 'Returns', value: dateFilteredStats.returns, subValue: formatCurrency(dateFilteredStats.returnAmount), color: 'text-purple-500' },
         ].map(s => (
           <div key={s.label} className="stat-card">
             <p className="text-xs text-muted-foreground">{s.label}</p>
             <p className={`text-xl font-bold mt-1 ${s.color}`}>{s.value}</p>
+            {s.subValue && <p className={`text-xs mt-0.5 ${s.color} opacity-70`}>{s.subValue}</p>}
           </div>
         ))}
       </div>
 
-      <div className="bg-white rounded-xl border border-border p-4 shadow-sm flex flex-wrap gap-3">
+      <div className="bg-white rounded-xl border border-border p-4 shadow-sm flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search orders..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
@@ -305,6 +398,25 @@ export default function PurchasesPage() {
           <option value="">All Status</option>
           {Object.entries(statusConfig).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         </select>
+        <div className="flex items-center gap-2">
+          <Calendar className="w-4 h-4 text-muted-foreground" />
+          <select value={dateFilter} onChange={e => setDateFilter(e.target.value as any)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">Last 7 Days</option>
+            <option value="month">Last 30 Days</option>
+            <option value="quarter">Last 3 Months</option>
+            <option value="year">Last Year</option>
+            <option value="custom">Custom Range</option>
+          </select>
+        </div>
+        {dateFilter === 'custom' && (
+          <div className="flex items-center gap-2">
+            <input type="date" value={customDateFrom} onChange={e => setCustomDateFrom(e.target.value)} className="border border-border rounded-lg px-2 py-2 text-sm focus:outline-none" />
+            <span className="text-xs text-muted-foreground">to</span>
+            <input type="date" value={customDateTo} onChange={e => setCustomDateTo(e.target.value)} className="border border-border rounded-lg px-2 py-2 text-sm focus:outline-none" />
+          </div>
+        )}
       </div>
 
       <div className="table-wrapper">
@@ -326,14 +438,25 @@ export default function PurchasesPage() {
             <tbody className="divide-y divide-border">
               {loading ? Array.from({ length: 5 }).map((_, i) => (
                 <tr key={i}>{Array.from({ length: 9 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
-              )) : filtered.length === 0 ? (
+              )) : paginatedOrders.length === 0 ? (
                 <tr><td colSpan={9} className="px-4 py-12 text-center text-muted-foreground text-sm">No purchase orders found</td></tr>
-              ) : filtered.map((o) => {
+              ) : paginatedOrders.map((o) => {
                 const cfg = statusConfig[o.status as PurchaseOrderStatus] || statusConfig.draft;
-                const balance = Number(o.total_amount) - Number(o.amount_paid);
+                const isCancelled = o.status === 'cancelled';
+                const balance = isCancelled ? 0 : Number(o.total_amount) - Number(o.amount_paid);
+                const returns = poReturns[o.id] || [];
                 return (
                   <tr key={o.id} className="hover:bg-muted/30 transition-colors">
-                    <td className="px-4 py-3"><span className="text-sm font-semibold text-blue-600">{o.po_number}</span></td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-semibold text-blue-600">{o.po_number}</span>
+                        {returns.length > 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-purple-100 text-purple-700" title={`Returned: ${returns.map(r => r.return_number).join(', ')}`}>
+                            <Undo2 className="w-2.5 h-2.5" /> {returns.length}
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-sm text-foreground">{o.supplier?.name || '-'}</td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">{formatDate(o.order_date)}</td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">{o.expected_date ? formatDate(o.expected_date) : '-'}</td>
@@ -369,7 +492,20 @@ export default function PurchasesPage() {
             </tbody>
           </table>
         </div>
-        <div className="px-4 py-3 border-t border-border"><p className="text-xs text-muted-foreground">{filtered.length} orders</p></div>
+        <div className="px-4 py-3 border-t border-border flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">Showing {paginatedOrders.length} of {filtered.length} orders</p>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="w-7 h-7 flex items-center justify-center rounded-lg border border-border hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed">
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="text-xs text-muted-foreground">Page {currentPage} of {totalPages}</span>
+              <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="w-7 h-7 flex items-center justify-center rounded-lg border border-border hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed">
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {showCreateModal && (
@@ -887,8 +1023,21 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
   onCancel: () => void;
 }) {
   const cfg = statusConfig[order.status as PurchaseOrderStatus] || statusConfig.draft;
-  const balance = Number(order.total_amount) - Number(order.amount_paid);
+  const isCancelled = order.status === 'cancelled';
+  const balance = isCancelled ? 0 : Number(order.total_amount) - Number(order.amount_paid);
   const canEdit = order.status === 'draft' || order.status === 'approved';
+  const [returns, setReturns] = useState<{ return_number: string; total_amount: number; status: string; return_date: string }[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from('purchase_returns')
+        .select('return_number, total_amount, status, return_date')
+        .eq('purchase_order_id', order.id)
+        .order('created_at', { ascending: false });
+      setReturns(data || []);
+    })();
+  }, [order.id]);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1001,12 +1150,48 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
                 <span className="text-muted-foreground">Paid</span>
                 <span className="text-green-600">{formatCurrency(order.amount_paid)}</span>
               </div>
+              {returns.length > 0 && (
+                <div className="flex justify-between text-sm text-purple-600">
+                  <span>Returns ({returns.length})</span>
+                  <span>-{formatCurrency(returns.reduce((s, r) => s + Number(r.total_amount), 0))}</span>
+                </div>
+              )}
               <div className="flex justify-between font-bold text-base border-t border-border pt-2">
                 <span>Balance</span>
-                <span className="text-red-600">{formatCurrency(balance)}</span>
+                <span className={isCancelled ? 'text-muted-foreground' : balance > 0 ? 'text-red-600' : 'text-green-600'}>
+                  {isCancelled ? 'Cancelled' : formatCurrency(balance)}
+                </span>
               </div>
             </div>
           </div>
+
+          {returns.length > 0 && (
+            <div>
+              <p className="text-xs font-medium mb-2 text-purple-700">Purchase Returns</p>
+              <div className="border border-purple-200 rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-purple-50">
+                    <tr>
+                      <th className="text-left text-xs font-semibold text-purple-700 px-3 py-2">Return #</th>
+                      <th className="text-left text-xs font-semibold text-purple-700 px-3 py-2">Date</th>
+                      <th className="text-right text-xs font-semibold text-purple-700 px-3 py-2">Amount</th>
+                      <th className="text-left text-xs font-semibold text-purple-700 px-3 py-2">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-purple-100">
+                    {returns.map((r, idx) => (
+                      <tr key={idx}>
+                        <td className="px-3 py-2 text-sm font-medium text-purple-700">{r.return_number}</td>
+                        <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(r.return_date)}</td>
+                        <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(r.total_amount)}</td>
+                        <td className="px-3 py-2"><span className="badge-status bg-purple-100 text-purple-700">{r.status}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {order.status === 'draft' && (
             <div className="no-print flex gap-2">
