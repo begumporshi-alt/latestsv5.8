@@ -8,6 +8,7 @@ import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHa
 import Link from 'next/link';
 import type { Customer, CustomerType } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
+import RecordButton from '@/components/RecordButton';
 
 const typeConfig: Record<CustomerType, { label: string; color: string; icon: React.ElementType }> = {
   retail: { label: 'Retail', color: 'bg-gray-100 text-gray-700', icon: Users },
@@ -191,9 +192,12 @@ export default function CRMPage() {
           <h1 className="text-2xl font-bold text-foreground">CRM - Customers</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Manage customer relationships</p>
         </div>
-        <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">
-          <Plus className="w-4 h-4" />Add Customer
-        </button>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <RecordButton variant="receivable" onSaved={loadData} />
+          <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition whitespace-nowrap">
+            <Plus className="w-4 h-4" />Add Customer
+          </button>
+        </div>
       </div>
 
       {/* Stats */}

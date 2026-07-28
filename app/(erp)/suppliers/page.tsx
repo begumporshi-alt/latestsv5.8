@@ -7,6 +7,7 @@ import { toast } from '@/hooks/use-toast';
 import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, CircleAlert as AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import type { Supplier } from '@/lib/types';
+import RecordButton from '@/components/RecordButton';
 
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -62,9 +63,12 @@ export default function SuppliersPage() {
           <h1 className="text-2xl font-bold text-foreground">Suppliers</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Manage supplier accounts and relationships</p>
         </div>
-        <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">
-          <Plus className="w-4 h-4" />Add Supplier
-        </button>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <RecordButton variant="payable" onSaved={loadData} />
+          <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition whitespace-nowrap">
+            <Plus className="w-4 h-4" />Add Supplier
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

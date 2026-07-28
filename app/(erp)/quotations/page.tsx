@@ -1038,6 +1038,59 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     })();
   }, [quotation.id]);
 
+  function addProductToItems(product: any) {
+    const multiUnit = product.enable_multi_unit && product.units && product.units.filter((u: any) => u.is_active).length > 0;
+    const defaultUnit: ProductUnit | undefined = multiUnit ? getDefaultSaleUnit(product) : undefined;
+    const unitPrice = defaultUnit ? defaultUnit.price : (product.sale_price || 0);
+    const costPrice = defaultUnit ? (defaultUnit.cost_price || product.cost_price || 0) : (product.cost_price || 0);
+    const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
+
+    const invItems: any[] = product.inventory_items || [];
+    const availableWhs = invItems
+      .filter((i: any) => Number(i.quantity_on_hand) > 0)
+      .map((i: any) => ({
+        warehouse_id: i.warehouse_id,
+        warehouse_name: warehouses.find(w => w.id === i.warehouse_id)?.name || i.warehouse_id,
+        stock: Number(i.quantity_on_hand),
+        inventory_item_id: i.id,
+      }));
+    const bestWh = availableWhs.length > 0 ? availableWhs.reduce((a, b) => a.stock > b.stock ? a : b) : null;
+    const stock = bestWh ? bestWh.stock : (invItems.length > 0 ? 0 : null);
+
+    if (stock !== null && stock <= 0) {
+      toast({ title: 'Warning', description: `${product.name} is currently out of stock`, variant: 'destructive' });
+    }
+
+    const existingIndex = items.findIndex(i => i.product_id === product.id && (i.selected_unit?.id ?? '') === (defaultUnit?.id ?? '') && (i.warehouse_id ?? '') === (bestWh?.warehouse_id ?? ''));
+    if (existingIndex >= 0) {
+      const updated = [...items];
+      const ex = updated[existingIndex];
+      const newQty = ex.quantity + 1;
+      const newBase = ex.selected_unit ? convertToBaseUnit(newQty, ex.selected_unit) : newQty;
+      updated[existingIndex] = { ...ex, quantity: newQty, base_quantity: newBase };
+      setItems(updated);
+      return;
+    }
+
+    setItems(prev => [...prev, {
+      product_id: product.id,
+      product_name: product.name,
+      product_sku: product.sku,
+      product_unit: product.unit,
+      product_base_unit: product.base_unit,
+      stock_qty: stock,
+      quantity: 1,
+      unit_price: unitPrice,
+      discount_percent: 0,
+      selected_unit: defaultUnit,
+      available_units: multiUnit ? product.units.filter((u: any) => u.is_active) : undefined,
+      base_quantity: baseQty,
+      cost_price: costPrice,
+      warehouse_id: bestWh?.warehouse_id,
+      available_warehouses: availableWhs,
+    }]);
+  }
+
   function updateItem(index: number, field: string, value: any) {
     const updated = [...items];
     if (field === 'selected_unit') {
@@ -1158,6 +1211,12 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               <label className="text-xs font-medium">Line Items</label>
               {items.length > 0 && <span className="text-xs text-muted-foreground">{items.length} item{items.length !== 1 ? 's' : ''}</span>}
             </div>
+            <ProductSearchInput
+              onSelect={addProductToItems}
+              showStock
+              placeholder="Search and add products..."
+              className="mb-3"
+            />
             {items.length > 0 && (
               <div className="border border-border rounded-lg overflow-hidden">
                 <table className="w-full">
