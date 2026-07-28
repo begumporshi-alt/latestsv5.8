@@ -1018,17 +1018,17 @@ export default function POSPage() {
               onDragOver={e => { e.preventDefault(); setDragOverItem(index); }}
               onDrop={() => { if (draggedItem !== null && draggedItem !== index) reorderCart(draggedItem, index); setDraggedItem(null); setDragOverItem(null); }}
               onDragEnd={() => { setDraggedItem(null); setDragOverItem(null); }}
-              className={`bg-muted/30 rounded-lg px-2 py-1.5 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} cursor-grab active:cursor-grabbing`}
+              className={`bg-muted/30 rounded-lg px-3 py-2 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} cursor-grab active:cursor-grabbing`}
             >
               <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground/40 text-[10px] select-none shrink-0">⠿</span>
-                <button onClick={() => removeFromCart(item.id, item.selected_unit?.id || undefined)} className="text-muted-foreground hover:text-red-500 transition shrink-0"><X className="w-3 h-3" /></button>
-                <p className="flex-1 min-w-0 text-[11px] font-semibold text-foreground truncate leading-tight">{item.name}</p>
-                <span className="text-[11px] font-bold text-blue-600 shrink-0 whitespace-nowrap">{formatCurrency(lineTotal)}</span>
+                <span className="text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
+                <button onClick={() => removeFromCart(item.id, item.selected_unit?.id || undefined)} className="text-muted-foreground hover:text-red-500 transition shrink-0"><X className="w-4 h-4" /></button>
+                <p className="flex-1 min-w-0 text-sm font-semibold text-foreground truncate leading-tight">{item.name}</p>
+                <span className="text-sm font-bold text-blue-600 shrink-0 whitespace-nowrap">{formatCurrency(lineTotal)}</span>
               </div>
-              <div className="flex items-end gap-1.5 mt-1 pl-5">
+              <div className="flex items-end gap-2 mt-1.5 pl-6">
                 <div className="flex flex-col">
-                  <label className="text-[8px] font-medium text-muted-foreground leading-none mb-0.5">Price</label>
+                  <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Price</label>
                   <input
                     type="number"
                     min="0"
@@ -1036,12 +1036,12 @@ export default function POSPage() {
                     value={item.unit_price}
                     onChange={e => updateCartPrice(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-16 text-[10px] border border-border rounded px-1 py-0.5 focus:outline-none focus:border-blue-400 text-right bg-white"
+                    className="w-20 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right bg-white"
                   />
                 </div>
-                {item.selected_unit && <span className="text-[9px] text-muted-foreground pb-1">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
+                {item.selected_unit && <span className="text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
                 <div className="flex flex-col">
-                  <label className="text-[8px] font-medium text-muted-foreground leading-none mb-0.5">Disc %</label>
+                  <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Disc %</label>
                   <input
                     type="number"
                     min="0"
@@ -1050,15 +1050,15 @@ export default function POSPage() {
                     value={item.discount_percent || 0}
                     onChange={e => updateCartItemDiscount(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-14 text-[10px] border border-amber-300 rounded px-1 py-0.5 focus:outline-none focus:border-amber-400 text-center bg-amber-50/30"
+                    className="w-16 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-center bg-amber-50/30"
                     placeholder="0"
                   />
                 </div>
                 {(item.discount_percent || 0) > 0 && (
-                  <span className="text-[9px] text-green-600 font-semibold whitespace-nowrap pb-1">→ {formatCurrency(item.unit_price * (1 - (item.discount_percent || 0) / 100))}</span>
+                  <span className="text-xs text-green-600 font-semibold whitespace-nowrap pb-1.5">→ {formatCurrency(item.unit_price * (1 - (item.discount_percent || 0) / 100))}</span>
                 )}
                 <div className="flex flex-col ml-auto">
-                  <label className="text-[8px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Qty</label>
+                  <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Qty</label>
                   <input
                     type="number"
                     min="0"
@@ -1066,13 +1066,13 @@ export default function POSPage() {
                     value={item.quantity}
                     onChange={e => updateCartQuantity(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-16 text-[10px] font-bold border border-border rounded px-1 py-0.5 text-center focus:outline-none focus:border-blue-400 bg-white"
+                    className="w-20 text-sm font-bold border border-border rounded px-1.5 py-1 text-center focus:outline-none focus:border-blue-400 bg-white"
                   />
                 </div>
               </div>
               {item.available_warehouses && item.available_warehouses.length > 0 && (
-                <div className="flex items-center gap-1 mt-1 pl-5">
-                  <span className="text-[8px] font-medium text-muted-foreground shrink-0">WH</span>
+                <div className="flex items-center gap-1.5 mt-1.5 pl-6">
+                  <span className="text-[10px] font-medium text-muted-foreground shrink-0">WH</span>
                   <select
                     value={item.warehouse_id || ''}
                     onChange={e => {
@@ -1082,7 +1082,7 @@ export default function POSPage() {
                       }
                     }}
                     onClick={e => e.stopPropagation()}
-                    className="flex-1 text-[9px] border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-1 py-0.5 focus:outline-none cursor-pointer"
+                    className="flex-1 text-xs border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-1.5 py-1 focus:outline-none cursor-pointer"
                   >
                     {item.available_warehouses.map(w => (
                       <option key={w.warehouse_id} value={w.warehouse_id}>{w.warehouse_name} ({w.stock})</option>
@@ -1103,10 +1103,10 @@ export default function POSPage() {
                 <table className="w-full">
                   <thead className="bg-muted/40">
                     <tr>
-                      <th className="text-left text-[10px] font-semibold text-muted-foreground px-2 py-1.5">Product</th>
-                      <th className="text-right text-[10px] font-semibold text-muted-foreground px-2 py-1.5">Qty</th>
-                      <th className="text-right text-[10px] font-semibold text-muted-foreground px-2 py-1.5">Cost/Unit</th>
-                      <th className="text-right text-[10px] font-semibold text-muted-foreground px-2 py-1.5">Total Cost</th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-2 py-1.5">Product</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-1.5">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-1.5">Cost/Unit</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-1.5">Total Cost</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -1116,31 +1116,31 @@ export default function POSPage() {
                       return (
                         <tr key={i} className="hover:bg-muted/20">
                           <td className="px-2 py-1.5">
-                            <p className="text-[11px] font-medium text-foreground truncate max-w-[100px]">{item.name}</p>
-                            <p className="text-[9px] text-muted-foreground">{item.selected_unit?.unit_name || 'pcs'}</p>
+                            <p className="text-sm font-medium text-foreground truncate max-w-[100px]">{item.name}</p>
+                            <p className="text-xs text-muted-foreground">{item.selected_unit?.unit_name || 'pcs'}</p>
                           </td>
-                          <td className="px-2 py-1.5 text-right text-[11px] text-foreground">{item.quantity}</td>
-                          <td className="px-2 py-1.5 text-right text-[11px] text-foreground">{formatCurrency(costPerUnit)}</td>
-                          <td className="px-2 py-1.5 text-right text-[11px] font-semibold text-foreground">{formatCurrency(totalCost)}</td>
+                          <td className="px-2 py-1.5 text-right text-sm text-foreground">{item.quantity}</td>
+                          <td className="px-2 py-1.5 text-right text-sm text-foreground">{formatCurrency(costPerUnit)}</td>
+                          <td className="px-2 py-1.5 text-right text-sm font-semibold text-foreground">{formatCurrency(totalCost)}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                   <tfoot className="bg-muted/30">
                     <tr>
-                      <td colSpan={3} className="px-2 py-1.5 text-right text-[10px] font-semibold text-muted-foreground">Total Cost:</td>
-                      <td className="px-2 py-1.5 text-right text-[11px] font-bold text-foreground">
+                      <td colSpan={3} className="px-2 py-1.5 text-right text-xs font-semibold text-muted-foreground">Total Cost:</td>
+                      <td className="px-2 py-1.5 text-right text-sm font-bold text-foreground">
                         {formatCurrency(cart.reduce((s, item) => s + (item.cost_price || 0) * item.quantity, 0))}
                       </td>
                     </tr>
                   </tfoot>
                 </table>
               </div>
-              <div className="flex justify-between text-[11px] pt-1">
+              <div className="flex justify-between text-sm pt-1">
                 <span className="text-muted-foreground">Selling Total:</span>
                 <span className="font-bold text-foreground">{formatCurrency(total)}</span>
               </div>
-              <div className="flex justify-between text-[11px]">
+              <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Profit (est.):</span>
                 <span className="font-bold text-green-600">{formatCurrency(total - cart.reduce((s, item) => s + (item.cost_price || 0) * item.quantity, 0))}</span>
               </div>
@@ -1166,32 +1166,32 @@ export default function POSPage() {
               <div className="p-2.5 space-y-2">
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="block text-[8px] font-medium text-muted-foreground leading-none mb-0.5">Date</label>
+                    <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Date</label>
                     <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
                   <div>
-                    <label className="block text-[8px] font-medium text-muted-foreground leading-none mb-0.5">Reference</label>
+                    <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Reference</label>
                     <input type="text" value={reference} onChange={e => setReference(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Ref. person (optional)" />
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2">
                   <div className="flex-1 flex items-center gap-1">
-                    <span className="text-[11px] text-muted-foreground">Cart Disc %</span>
+                    <span className="text-sm text-muted-foreground">Cart Disc %</span>
                     <input type="number" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="flex-1 min-w-0 border border-border rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
                   <div className="flex-1 flex items-center gap-1">
-                    <span className="text-[11px] text-muted-foreground">Extra ৳</span>
+                    <span className="text-sm text-muted-foreground">Extra ৳</span>
                     <input type="number" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="flex-1 min-w-0 border border-border rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
                 </div>
 
-                <div className="space-y-0.5 text-[11px]">
+                <div className="space-y-0.5 text-sm">
                   <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span>{formatCurrency(subtotal + itemDiscountTotal)}</span></div>
                   {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item Discounts</span><span>-{formatCurrency(itemDiscountTotal)}</span></div>}
                   {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart Discount ({discount}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>}
                   {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>}
-                  <div className="flex justify-between font-bold text-sm text-foreground pt-1 border-t border-border"><span>Total</span><span>{formatCurrency(total)}</span></div>
+                  <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span>{formatCurrency(total)}</span></div>
                 </div>
 
                 <button
@@ -1205,7 +1205,7 @@ export default function POSPage() {
 
                 <button
                   onClick={() => setShowCartFooter(false)}
-                  className="w-full flex items-center justify-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition pb-0.5"
+                  className="w-full flex items-center justify-center gap-1 text-sm text-muted-foreground hover:text-foreground transition pb-0.5"
                 >
                   Turn back <ChevronUp className="w-3 h-3" />
                 </button>
