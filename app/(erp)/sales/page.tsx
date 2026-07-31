@@ -117,7 +117,14 @@ export default function SalesPage() {
     if (from) invQuery = invQuery.gte('invoice_date', from);
     if (to) invQuery = invQuery.lte('invoice_date', to);
 
-    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes] = await Promise.all([
+    let receivablePaymentsQuery = supabase.from('payments')
+      .select('id, reference_id, payment_method, amount, payment_date, payment_type')
+      .eq('reference_type', 'receivable')
+      .eq('payment_type', 'received');
+    if (from) receivablePaymentsQuery = receivablePaymentsQuery.gte('payment_date', from);
+    if (to) receivablePaymentsQuery = receivablePaymentsQuery.lte('payment_date', to);
+
+    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes] = await Promise.all([
       invQuery.limit(500),
       supabase.from('customers').select('*').eq('is_active', true).order('name'),
       supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name'),
@@ -127,6 +134,7 @@ export default function SalesPage() {
       supabase.from('payments').select('id, reference_id, payment_method, amount, payment_date').eq('reference_type', 'invoice'),
       supabase.from('deliveries').select('id, invoice_id, delivery_number, status'),
       supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
+      receivablePaymentsQuery,
     ]);
 
     // Attach deliveries to their corresponding invoices
@@ -175,7 +183,9 @@ export default function SalesPage() {
       const refunds = (i.sales_returns || []).reduce((rs: number, r: any) => rs + Number(r.total_refund_amount), 0);
       return s + refunds;
     }, 0);
-    const totalCollected = activeInv.reduce((s: number, i: any) => s + Number(i.amount_paid), 0);
+    const invoiceCollected = activeInv.reduce((s: number, i: any) => s + Number(i.amount_paid), 0);
+    const receivableCollected = (receivablePaymentsRes.data || []).reduce((s: number, p: any) => s + Number(p.amount), 0);
+    const totalCollected = invoiceCollected + receivableCollected;
 
     // Fetch store credit balance (not period-dependent)
     const { data: creditData } = await supabase
@@ -1863,12 +1873,21 @@ function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: (
 
   useEffect(() => {
     (async () => {
-      const { data: payments } = await supabase
+      const { data: invoicePayments } = await supabase
         .from('payments')
         .select('payment_method, amount, payment_date, notes, reference_id')
         .eq('payment_type', 'received')
         .eq('reference_type', 'invoice')
         .order('payment_date', { ascending: true });
+
+      const { data: receivablePayments } = await supabase
+        .from('payments')
+        .select('payment_method, amount, payment_date, notes, reference_id')
+        .eq('payment_type', 'received')
+        .eq('reference_type', 'receivable')
+        .order('payment_date', { ascending: true });
+
+      const allPayments = [...(invoicePayments || []), ...(receivablePayments || [])];
 
       const { data: returns } = await supabase
         .from('sales_returns')
@@ -1876,7 +1895,7 @@ function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: (
         .order('created_at', { ascending: true });
 
       const payMap = new Map<string, { amount: number; count: number }>();
-      (payments || []).forEach((p: any) => {
+      (allPayments).forEach((p: any) => {
         const method = p.payment_method || 'unknown';
         const existing = payMap.get(method) || { amount: 0, count: 0 };
         existing.amount += Number(p.amount);
@@ -1896,8 +1915,11 @@ function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: (
       setRefundBreakdown(Array.from(refundMap.entries()).map(([method, v]) => ({ method, ...v })).sort((a, b) => b.amount - a.amount));
 
       const events: { date: string; type: 'payment' | 'refund'; description: string; method: string; amount: number }[] = [];
-      (payments || []).forEach((p: any) => {
+      (invoicePayments || []).forEach((p: any) => {
         events.push({ date: p.payment_date, type: 'payment', description: p.notes || 'Invoice payment', method: p.payment_method || 'unknown', amount: Number(p.amount) });
+      });
+      (receivablePayments || []).forEach((p: any) => {
+        events.push({ date: p.payment_date, type: 'payment', description: p.notes || 'Receivable payment', method: p.payment_method || 'unknown', amount: Number(p.amount) });
       });
       (returns || []).forEach((r: any) => {
         events.push({ date: r.created_at.split('T')[0], type: 'refund', description: `Sales return ${r.return_number}`, method: r.refund_method || 'unknown', amount: -Number(r.total_refund_amount) });
