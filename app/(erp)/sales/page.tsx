@@ -1263,6 +1263,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                 <thead className="bg-muted/40">
                   <tr>
                     <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                    <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-36">Warehouse</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Price</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc %</th>
@@ -1302,21 +1303,23 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                               <p className="text-[10px] text-muted-foreground mt-0.5">1 {item.selected_unit.unit_name} = {item.selected_unit.conversion_factor} {item.product_base_unit || 'base'}</p>
                             </div>
                           )}
-                          {item.available_warehouses && item.available_warehouses.length > 0 && (
-                            <div className="mt-1">
-                              <select
-                                value={item.warehouse_id || ''}
-                                onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
-                                className="w-full border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-2 py-1 text-xs focus:outline-none"
-                              >
-                                {item.available_warehouses?.map(w => {
-                                  const whName = warehouses.find(wh => wh.id === w.warehouse_id)?.name || w.warehouse_name;
-                                  return (
-                                    <option key={w.warehouse_id} value={w.warehouse_id}>{whName} ({w.stock} {item.product_base_unit || 'pcs'})</option>
-                                  );
-                                })}
-                              </select>
-                            </div>
+                        </td>
+                        <td className="px-3 py-2 align-top">
+                          {item.available_warehouses && item.available_warehouses.length > 0 ? (
+                            <select
+                              value={item.warehouse_id || ''}
+                              onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
+                              className="w-full border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-2 py-1.5 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                            >
+                              {item.available_warehouses.map(w => {
+                                const whName = warehouses.find(wh => wh.id === w.warehouse_id)?.name || w.warehouse_name;
+                                return (
+                                  <option key={w.warehouse_id} value={w.warehouse_id}>{whName} ({w.stock})</option>
+                                );
+                              })}
+                            </select>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground italic">No warehouse</span>
                           )}
                         </td>
                         <td className="px-3 py-2">
