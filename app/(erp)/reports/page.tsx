@@ -91,42 +91,28 @@ export default function ReportsPage() {
     const totalRevenue = (invoicesRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
     const totalPurchases = (purchasesRes.data || []).reduce((s: number, p: any) => s + Number(p.total_amount), 0);
 
-    // COGS from Chart of Accounts journal lines
-    const cogsAccount = (accountsRes.data || []).find((a: any) =>
-      a.name.toLowerCase().includes('cost of goods sold') || a.name.toLowerCase().includes('cogs')
-    );
+    // COGS from Chart of Accounts — use RPC for reliable DB-side date filtering
+    const cogsAccount = (accountsRes.data || []).find((a: any) => a.code === '5000');
     let cogsActual = 0;
     if (cogsAccount) {
-      const { data: cogsLines } = await supabase
-        .from('journal_lines')
-        .select('debit, credit, journal_entry:journal_entries!inner(entry_date)')
-        .eq('account_id', cogsAccount.id);
-      cogsActual = (cogsLines || []).filter((l: any) => {
-        const d = l.journal_entry?.entry_date;
-        if (!d) return false;
-        if (d < effectiveStart) return false;
-        if (effectiveEnd && d > effectiveEnd) return false;
-        return true;
-      }).reduce((s: number, l: any) => s + Number(l.debit || 0) - Number(l.credit || 0), 0);
+      const { data } = await supabase.rpc('period_net_debit', {
+        p_account_id: cogsAccount.id,
+        p_start_date: effectiveStart,
+        p_end_date: effectiveEnd,
+      });
+      cogsActual = Number(data || 0);
     }
 
     // Sales Returns & Allowances from Chart of Accounts
-    const salesReturnsAccount = (accountsRes.data || []).find((a: any) =>
-      a.name.toLowerCase().includes('sales return') || a.name.toLowerCase().includes('allowance')
-    );
+    const salesReturnsAccount = (accountsRes.data || []).find((a: any) => a.code === '4050');
     let salesReturnsTotal = 0;
     if (salesReturnsAccount) {
-      const { data: srLines } = await supabase
-        .from('journal_lines')
-        .select('debit, credit, journal_entry:journal_entries!inner(entry_date)')
-        .eq('account_id', salesReturnsAccount.id);
-      salesReturnsTotal = (srLines || []).filter((l: any) => {
-        const d = l.journal_entry?.entry_date;
-        if (!d) return false;
-        if (d < effectiveStart) return false;
-        if (effectiveEnd && d > effectiveEnd) return false;
-        return true;
-      }).reduce((s: number, l: any) => s + Number(l.debit || 0) - Number(l.credit || 0), 0);
+      const { data } = await supabase.rpc('period_net_debit', {
+        p_account_id: salesReturnsAccount.id,
+        p_start_date: effectiveStart,
+        p_end_date: effectiveEnd,
+      });
+      salesReturnsTotal = Number(data || 0);
     }
 
     // Operating Expenses from Chart of Accounts (exclude COGS, Sales Returns, Discount Given)
@@ -139,18 +125,12 @@ export default function ReportsPage() {
     );
     let totalOperatingExpenses = 0;
     for (const acc of opexAccounts) {
-      const { data: opexLines } = await supabase
-        .from('journal_lines')
-        .select('debit, credit, journal_entry:journal_entries!inner(entry_date)')
-        .eq('account_id', acc.id);
-      const netDebit = (opexLines || []).filter((l: any) => {
-        const d = l.journal_entry?.entry_date;
-        if (!d) return false;
-        if (d < effectiveStart) return false;
-        if (effectiveEnd && d > effectiveEnd) return false;
-        return true;
-      }).reduce((s: number, l: any) => s + Number(l.debit || 0) - Number(l.credit || 0), 0);
-      totalOperatingExpenses += Math.max(0, netDebit);
+      const { data } = await supabase.rpc('period_net_debit', {
+        p_account_id: acc.id,
+        p_start_date: effectiveStart,
+        p_end_date: effectiveEnd,
+      });
+      totalOperatingExpenses += Math.max(0, Number(data || 0));
     }
 
     const grossProfit = totalRevenue - Math.max(0, salesReturnsTotal) - Math.max(0, cogsActual);

@@ -80,25 +80,23 @@ export default function PLPage() {
     // Gross sales revenue from non-cancelled invoices
     const salesRevenue = (invoicesRes.data || []).reduce((s, inv) => s + Number(inv.total_amount), 0);
 
-    // Helper: sum journal lines for an account within period
+    // Helper: sum journal lines for an account within period (DB-side filtering via RPC)
     async function periodNetDebit(accountId: string): Promise<number> {
-      const { data: lines } = await supabase
-        .from('journal_lines')
-        .select('debit, credit, journal_entry:journal_entries!inner(entry_date)')
-        .eq('account_id', accountId);
-      return (lines || [])
-        .filter((l: any) => { const d = l.journal_entry?.entry_date; return d && d >= startDate && d <= endDate; })
-        .reduce((s: number, l: any) => s + Number(l.debit || 0) - Number(l.credit || 0), 0);
+      const { data } = await supabase.rpc('period_net_debit', {
+        p_account_id: accountId,
+        p_start_date: startDate,
+        p_end_date: endDate,
+      });
+      return Number(data || 0);
     }
 
     async function periodNetCredit(accountId: string): Promise<number> {
-      const { data: lines } = await supabase
-        .from('journal_lines')
-        .select('debit, credit, journal_entry:journal_entries!inner(entry_date)')
-        .eq('account_id', accountId);
-      return (lines || [])
-        .filter((l: any) => { const d = l.journal_entry?.entry_date; return d && d >= startDate && d <= endDate; })
-        .reduce((s: number, l: any) => s + Number(l.credit || 0) - Number(l.debit || 0), 0);
+      const { data } = await supabase.rpc('period_net_credit', {
+        p_account_id: accountId,
+        p_start_date: startDate,
+        p_end_date: endDate,
+      });
+      return Number(data || 0);
     }
 
     const allAccounts = accountsRes.data || [];
