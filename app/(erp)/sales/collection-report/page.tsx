@@ -115,9 +115,7 @@ export default function CollectionReportPage() {
       .select(`
         id, payment_number, payment_type, reference_type, reference_id,
         customer_id, amount, payment_method, payment_date, reference_number,
-        notes, is_reversed, bad_debt_amount,
-        customer:customers(name),
-        invoice:invoices(invoice_number)
+        notes, is_reversed, bad_debt_amount
       `)
       .eq('payment_type', 'received')
       .in('reference_type', ['invoice', 'receivable'])
@@ -131,9 +129,7 @@ export default function CollectionReportPage() {
       .from('sales_returns')
       .select(`
         id, return_number, invoice_id, customer_id,
-        total_refund_amount, refund_method, return_date,
-        customer:customers(name),
-        invoice:invoices(invoice_number)
+        total_refund_amount, refund_method, return_date
       `)
       .order('return_date', { ascending: false });
     if (from) retQuery = retQuery.gte('return_date', from);
@@ -141,8 +137,66 @@ export default function CollectionReportPage() {
 
     const [payRes, retRes] = await Promise.all([payQuery, retQuery]);
 
-    setPayments((payRes.data || []) as unknown as PaymentRecord[]);
-    setReturns((retRes.data || []) as unknown as ReturnRecord[]);
+    if (payRes.error) {
+      console.error('Collection report payments error:', payRes.error);
+      setPayments([]);
+      setReturns([]);
+      setLoading(false);
+      return;
+    }
+    if (retRes.error) {
+      console.error('Collection report returns error:', retRes.error);
+    }
+
+    const payData = (payRes.data || []) as any[];
+    const retData = (retRes.data || []) as any[];
+
+    // Resolve customer names and invoice numbers in JS (payments.reference_id is polymorphic,
+    // so PostgREST can't join invoices directly).
+    const customerIds = new Set<string>();
+    const invoiceIds = new Set<string>();
+    payData.forEach((p) => {
+      if (p.customer_id) customerIds.add(p.customer_id);
+      if (p.reference_type === 'invoice' && p.reference_id) invoiceIds.add(p.reference_id);
+    });
+    retData.forEach((r) => {
+      if (r.customer_id) customerIds.add(r.customer_id);
+      if (r.invoice_id) invoiceIds.add(r.invoice_id);
+    });
+
+    const [custRes, invRes] = await Promise.all([
+      customerIds.size > 0
+        ? supabase.from('customers').select('id, name').in('id', Array.from(customerIds))
+        : Promise.resolve({ data: [], error: null }),
+      invoiceIds.size > 0
+        ? supabase.from('invoices').select('id, invoice_number').in('id', Array.from(invoiceIds))
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+
+    const customerMap = new Map<string, string>();
+    (custRes.data || []).forEach((c: any) => customerMap.set(c.id, c.name));
+    const invoiceMap = new Map<string, string>();
+    (invRes.data || []).forEach((i: any) => invoiceMap.set(i.id, i.invoice_number));
+
+    const enrichedPayments: PaymentRecord[] = payData.map((p) => ({
+      ...p,
+      customer: p.customer_id ? { name: customerMap.get(p.customer_id) || '' } : null,
+      invoice:
+        p.reference_type === 'invoice' && p.reference_id && invoiceMap.has(p.reference_id)
+          ? { invoice_number: invoiceMap.get(p.reference_id)! }
+          : null,
+    }));
+
+    const enrichedReturns: ReturnRecord[] = retData.map((r) => ({
+      ...r,
+      customer: r.customer_id ? { name: customerMap.get(r.customer_id) || '' } : null,
+      invoice: r.invoice_id && invoiceMap.has(r.invoice_id)
+        ? { invoice_number: invoiceMap.get(r.invoice_id)! }
+        : null,
+    }));
+
+    setPayments(enrichedPayments);
+    setReturns(enrichedReturns);
     setLoading(false);
   }
 
