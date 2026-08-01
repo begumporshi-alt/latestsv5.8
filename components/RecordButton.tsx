@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, ChevronDown, Receipt, User, Building2, X } from 'lucide-react';
+import { Plus, ChevronDown, Receipt, User, Building2, X, Search } from 'lucide-react';
+import CustomerSearchInput, { type CustomerResult } from '@/components/ui/CustomerSearchInput';
+import SupplierSearchInput, { type SupplierResult } from '@/components/ui/SupplierSearchInput';
 
 interface Account {
   id: string;
@@ -143,35 +145,29 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
 }
 
 function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Account[]; onSaved?: () => void; onClose: () => void }) {
-  const [customers, setCustomers] = useState<any[]>([]);
-  const [form, setForm] = useState({ customer_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0], offset_account_id: '' });
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerResult | null>(null);
+  const [form, setForm] = useState({ amount: '', description: '', date: new Date().toISOString().split('T')[0], offset_account_id: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   const manualReceivableAccount = accounts.find(a => a.code === '1300');
   const offsetAccounts = accounts.filter(a => ['revenue', 'equity', 'liability'].includes(a.account_type));
 
-  useEffect(() => {
-    supabase.from('customers').select('id, name, code, outstanding_balance, total_purchases').eq('is_active', true).order('name')
-      .then(({ data }) => setCustomers(data || []));
-  }, []);
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    if (!form.customer_id || !form.amount || parseFloat(form.amount) <= 0) { setError('Please select a customer and enter an amount'); return; }
+    if (!selectedCustomer || !form.amount || parseFloat(form.amount) <= 0) { setError('Please select a customer and enter an amount'); return; }
     if (!form.offset_account_id) { setError('Please select an offset account'); return; }
     setSaving(true);
     try {
       const amount = parseFloat(form.amount);
-      const customer = customers.find(c => c.id === form.customer_id);
       const offsetAcc = accounts.find(a => a.id === form.offset_account_id);
-      const desc = form.description || `Receivable from ${customer?.name || 'Customer'}`;
+      const desc = form.description || `Receivable from ${selectedCustomer.name}`;
       const { data: jeNum } = await supabase.rpc('get_next_journal_number');
       const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
         entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
         entry_date: form.date, description: desc, reference_type: 'receivable',
-        total_debit: amount, total_credit: amount, is_posted: true, customer_id: form.customer_id,
+        total_debit: amount, total_credit: amount, is_posted: true, customer_id: selectedCustomer.id,
       }).select().single();
       if (entryError) throw entryError;
       if (!manualReceivableAccount || !offsetAcc) throw new Error('Required accounts not found');
@@ -181,11 +177,13 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
       ]);
       await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: amount });
       await supabase.rpc('increment_account_balance', { p_account_id: offsetAcc.id, p_delta: amount });
-      if (customer) {
+      // Fetch fresh customer balance to avoid stale state
+      const { data: currentCust } = await supabase.from('customers').select('outstanding_balance, total_purchases').eq('id', selectedCustomer.id).maybeSingle();
+      if (currentCust) {
         await supabase.from('customers').update({
-          outstanding_balance: (customer.outstanding_balance || 0) + amount,
-          total_purchases: (customer.total_purchases || 0) + amount,
-        }).eq('id', customer.id);
+          outstanding_balance: (currentCust.outstanding_balance || 0) + amount,
+          total_purchases: (currentCust.total_purchases || 0) + amount,
+        }).eq('id', selectedCustomer.id);
       }
       toast({ title: 'Success', description: `Receivable of ${formatCurrency(amount)} recorded` });
       onSaved?.(); onClose();
@@ -202,7 +200,20 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-          <div><label className="block text-xs font-medium mb-1">Customer *</label><select required value={form.customer_id} onChange={e => setForm({ ...form, customer_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm"><option value="">Select customer</option>{customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.code})</option>)}</select></div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Customer *</label>
+            {selectedCustomer ? (
+              <div className="flex items-center justify-between border border-blue-300 bg-blue-50 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{selectedCustomer.name}</p>
+                  <p className="text-xs text-muted-foreground">{selectedCustomer.code || ''}{selectedCustomer.code && selectedCustomer.phone ? ' · ' : ''}{selectedCustomer.phone || ''}</p>
+                </div>
+                <button type="button" onClick={() => setSelectedCustomer(null)} className="text-muted-foreground hover:text-red-500 shrink-0 ml-2"><X className="w-4 h-4" /></button>
+              </div>
+            ) : (
+              <CustomerSearchInput onSelect={(c) => setSelectedCustomer(c)} placeholder="Search customer by name, code, or phone..." />
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-xs font-medium mb-1">Amount *</label><input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
             <div><label className="block text-xs font-medium mb-1">Date</label><input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
@@ -218,8 +229,8 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
 }
 
 function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[]; onSaved?: () => void; onClose: () => void }) {
-  const [suppliers, setSuppliers] = useState<any[]>([]);
-  const [form, setForm] = useState({ supplier_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0], debit_account_id: '' });
+  const [selectedSupplier, setSelectedSupplier] = useState<SupplierResult | null>(null);
+  const [form, setForm] = useState({ amount: '', description: '', date: new Date().toISOString().split('T')[0], debit_account_id: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -227,8 +238,6 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
   const debitAccounts = accounts.filter(a => (a.account_type === 'asset' || a.account_type === 'expense') && !a.is_cash && !a.is_bank);
 
   useEffect(() => {
-    supabase.from('suppliers').select('id, name, code, outstanding_balance').eq('is_active', true).order('name')
-      .then(({ data }) => setSuppliers(data || []));
     const invAccount = accounts.find(a => a.code === '1200');
     if (invAccount) setForm(f => ({ ...f, debit_account_id: invAccount.id }));
   }, [accounts]);
@@ -236,18 +245,17 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    if (!form.supplier_id || !form.amount || parseFloat(form.amount) <= 0) { setError('Please select a supplier and enter an amount'); return; }
+    if (!selectedSupplier || !form.amount || parseFloat(form.amount) <= 0) { setError('Please select a supplier and enter an amount'); return; }
     if (!form.debit_account_id) { setError('Please select a debit account'); return; }
     setSaving(true);
     try {
       const amount = parseFloat(form.amount);
-      const supplier = suppliers.find(s => s.id === form.supplier_id);
-      const desc = form.description || `Payable to ${supplier?.name || 'Supplier'}`;
+      const desc = form.description || `Payable to ${selectedSupplier.name}`;
       const { data: jeNum } = await supabase.rpc('get_next_journal_number');
       const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
         entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
         entry_date: form.date, description: desc, reference_type: 'payable',
-        total_debit: amount, total_credit: amount, is_posted: true, supplier_id: form.supplier_id,
+        total_debit: amount, total_credit: amount, is_posted: true, supplier_id: selectedSupplier.id,
       }).select().single();
       if (entryError) throw entryError;
       if (!apAccount) throw new Error('Accounts Payable account (2000) not found');
@@ -259,10 +267,8 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
       const debitDelta = (debitAcc?.account_type === 'asset' || debitAcc?.account_type === 'expense') ? amount : -amount;
       await supabase.rpc('increment_account_balance', { p_account_id: form.debit_account_id, p_delta: debitDelta });
       await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: amount });
-      if (supplier) {
-        const { data: current } = await supabase.from('suppliers').select('outstanding_balance').eq('id', supplier.id).maybeSingle();
-        await supabase.from('suppliers').update({ outstanding_balance: (current?.outstanding_balance || 0) + amount }).eq('id', supplier.id);
-      }
+      const { data: current } = await supabase.from('suppliers').select('outstanding_balance').eq('id', selectedSupplier.id).maybeSingle();
+      await supabase.from('suppliers').update({ outstanding_balance: (current?.outstanding_balance || 0) + amount }).eq('id', selectedSupplier.id);
       toast({ title: 'Success', description: `Payable of ${formatCurrency(amount)} recorded` });
       onSaved?.(); onClose();
     } catch (err: any) { setError(err.message || 'Failed to record payable'); }
@@ -278,7 +284,20 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-          <div><label className="block text-xs font-medium mb-1">Supplier *</label><select required value={form.supplier_id} onChange={e => setForm({ ...form, supplier_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm"><option value="">Select supplier</option>{suppliers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}</select></div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Supplier *</label>
+            {selectedSupplier ? (
+              <div className="flex items-center justify-between border border-orange-300 bg-orange-50 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{selectedSupplier.name}</p>
+                  <p className="text-xs text-muted-foreground">{selectedSupplier.code || ''}{selectedSupplier.code && selectedSupplier.phone ? ' · ' : ''}{selectedSupplier.phone || ''}</p>
+                </div>
+                <button type="button" onClick={() => setSelectedSupplier(null)} className="text-muted-foreground hover:text-red-500 shrink-0 ml-2"><X className="w-4 h-4" /></button>
+              </div>
+            ) : (
+              <SupplierSearchInput onSelect={(s) => setSelectedSupplier(s)} placeholder="Search supplier by name, code, or phone..." />
+            )}
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-xs font-medium mb-1">Amount *</label><input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
             <div><label className="block text-xs font-medium mb-1">Date</label><input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
