@@ -120,11 +120,19 @@ export default function SalesPage() {
     let receivablePaymentsQuery = supabase.from('payments')
       .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
       .eq('payment_type', 'received')
-      .in('reference_type', ['invoice', 'receivable']);
+      .in('reference_type', ['invoice', 'receivable'])
+      .eq('is_reversed', false);
     if (from) receivablePaymentsQuery = receivablePaymentsQuery.gte('payment_date', from);
     if (to) receivablePaymentsQuery = receivablePaymentsQuery.lte('payment_date', to);
 
-    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes] = await Promise.all([
+    // Refunds are filtered by return_date (when the refund actually happened),
+    // matching the same period window as payments — not by invoice_date.
+    let returnsForStatsQuery = supabase.from('sales_returns')
+      .select('id, invoice_id, return_number, total_refund_amount, refund_method, return_date, items:sales_return_items(quantity_returned)');
+    if (from) returnsForStatsQuery = returnsForStatsQuery.gte('return_date', from);
+    if (to) returnsForStatsQuery = returnsForStatsQuery.lte('return_date', to);
+
+    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes, returnsForStatsRes] = await Promise.all([
       invQuery.limit(500),
       supabase.from('customers').select('*').eq('is_active', true).order('name'),
       supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name'),
@@ -135,7 +143,11 @@ export default function SalesPage() {
       supabase.from('deliveries').select('id, invoice_id, delivery_number, status'),
       supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
       receivablePaymentsQuery,
+      returnsForStatsQuery,
     ]);
+
+    // Refunds for the stats cards — filtered by return_date to match the payment period window.
+    const periodRefunded = (returnsForStatsRes.data || []).reduce((s: number, r: any) => s + Number(r.total_refund_amount), 0);
 
     // Attach deliveries to their corresponding invoices
     const deliveriesMap = new Map<string, any[]>();
@@ -179,13 +191,10 @@ export default function SalesPage() {
 
     const allInv = invoicesWithReturns;
     const activeInv = allInv.filter((i: any) => i.status !== 'cancelled' && i.status !== 'draft');
-    const totalRefunded = activeInv.reduce((s: number, i: any) => {
-      const refunds = (i.sales_returns || []).reduce((rs: number, r: any) => rs + Number(r.total_refund_amount), 0);
-      return s + refunds;
-    }, 0);
 
     // Calculate collected amount from payments table filtered by payment_date,
     // so payments on old invoices collected today still show in today's stats.
+    // Reversed payments (from invoice edits/cancels) are excluded so they don't inflate the total.
     const allReceivedPayments = (receivablePaymentsRes.data || []) as any[];
     const invoiceCollected = allReceivedPayments
       .filter((p: any) => p.reference_type === 'invoice')
@@ -205,8 +214,8 @@ export default function SalesPage() {
     setStats({
       total: activeInv.reduce((s: number, i: any) => s + Number(i.total_amount), 0),
       paid: totalCollected,
-      refunded: totalRefunded,
-      netCollected: totalCollected - totalRefunded,
+      refunded: periodRefunded,
+      netCollected: totalCollected - periodRefunded,
       outstanding: activeInv.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0),
       overdue: activeInv.filter((i: any) => i.status === 'overdue').length,
       storeCreditBalance,
@@ -836,6 +845,7 @@ export default function SalesPage() {
       {showNetCollectedModal && (
         <NetCollectedBreakdownModal
           stats={stats}
+          periodRange={getPeriodRange()}
           onClose={() => setShowNetCollectedModal(false)}
         />
       )}
@@ -1876,7 +1886,7 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
   );
 }
 
-function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: () => void }) {
+function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: any; periodRange: { from: string; to: string }; onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [paymentBreakdown, setPaymentBreakdown] = useState<{ method: string; amount: number; count: number }[]>([]);
   const [refundBreakdown, setRefundBreakdown] = useState<{ method: string; amount: number; count: number }[]>([]);
@@ -1884,26 +1894,41 @@ function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: (
 
   useEffect(() => {
     (async () => {
-      const { data: invoicePayments } = await supabase
+      const { from, to } = periodRange;
+
+      let invoicePayQuery = supabase
         .from('payments')
-        .select('payment_method, amount, payment_date, notes, reference_id')
+        .select('payment_method, amount, payment_date, notes, reference_id, payment_number')
         .eq('payment_type', 'received')
         .eq('reference_type', 'invoice')
+        .eq('is_reversed', false)
         .order('payment_date', { ascending: true });
+      if (from) invoicePayQuery = invoicePayQuery.gte('payment_date', from);
+      if (to) invoicePayQuery = invoicePayQuery.lte('payment_date', to);
 
-      const { data: receivablePayments } = await supabase
+      let receivablePayQuery = supabase
         .from('payments')
-        .select('payment_method, amount, payment_date, notes, reference_id')
+        .select('payment_method, amount, payment_date, notes, reference_id, payment_number')
         .eq('payment_type', 'received')
         .eq('reference_type', 'receivable')
+        .eq('is_reversed', false)
         .order('payment_date', { ascending: true });
+      if (from) receivablePayQuery = receivablePayQuery.gte('payment_date', from);
+      if (to) receivablePayQuery = receivablePayQuery.lte('payment_date', to);
 
-      const allPayments = [...(invoicePayments || []), ...(receivablePayments || [])];
-
-      const { data: returns } = await supabase
+      let returnsQuery = supabase
         .from('sales_returns')
-        .select('refund_method, total_refund_amount, created_at, return_number')
-        .order('created_at', { ascending: true });
+        .select('refund_method, total_refund_amount, return_date, return_number')
+        .order('return_date', { ascending: true });
+      if (from) returnsQuery = returnsQuery.gte('return_date', from);
+      if (to) returnsQuery = returnsQuery.lte('return_date', to);
+
+      const [invPayRes, recvPayRes, returnsRes] = await Promise.all([invoicePayQuery, receivablePayQuery, returnsQuery]);
+
+      const invoicePayments = invPayRes.data || [];
+      const receivablePayments = recvPayRes.data || [];
+      const returns = returnsRes.data || [];
+      const allPayments = [...invoicePayments, ...receivablePayments];
 
       const payMap = new Map<string, { amount: number; count: number }>();
       (allPayments).forEach((p: any) => {
@@ -1916,7 +1941,7 @@ function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: (
       setPaymentBreakdown(Array.from(payMap.entries()).map(([method, v]) => ({ method, ...v })).sort((a, b) => b.amount - a.amount));
 
       const refundMap = new Map<string, { amount: number; count: number }>();
-      (returns || []).forEach((r: any) => {
+      (returns).forEach((r: any) => {
         const method = r.refund_method || 'unknown';
         const existing = refundMap.get(method) || { amount: 0, count: 0 };
         existing.amount += Number(r.total_refund_amount);
@@ -1926,14 +1951,14 @@ function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: (
       setRefundBreakdown(Array.from(refundMap.entries()).map(([method, v]) => ({ method, ...v })).sort((a, b) => b.amount - a.amount));
 
       const events: { date: string; type: 'payment' | 'refund'; description: string; method: string; amount: number }[] = [];
-      (invoicePayments || []).forEach((p: any) => {
-        events.push({ date: p.payment_date, type: 'payment', description: p.notes || 'Invoice payment', method: p.payment_method || 'unknown', amount: Number(p.amount) });
+      (invoicePayments).forEach((p: any) => {
+        events.push({ date: p.payment_date, type: 'payment', description: p.notes || `Payment ${p.payment_number || ''}`, method: p.payment_method || 'unknown', amount: Number(p.amount) });
       });
-      (receivablePayments || []).forEach((p: any) => {
-        events.push({ date: p.payment_date, type: 'payment', description: p.notes || 'Receivable payment', method: p.payment_method || 'unknown', amount: Number(p.amount) });
+      (receivablePayments).forEach((p: any) => {
+        events.push({ date: p.payment_date, type: 'payment', description: p.notes || `Receivable payment ${p.payment_number || ''}`, method: p.payment_method || 'unknown', amount: Number(p.amount) });
       });
-      (returns || []).forEach((r: any) => {
-        events.push({ date: r.created_at.split('T')[0], type: 'refund', description: `Sales return ${r.return_number}`, method: r.refund_method || 'unknown', amount: -Number(r.total_refund_amount) });
+      (returns).forEach((r: any) => {
+        events.push({ date: r.return_date, type: 'refund', description: `Sales return ${r.return_number}`, method: r.refund_method || 'unknown', amount: -Number(r.total_refund_amount) });
       });
       events.sort((a, b) => a.date.localeCompare(b.date));
 
@@ -1941,7 +1966,7 @@ function NetCollectedBreakdownModal({ stats, onClose }: { stats: any; onClose: (
       setTimeline(events.map(e => { running += e.amount; return { ...e, runningNet: running }; }));
       setLoading(false);
     })();
-  }, []);
+  }, [periodRange.from, periodRange.to]);
 
   const methodLabel = (method: string) => {
     const labels: Record<string, string> = {

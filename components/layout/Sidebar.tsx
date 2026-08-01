@@ -38,6 +38,7 @@ const navItems: NavItem[] = [
       { title: 'POS', href: '/sales/pos' },
       { title: 'Returns', href: '/sales/returns' },
       { title: 'Refunds', href: '/sales/refunds' },
+      { title: 'Collection Report', href: '/sales/collection-report' },
     ],
   },
   {
