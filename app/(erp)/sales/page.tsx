@@ -118,9 +118,9 @@ export default function SalesPage() {
     if (to) invQuery = invQuery.lte('invoice_date', to);
 
     let receivablePaymentsQuery = supabase.from('payments')
-      .select('id, reference_id, payment_method, amount, payment_date, payment_type')
-      .eq('reference_type', 'receivable')
-      .eq('payment_type', 'received');
+      .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
+      .eq('payment_type', 'received')
+      .in('reference_type', ['invoice', 'receivable']);
     if (from) receivablePaymentsQuery = receivablePaymentsQuery.gte('payment_date', from);
     if (to) receivablePaymentsQuery = receivablePaymentsQuery.lte('payment_date', to);
 
@@ -183,8 +183,16 @@ export default function SalesPage() {
       const refunds = (i.sales_returns || []).reduce((rs: number, r: any) => rs + Number(r.total_refund_amount), 0);
       return s + refunds;
     }, 0);
-    const invoiceCollected = activeInv.reduce((s: number, i: any) => s + Number(i.amount_paid), 0);
-    const receivableCollected = (receivablePaymentsRes.data || []).reduce((s: number, p: any) => s + Number(p.amount), 0);
+
+    // Calculate collected amount from payments table filtered by payment_date,
+    // so payments on old invoices collected today still show in today's stats.
+    const allReceivedPayments = (receivablePaymentsRes.data || []) as any[];
+    const invoiceCollected = allReceivedPayments
+      .filter((p: any) => p.reference_type === 'invoice')
+      .reduce((s: number, p: any) => s + Number(p.amount), 0);
+    const receivableCollected = allReceivedPayments
+      .filter((p: any) => p.reference_type === 'receivable')
+      .reduce((s: number, p: any) => s + Number(p.amount), 0);
     const totalCollected = invoiceCollected + receivableCollected;
 
     // Fetch store credit balance (not period-dependent)

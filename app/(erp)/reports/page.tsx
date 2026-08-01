@@ -153,7 +153,7 @@ export default function ReportsPage() {
       totalOperatingExpenses += Math.max(0, netDebit);
     }
 
-    const grossProfit = totalRevenue - Math.max(0, salesReturnsTotal) - Math.abs(cogsActual);
+    const grossProfit = totalRevenue - Math.max(0, salesReturnsTotal) - Math.max(0, cogsActual);
     const netProfit = grossProfit - Math.max(0, totalOperatingExpenses);
     const inventoryValue = (invItemsRes.data || []).reduce((s: number, item: any) => s + (Number(item.quantity_on_hand) * Number(item.product?.cost_price || 0)), 0);
 
@@ -375,8 +375,8 @@ export default function ReportsPage() {
             <p className="text-xs text-muted-foreground">Cost of Goods Sold</p>
             <Package className="w-4 h-4 text-amber-500" />
           </div>
-          <p className="text-2xl font-bold text-red-600">{formatCurrency(stats.cogsActual)}</p>
-          <p className="text-xs text-muted-foreground mt-1">{stats.totalRevenue > 0 ? ((stats.cogsActual / stats.totalRevenue) * 100).toFixed(1) : 0}% of revenue</p>
+          <p className="text-2xl font-bold text-red-600">{formatCurrency(Math.max(0, stats.cogsActual))}</p>
+          <p className="text-xs text-muted-foreground mt-1">{stats.totalRevenue > 0 ? ((Math.max(0, stats.cogsActual) / stats.totalRevenue) * 100).toFixed(1) : 0}% of revenue</p>
         </div>
         <div className="stat-card">
           <div className="flex items-center justify-between mb-1">
@@ -619,11 +619,11 @@ export default function ReportsPage() {
               </div>
               <div className="flex justify-between items-center px-6 py-2 border-b border-gray-100">
                 <span className="text-sm text-gray-700">Cost of Goods Sold</span>
-                <span className="text-sm font-medium text-red-600">({formatCurrency(stats.cogsActual)})</span>
+                <span className="text-sm font-medium text-red-600">({formatCurrency(Math.max(0, stats.cogsActual))})</span>
               </div>
               <div className="flex justify-between items-center px-6 py-2 bg-orange-50 border-b border-border">
                 <span className="text-sm font-semibold text-gray-800">Total COGS</span>
-                <span className="text-sm font-bold text-orange-800">({formatCurrency(stats.cogsActual)})</span>
+                <span className="text-sm font-bold text-orange-800">({formatCurrency(Math.max(0, stats.cogsActual))})</span>
               </div>
 
               {/* Gross Profit */}
