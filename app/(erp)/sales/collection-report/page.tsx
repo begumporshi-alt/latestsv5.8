@@ -37,6 +37,7 @@ const paymentForLabels: Record<string, string> = {
   outstanding_invoice_pay: 'Outstanding Invoice Payment',
   paid_invoice_pay: 'Paid Invoice Payment',
   invoice_payment: 'Invoice Payment',
+  reversal_payment: 'Reversal Payment',
   advance: 'Customer Advance',
   manual_receivable: 'Manual Receivable',
   supplier_payment: 'Supplier Payment',

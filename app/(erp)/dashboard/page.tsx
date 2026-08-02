@@ -8,7 +8,7 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
-import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, FileText, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus } from 'lucide-react';
+import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote } from 'lucide-react';
 import type { Customer } from '@/lib/types';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280'];
@@ -26,7 +26,7 @@ const activityIcons: Record<string, { icon: React.ElementType; color: string }> 
   purchase_order: { icon: ShoppingBag, color: 'text-orange-600 bg-orange-50' },
   delivery: { icon: Truck, color: 'text-purple-600 bg-purple-50' },
   product: { icon: Package, color: 'text-teal-600 bg-teal-50' },
-  quotation: { icon: FileText, color: 'text-indigo-600 bg-indigo-50' },
+
   online_order: { icon: ShoppingCart, color: 'text-yellow-600 bg-yellow-50' },
 };
 
@@ -39,9 +39,8 @@ export default function DashboardPage() {
     inventoryItems: 0,
     receivables: 0,
     payables: 0,
-    quotationTotal: 0,
-    quotationAwaiting: 0,
     totalExpenses: 0,
+    todayCollection: 0,
     deliveryPending: 0,
     deliveryInTransit: 0,
     deliveryDelivered: 0,
@@ -65,23 +64,25 @@ export default function DashboardPage() {
     const today = new Date().toISOString().split('T')[0];
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
 
+    const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0];
+
     const [
       todayInvRes, monthlyInvRes, customersRes, suppliersRes,
-      quotRes, dlvRes, onlineOrdersRes, topCustRes, duesRes,
-      lowStockRes, actRes, expensesRes
+      dlvRes, onlineOrdersRes, topCustRes, duesRes,
+      lowStockRes, actRes, expensesRes, todayCollectionRes
     ] = await Promise.all([
       supabase.from('invoices').select('total_amount').eq('invoice_date', today).neq('status', 'cancelled'),
       supabase.from('invoices').select('total_amount, created_at').gte('invoice_date', monthStart).neq('status', 'cancelled'),
       supabase.from('customers').select('outstanding_balance'),
       supabase.from('suppliers').select('outstanding_balance'),
-      supabase.from('quotations').select('id, status'),
       supabase.from('deliveries').select('status'),
       supabase.from('online_orders').select('total_amount, status').gte('created_at', monthStart),
       supabase.from('customers').select('*').order('total_purchases', { ascending: false }).limit(5),
       supabase.from('customers').select('*').gt('outstanding_balance', 0).order('outstanding_balance', { ascending: false }).limit(5),
       supabase.from('inventory_items').select('quantity_on_hand, product:products(id, name, sku, min_stock_level, image_url)').lt('quantity_on_hand', 20).limit(5),
       supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(5),
-      supabase.from('journal_entries').select('total_debit, entry_date').eq('reference_type', 'manual').eq('is_posted', true).gte('entry_date', monthStart),
+      supabase.from('journal_entries').select('total_debit, entry_date').eq('reference_type', 'manual').eq('is_posted', true).gte('entry_date', yearStart),
+      supabase.from('payments').select('amount').eq('payment_date', today).eq('payment_type', 'received').neq('is_reversed', true),
     ]);
 
     // Paginate inventory_items to avoid the 1000-row Supabase default cap
@@ -105,10 +106,10 @@ export default function DashboardPage() {
     const payables = (suppliersRes.data || []).reduce((s: number, s2: any) => s + Number(s2.outstanding_balance), 0);
     const invValue = allInvItems.reduce((s: number, item: any) => s + (Number(item.quantity_on_hand) * Number(item.product?.cost_price || 0)), 0);
 
-    const quotations = quotRes.data || [];
     const deliveries = dlvRes.data || [];
     const onlineOrders = onlineOrdersRes.data || [];
     const totalExpenses = (expensesRes.data || []).reduce((s: number, e: any) => s + Number(e.total_debit), 0);
+    const todayCollection = (todayCollectionRes.data || []).reduce((s: number, p: any) => s + Number(p.amount), 0);
 
     const deliveryStats: Record<string, number> = { pending: 0, in_transit: 0, delivered: 0, failed: 0 };
     deliveries.forEach((d: any) => { if (deliveryStats[d.status] !== undefined) deliveryStats[d.status]++; });
@@ -120,9 +121,8 @@ export default function DashboardPage() {
       inventoryItems: allInvItems.length,
       receivables,
       payables,
-      quotationTotal: quotations.length,
-      quotationAwaiting: quotations.filter((q: any) => ['sent', 'viewed'].includes(q.status)).length,
       totalExpenses,
+      todayCollection,
       deliveryPending: deliveryStats.pending,
       deliveryInTransit: deliveryStats.in_transit,
       deliveryDelivered: deliveryStats.delivered,
@@ -196,13 +196,13 @@ export default function DashboardPage() {
 
   const kpis = [
     { label: "Today's Sales", value: formatCurrency(stats.todaySales), icon: ShoppingCart, bg: 'bg-blue-50', color: 'text-blue-500' },
+    { label: "Today's Collection", value: formatCurrency(stats.todayCollection), icon: Banknote, bg: 'bg-emerald-50', color: 'text-emerald-500' },
     { label: 'Monthly Revenue', value: formatCurrency(stats.monthlySales), icon: TrendingUp, bg: 'bg-green-50', color: 'text-green-500' },
     { label: 'Inventory Value', value: formatCurrency(stats.inventoryValue), icon: Package, bg: 'bg-purple-50', color: 'text-purple-500' },
     { label: 'Pending Deliveries', value: String(stats.deliveryPending + stats.deliveryInTransit), icon: Truck, bg: 'bg-orange-50', color: 'text-orange-500' },
     { label: 'Receivables', value: formatCurrency(stats.receivables), icon: Receipt, bg: 'bg-red-50', color: 'text-red-500' },
     { label: 'Payables', value: formatCurrency(stats.payables), icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500' },
-    { label: 'Quotations', value: String(stats.quotationTotal), icon: FileText, bg: 'bg-cyan-50', color: 'text-cyan-500' },
-    { label: 'Expenses', value: formatCurrency(stats.totalExpenses), icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500' },
+    { label: 'Total Expenses', value: formatCurrency(stats.totalExpenses), icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500' },
   ];
 
   return (
