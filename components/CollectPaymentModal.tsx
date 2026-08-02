@@ -49,6 +49,7 @@ export default function CollectPaymentModal({
     reference_number: '',
     notes: '',
     account_id: '',
+    payment_for: 'invoice_payment' as string,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -135,6 +136,7 @@ export default function CollectPaymentModal({
       payment_date: form.payment_date,
       reference_number: form.reference_number || null,
       notes: form.notes || null,
+      payment_for: form.payment_for,
     });
     if (payError) throw payError;
 
@@ -220,6 +222,7 @@ export default function CollectPaymentModal({
           payment_date: form.payment_date,
           reference_number: form.reference_number || null,
           notes: form.notes || null,
+          payment_for: form.payment_for,
         });
         if (payError) throw payError;
 
@@ -467,6 +470,21 @@ export default function CollectPaymentModal({
                   {cashBankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
                 </select>
               </div>
+            </div>
+
+            {/* Payment For */}
+            <div>
+              <label className="block text-xs font-medium mb-1">Payment For</label>
+              <select
+                value={form.payment_for}
+                onChange={e => setForm({ ...form, payment_for: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              >
+                <option value="invoice_payment">Invoice Payment</option>
+                <option value="advance">Customer Advance</option>
+                <option value="manual_receivable">Manual Receivable</option>
+                <option value="other">Other</option>
+              </select>
             </div>
 
             <div>
