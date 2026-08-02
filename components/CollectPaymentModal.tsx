@@ -49,7 +49,7 @@ export default function CollectPaymentModal({
     reference_number: '',
     notes: '',
     account_id: '',
-    payment_for: 'invoice_payment' as string,
+    payment_for: 'outstanding_invoice_pay' as string,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -480,7 +480,8 @@ export default function CollectPaymentModal({
                 onChange={e => setForm({ ...form, payment_for: e.target.value })}
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               >
-                <option value="invoice_payment">Invoice Payment</option>
+                <option value="outstanding_invoice_pay">Outstanding Invoice Payment</option>
+                <option value="paid_invoice_pay">Paid Invoice Payment</option>
                 <option value="advance">Customer Advance</option>
                 <option value="manual_receivable">Manual Receivable</option>
                 <option value="other">Other</option>

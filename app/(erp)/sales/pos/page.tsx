@@ -506,7 +506,7 @@ export default function POSPage() {
           payment_method: 'store_credit',
           payment_date: invoiceDate,
           notes: `Store credit redeemed for ${invoiceNumber}`,
-          payment_for: 'invoice_payment',
+          payment_for: 'paid_invoice_pay',
         });
         if (creditPayError) console.error('Store credit payment record error:', creditPayError.message);
       }
@@ -524,7 +524,7 @@ export default function POSPage() {
           payment_method: paymentMethod,
           payment_date: invoiceDate,
           notes: creditToApply > 0 ? `POS sale (partial store credit: ${formatCurrency(creditToApply)})` : 'POS sale',
-          payment_for: 'invoice_payment',
+          payment_for: 'paid_invoice_pay',
         });
         if (payError) console.error('Payment record error:', payError.message);
 

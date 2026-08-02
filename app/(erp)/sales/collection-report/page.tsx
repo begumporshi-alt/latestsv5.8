@@ -34,6 +34,8 @@ function methodLabel(method: string): string {
 }
 
 const paymentForLabels: Record<string, string> = {
+  outstanding_invoice_pay: 'Outstanding Invoice Payment',
+  paid_invoice_pay: 'Paid Invoice Payment',
   invoice_payment: 'Invoice Payment',
   advance: 'Customer Advance',
   manual_receivable: 'Manual Receivable',

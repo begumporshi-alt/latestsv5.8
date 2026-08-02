@@ -1172,7 +1172,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         payment_date: form.invoice_date,
         reference_number: form.payment_reference || null,
         notes: form.payment_type === 'full' ? 'Full payment at invoice time' : 'Partial payment at invoice time',
-        payment_for: 'invoice_payment',
+        payment_for: 'paid_invoice_pay',
       });
 
       // Update customer outstanding balance
@@ -1645,7 +1645,7 @@ function RecordPaymentModal({ invoice, onClose, onSaved }: { invoice: InvoiceWit
       payment_date: form.payment_date,
       reference_number: form.reference_number || null,
       notes: form.notes || null,
-      payment_for: 'invoice_payment',
+      payment_for: 'paid_invoice_pay',
     });
 
     if (payError) { setError(payError.message); setSaving(false); return; }
@@ -1982,6 +1982,8 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
   const paymentForLabel = (value: string | null) => {
     if (!value) return 'Uncategorized';
     const labels: Record<string, string> = {
+      outstanding_invoice_pay: 'Outstanding Invoice Payment',
+      paid_invoice_pay: 'Paid Invoice Payment',
       invoice_payment: 'Invoice Payment',
       advance: 'Customer Advance',
       manual_receivable: 'Manual Receivable',
