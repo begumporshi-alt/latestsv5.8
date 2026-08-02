@@ -1172,6 +1172,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         payment_date: form.invoice_date,
         reference_number: form.payment_reference || null,
         notes: form.payment_type === 'full' ? 'Full payment at invoice time' : 'Partial payment at invoice time',
+        payment_for: 'paid_invoice_pay',
       });
 
       // Update customer outstanding balance
@@ -1644,6 +1645,7 @@ function RecordPaymentModal({ invoice, onClose, onSaved }: { invoice: InvoiceWit
       payment_date: form.payment_date,
       reference_number: form.reference_number || null,
       notes: form.notes || null,
+      payment_for: 'paid_invoice_pay',
     });
 
     if (payError) { setError(payError.message); setSaving(false); return; }
@@ -1890,7 +1892,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
   const [loading, setLoading] = useState(true);
   const [paymentBreakdown, setPaymentBreakdown] = useState<{ method: string; amount: number; count: number }[]>([]);
   const [refundBreakdown, setRefundBreakdown] = useState<{ method: string; amount: number; count: number }[]>([]);
-  const [timeline, setTimeline] = useState<{ date: string; type: 'payment' | 'refund'; description: string; method: string; amount: number; runningNet: number }[]>([]);
+  const [timeline, setTimeline] = useState<{ date: string; type: 'payment' | 'refund'; description: string; method: string; paymentFor: string | null; amount: number; runningNet: number }[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -1898,7 +1900,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
 
       let invoicePayQuery = supabase
         .from('payments')
-        .select('payment_method, amount, payment_date, notes, reference_id, payment_number')
+        .select('payment_method, amount, payment_date, notes, reference_id, payment_number, payment_for')
         .eq('payment_type', 'received')
         .eq('reference_type', 'invoice')
         .eq('is_reversed', false)
@@ -1908,7 +1910,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
 
       let receivablePayQuery = supabase
         .from('payments')
-        .select('payment_method, amount, payment_date, notes, reference_id, payment_number')
+        .select('payment_method, amount, payment_date, notes, reference_id, payment_number, payment_for')
         .eq('payment_type', 'received')
         .eq('reference_type', 'receivable')
         .eq('is_reversed', false)
@@ -1950,15 +1952,15 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
       });
       setRefundBreakdown(Array.from(refundMap.entries()).map(([method, v]) => ({ method, ...v })).sort((a, b) => b.amount - a.amount));
 
-      const events: { date: string; type: 'payment' | 'refund'; description: string; method: string; amount: number }[] = [];
+      const events: { date: string; type: 'payment' | 'refund'; description: string; method: string; paymentFor: string | null; amount: number }[] = [];
       (invoicePayments).forEach((p: any) => {
-        events.push({ date: p.payment_date, type: 'payment', description: p.notes || `Payment ${p.payment_number || ''}`, method: p.payment_method || 'unknown', amount: Number(p.amount) });
+        events.push({ date: p.payment_date, type: 'payment', description: p.notes || `Payment ${p.payment_number || ''}`, method: p.payment_method || 'unknown', paymentFor: p.payment_for || null, amount: Number(p.amount) });
       });
       (receivablePayments).forEach((p: any) => {
-        events.push({ date: p.payment_date, type: 'payment', description: p.notes || `Receivable payment ${p.payment_number || ''}`, method: p.payment_method || 'unknown', amount: Number(p.amount) });
+        events.push({ date: p.payment_date, type: 'payment', description: p.notes || `Receivable payment ${p.payment_number || ''}`, method: p.payment_method || 'unknown', paymentFor: p.payment_for || null, amount: Number(p.amount) });
       });
       (returns).forEach((r: any) => {
-        events.push({ date: r.return_date, type: 'refund', description: `Sales return ${r.return_number}`, method: r.refund_method || 'unknown', amount: -Number(r.total_refund_amount) });
+        events.push({ date: r.return_date, type: 'refund', description: `Sales return ${r.return_number}`, method: r.refund_method || 'unknown', paymentFor: null, amount: -Number(r.total_refund_amount) });
       });
       events.sort((a, b) => a.date.localeCompare(b.date));
 
@@ -1975,6 +1977,21 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
       cheque: 'Cheque', card: 'Card', other: 'Other',
     };
     return labels[method] || method;
+  };
+
+  const paymentForLabel = (value: string | null) => {
+    if (!value) return 'Uncategorized';
+    const labels: Record<string, string> = {
+      outstanding_invoice_pay: 'Outstanding Invoice Payment',
+      paid_invoice_pay: 'Paid Invoice Payment',
+      invoice_payment: 'Invoice Payment',
+      advance: 'Customer Advance',
+      manual_receivable: 'Manual Receivable',
+      supplier_payment: 'Supplier Payment',
+      bad_debt: 'Bad Debt',
+      other: 'Other',
+    };
+    return labels[value] || value;
   };
 
   return (
@@ -2084,6 +2101,46 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
             </div>
 
             <div>
+              <p className="text-sm font-medium text-foreground mb-2 flex items-center gap-2">
+                <ArrowDownCircle className="w-4 h-4 text-blue-500" />
+                Collected by Payment For
+              </p>
+              <div className="border border-border rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-muted/30 text-xs text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Category</th>
+                      <th className="px-3 py-2 text-center font-medium">Count</th>
+                      <th className="px-3 py-2 text-right font-medium">Amount</th>
+                      <th className="px-3 py-2 text-right font-medium">% of Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {(() => {
+                      const forMap = new Map<string, { amount: number; count: number }>();
+                      timeline.filter(e => e.type === 'payment').forEach(e => {
+                        const f = e.paymentFor || 'uncategorized';
+                        const ex = forMap.get(f) || { amount: 0, count: 0 };
+                        ex.amount += e.amount; ex.count += 1;
+                        forMap.set(f, ex);
+                      });
+                      const rows = Array.from(forMap.entries()).map(([f, v]) => ({ f, ...v })).sort((a, b) => b.amount - a.amount);
+                      if (rows.length === 0) return <tr><td colSpan={4} className="px-3 py-4 text-center text-sm text-muted-foreground">No payments recorded</td></tr>;
+                      return rows.map(r => (
+                        <tr key={r.f}>
+                          <td className="px-3 py-2 text-sm font-medium text-foreground">{paymentForLabel(r.f === 'uncategorized' ? null : r.f)}</td>
+                          <td className="px-3 py-2 text-sm text-center text-muted-foreground">{r.count}</td>
+                          <td className="px-3 py-2 text-sm text-right font-medium text-green-600">{formatCurrency(r.amount)}</td>
+                          <td className="px-3 py-2 text-sm text-right text-muted-foreground">{stats.paid > 0 ? ((r.amount / stats.paid) * 100).toFixed(1) : 0}%</td>
+                        </tr>
+                      ));
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div>
               <p className="text-sm font-medium text-foreground mb-2">Balance Change History</p>
               <p className="text-xs text-muted-foreground mb-3">Chronological log of every payment and refund that changed the net collected amount</p>
               <div className="max-h-64 overflow-y-auto border border-border rounded-lg">
@@ -2098,7 +2155,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm text-foreground truncate">{e.description}</p>
-                          <p className="text-xs text-muted-foreground">{new Date(e.date).toLocaleDateString()} - {methodLabel(e.method)}</p>
+                          <p className="text-xs text-muted-foreground">{new Date(e.date).toLocaleDateString()} - {methodLabel(e.method)}{e.type === 'payment' && e.paymentFor ? ` - ${paymentForLabel(e.paymentFor)}` : ''}</p>
                         </div>
                         <div className="text-right shrink-0">
                           <p className={`text-sm font-medium ${e.amount >= 0 ? 'text-green-600' : 'text-purple-600'}`}>

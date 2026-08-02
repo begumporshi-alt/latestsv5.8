@@ -33,6 +33,22 @@ function methodLabel(method: string): string {
   return methodLabels[method] || method || 'Unknown';
 }
 
+const paymentForLabels: Record<string, string> = {
+  outstanding_invoice_pay: 'Outstanding Invoice Payment',
+  paid_invoice_pay: 'Paid Invoice Payment',
+  invoice_payment: 'Invoice Payment',
+  advance: 'Customer Advance',
+  manual_receivable: 'Manual Receivable',
+  supplier_payment: 'Supplier Payment',
+  bad_debt: 'Bad Debt',
+  other: 'Other',
+};
+
+function paymentForLabel(value: string | null): string {
+  if (!value) return 'Uncategorized';
+  return paymentForLabels[value] || value;
+}
+
 interface PaymentRecord {
   id: string;
   payment_number: string | null;
@@ -47,6 +63,7 @@ interface PaymentRecord {
   notes: string | null;
   is_reversed: boolean;
   bad_debt_amount: number | null;
+  payment_for: string | null;
   customer: { name: string } | null;
   invoice: { invoice_number: string } | null;
 }
@@ -69,6 +86,7 @@ interface TimelineEvent {
   description: string;
   reference: string;
   method: string;
+  paymentFor: string | null;
   amount: number;
   runningNet: number;
 }
@@ -86,6 +104,7 @@ export default function CollectionReportPage() {
   const [search, setSearch] = useState('');
   const [methodFilter, setMethodFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'collection' | 'refund'>('all');
+  const [paymentForFilter, setPaymentForFilter] = useState('all');
 
   function getPeriodRange(): { from: string; to: string } {
     if (period === 'custom') return { from: customFrom, to: customTo };
@@ -115,7 +134,7 @@ export default function CollectionReportPage() {
       .select(`
         id, payment_number, payment_type, reference_type, reference_id,
         customer_id, amount, payment_method, payment_date, reference_number,
-        notes, is_reversed, bad_debt_amount
+        notes, is_reversed, bad_debt_amount, payment_for
       `)
       .eq('payment_type', 'received')
       .in('reference_type', ['invoice', 'receivable'])
@@ -226,6 +245,20 @@ export default function CollectionReportPage() {
       .sort((a, b) => b.amount - a.amount);
   }, [payments]);
 
+  const collectedByPaymentFor = useMemo(() => {
+    const map = new Map<string, { amount: number; count: number }>();
+    payments.forEach((p) => {
+      const f = p.payment_for || 'uncategorized';
+      const ex = map.get(f) || { amount: 0, count: 0 };
+      ex.amount += Number(p.amount);
+      ex.count += 1;
+      map.set(f, ex);
+    });
+    return Array.from(map.entries())
+      .map(([paymentFor, v]) => ({ paymentFor, ...v }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [payments]);
+
   const refundedByMethod = useMemo(() => {
     const map = new Map<string, { amount: number; count: number }>();
     returns.forEach((r) => {
@@ -259,6 +292,7 @@ export default function CollectionReportPage() {
             ? `Payment ${p.payment_number}`
             : p.reference_number || '',
         method: p.payment_method || 'unknown',
+        paymentFor: p.payment_for || null,
         amount: Number(p.amount),
       });
     });
@@ -273,6 +307,7 @@ export default function CollectionReportPage() {
           ? `Return ${r.return_number} (Invoice ${invNum})`
           : `Return ${r.return_number}`,
         method: r.refund_method || 'unknown',
+        paymentFor: null,
         amount: -Number(r.total_refund_amount),
       });
     });
@@ -296,6 +331,13 @@ export default function CollectionReportPage() {
     if (methodFilter !== 'all') {
       result = result.filter((e) => e.method === methodFilter);
     }
+    if (paymentForFilter !== 'all') {
+      result = result.filter((e) =>
+        paymentForFilter === 'uncategorized'
+          ? !e.paymentFor
+          : e.paymentFor === paymentForFilter,
+      );
+    }
     if (search) {
       const s = search.toLowerCase();
       result = result.filter(
@@ -316,17 +358,18 @@ export default function CollectionReportPage() {
 
   useEffect(() => {
     if (page !== 0) setPage(0);
-  }, [period, typeFilter, methodFilter, search]);
+  }, [period, typeFilter, methodFilter, paymentForFilter, search]);
 
   function exportCSV() {
     const rows = [
-      ['Date', 'Type', 'Description', 'Reference', 'Method', 'Amount', 'Running Net'],
+      ['Date', 'Type', 'Description', 'Reference', 'Method', 'Payment For', 'Amount', 'Running Net'],
       ...filteredTimeline.map((e) => [
         e.date,
         e.type === 'collection' ? 'Collection' : 'Refund',
         e.description,
         e.reference,
         methodLabel(e.method),
+        paymentForLabel(e.paymentFor),
         e.amount.toFixed(2),
         e.runningNet.toFixed(2),
       ]),
@@ -349,6 +392,12 @@ export default function CollectionReportPage() {
     returns.forEach((r) => set.add(r.refund_method || 'unknown'));
     return Array.from(set).sort();
   }, [payments, returns]);
+
+  const allPaymentFors = useMemo(() => {
+    const set = new Set<string>();
+    payments.forEach((p) => { if (p.payment_for) set.add(p.payment_for); });
+    return Array.from(set).sort();
+  }, [payments]);
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -575,6 +624,66 @@ export default function CollectionReportPage() {
         </div>
       </div>
 
+      {/* Collected by Payment For */}
+      <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
+        <div className="px-4 py-3 border-b border-border flex items-center gap-2">
+          <Receipt className="w-4 h-4 text-blue-500" />
+          <h3 className="text-sm font-semibold text-foreground">Collected by Payment For</h3>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-muted/30 text-xs text-muted-foreground">
+              <tr>
+                <th className="px-4 py-2 text-left font-medium">Category</th>
+                <th className="px-4 py-2 text-center font-medium">Count</th>
+                <th className="px-4 py-2 text-right font-medium">Amount</th>
+                <th className="px-4 py-2 text-right font-medium">Share</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {collectedByPaymentFor.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-sm text-muted-foreground">
+                    No collections in this period
+                  </td>
+                </tr>
+              ) : (
+                collectedByPaymentFor.map((p) => (
+                  <tr key={p.paymentFor} className="hover:bg-muted/20">
+                    <td className="px-4 py-2.5 text-sm font-medium text-foreground">
+                      <div className="flex items-center gap-2">
+                        <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
+                        {paymentForLabel(p.paymentFor)}
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5 text-sm text-center text-muted-foreground">{p.count}</td>
+                    <td className="px-4 py-2.5 text-sm text-right font-medium text-green-600">
+                      {formatCurrency(p.amount)}
+                    </td>
+                    <td className="px-4 py-2.5 text-sm text-right text-muted-foreground">
+                      {totalCollected > 0 ? ((p.amount / totalCollected) * 100).toFixed(1) : 0}%
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+            {collectedByPaymentFor.length > 0 && (
+              <tfoot className="bg-muted/30">
+                <tr>
+                  <td colSpan={2} className="px-4 py-2.5 text-sm font-bold text-foreground">
+                    Total Collected
+                  </td>
+                  <td className="px-4 py-2.5 text-sm text-right font-bold text-green-600">
+                    {formatCurrency(totalCollected)}
+                  </td>
+                  <td className="px-4 py-2.5 text-sm text-right font-bold">100%</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+
       {/* Balance movement history */}
       <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-border">
@@ -610,6 +719,18 @@ export default function CollectionReportPage() {
             {allMethods.map((m) => (
               <option key={m} value={m}>
                 {methodLabel(m)}
+              </option>
+            ))}
+          </select>
+          <select
+            value={paymentForFilter}
+            onChange={(e) => setPaymentForFilter(e.target.value)}
+            className="border border-border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+          >
+            <option value="all">All Categories</option>
+            {allPaymentFors.map((f) => (
+              <option key={f} value={f}>
+                {paymentForLabel(f)}
               </option>
             ))}
           </select>
@@ -656,6 +777,7 @@ export default function CollectionReportPage() {
                   <th className="px-4 py-2.5 text-left font-medium">Description</th>
                   <th className="px-4 py-2.5 text-left font-medium">Reference</th>
                   <th className="px-4 py-2.5 text-left font-medium">Method</th>
+                  <th className="px-4 py-2.5 text-left font-medium">Payment For</th>
                   <th className="px-4 py-2.5 text-right font-medium">Amount</th>
                   <th className="px-4 py-2.5 text-right font-medium">Running Net</th>
                 </tr>
@@ -686,6 +808,9 @@ export default function CollectionReportPage() {
                     <td className="px-4 py-2.5 text-sm text-muted-foreground">{e.reference}</td>
                     <td className="px-4 py-2.5 text-sm text-muted-foreground">
                       {methodLabel(e.method)}
+                    </td>
+                    <td className="px-4 py-2.5 text-sm text-muted-foreground">
+                      {e.type === 'collection' ? paymentForLabel(e.paymentFor) : '—'}
                     </td>
                     <td
                       className={`px-4 py-2.5 text-sm text-right font-medium ${

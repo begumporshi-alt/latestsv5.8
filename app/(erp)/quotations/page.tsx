@@ -1451,6 +1451,7 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
         payment_date: form.invoice_date,
         reference_number: form.reference_number || null,
         notes: form.notes || (form.payment_type === 'full' ? 'Full payment at invoice conversion' : 'Partial payment at invoice conversion'),
+        payment_for: 'paid_invoice_pay',
       });
     }
 

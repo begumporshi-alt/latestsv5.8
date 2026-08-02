@@ -735,6 +735,7 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         payment_date: form.order_date,
         reference_number: form.payment_reference || null,
         notes: form.payment_type === 'full' ? 'Full payment at order time' : 'Partial payment at order time',
+        payment_for: 'supplier_payment',
       });
 
       const { data: currentSupplier } = await supabase
@@ -1256,6 +1257,7 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
       payment_date: form.payment_date,
       reference_number: form.reference_number || null,
       notes: form.notes || null,
+      payment_for: 'supplier_payment',
     });
 
     if (payError) { setError(payError.message); setSaving(false); return; }

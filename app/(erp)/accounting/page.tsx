@@ -1051,6 +1051,7 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
         payment_date: form.payment_date,
         reference_number: form.reference_number || null,
         notes: form.notes || null,
+        payment_for: 'manual_receivable',
       });
       if (payError) throw payError;
 
@@ -1229,6 +1230,7 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
         payment_date: form.payment_date,
         reference_number: form.reference_number || null,
         notes: form.notes || null,
+        payment_for: 'supplier_payment',
       });
       if (payError) throw payError;
 
