@@ -37,6 +37,7 @@ const paymentForLabels: Record<string, string> = {
   outstanding_invoice_pay: 'Outstanding Invoice Payment',
   paid_invoice_pay: 'Paid Invoice Payment',
   invoice_payment: 'Invoice Payment',
+  reversal_payment: 'Reversal Payment',
   advance: 'Customer Advance',
   manual_receivable: 'Manual Receivable',
   supplier_payment: 'Supplier Payment',
@@ -139,6 +140,7 @@ export default function CollectionReportPage() {
       .eq('payment_type', 'received')
       .in('reference_type', ['invoice', 'receivable'])
       .eq('is_reversed', false)
+      .neq('payment_for', 'reversal_payment')
       .order('payment_date', { ascending: false })
       .order('created_at', { ascending: false });
     if (from) payQuery = payQuery.gte('payment_date', from);
