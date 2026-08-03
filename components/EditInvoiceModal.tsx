@@ -81,16 +81,18 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
   async function loadPaymentInfo() {
     const { data } = await supabase
       .from('payments')
-      .select('payment_method, amount, payment_type')
+      .select('payment_method, amount, payment_type, payment_for, is_reversed')
       .eq('reference_type', 'invoice')
       .eq('reference_id', invoice.id)
+      .eq('is_reversed', false)
+      .neq('payment_for', 'reversal_payment')
       .order('created_at', { ascending: true });
-    const payments = data || [];
+    const payments = (data || []).filter(p => p.payment_type === 'received');
     let loaded: { payment_term: 'full' | 'partial' | 'credit'; payment_method: string; partial_amount: number };
     if (payments.length === 0) {
       loaded = { payment_term: 'credit', payment_method: 'cash', partial_amount: 0 };
     } else {
-      const totalPaid = payments.filter(p => p.payment_type === 'received').reduce((s, p) => s + Number(p.amount), 0);
+      const totalPaid = payments.reduce((s, p) => s + Number(p.amount), 0);
       const invoiceTotal = Number(invoice.total_amount);
       if (totalPaid >= invoiceTotal && invoiceTotal > 0) {
         loaded = { payment_term: 'full', payment_method: payments[payments.length - 1].payment_method || 'cash', partial_amount: 0 };

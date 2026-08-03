@@ -217,7 +217,7 @@ export default function POSPage() {
   async function loadCustomers() {
     const { data } = await supabase
       .from('customers')
-      .select('id, name, code, phone')
+      .select('id, name, code, phone, outstanding_balance')
       .eq('is_active', true)
       .limit(100);
     setCustomers(data || []);
@@ -836,7 +836,14 @@ export default function POSPage() {
                         className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-blue-50 transition text-left ${selectedCustomer === c.id ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
                       >
                         <span className="truncate">{c.name}</span>
-                        <span className="text-[10px] text-muted-foreground shrink-0 ml-2">{c.code}</span>
+                        <span className="flex items-center gap-2 shrink-0 ml-2">
+                          {Number(c.outstanding_balance) > 0 && (
+                            <span className="text-[10px] font-medium text-amber-600">
+                              Due: {Number(c.outstanding_balance).toLocaleString('en-BD', { minimumFractionDigits: 0 })}
+                            </span>
+                          )}
+                          <span className="text-[10px] text-muted-foreground">{c.code}</span>
+                        </span>
                       </button>
                     ))}
                     {customerSearch.trim() && customers.filter(c => c.name.toLowerCase().includes(customerSearch.trim().toLowerCase())).length === 0 && (
