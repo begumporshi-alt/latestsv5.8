@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
@@ -1894,6 +1894,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
   const [paymentBreakdown, setPaymentBreakdown] = useState<{ method: string; amount: number; count: number }[]>([]);
   const [refundBreakdown, setRefundBreakdown] = useState<{ method: string; amount: number; count: number }[]>([]);
   const [timeline, setTimeline] = useState<{ date: string; type: 'payment' | 'refund'; description: string; method: string; paymentFor: string | null; amount: number; runningNet: number }[]>([]);
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -2108,6 +2109,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
               <p className="text-sm font-medium text-foreground mb-2 flex items-center gap-2">
                 <ArrowDownCircle className="w-4 h-4 text-blue-500" />
                 Collected by Payment For
+                <span className="text-xs text-muted-foreground font-normal">(click a row to see transactions)</span>
               </p>
               <div className="border border-border rounded-lg overflow-hidden">
                 <table className="w-full">
@@ -2130,14 +2132,51 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
                       });
                       const rows = Array.from(forMap.entries()).map(([f, v]) => ({ f, ...v })).sort((a, b) => b.amount - a.amount);
                       if (rows.length === 0) return <tr><td colSpan={4} className="px-3 py-4 text-center text-sm text-muted-foreground">No payments recorded</td></tr>;
-                      return rows.map(r => (
-                        <tr key={r.f}>
-                          <td className="px-3 py-2 text-sm font-medium text-foreground">{paymentForLabel(r.f === 'uncategorized' ? null : r.f)}</td>
-                          <td className="px-3 py-2 text-sm text-center text-muted-foreground">{r.count}</td>
-                          <td className="px-3 py-2 text-sm text-right font-medium text-green-600">{formatCurrency(r.amount)}</td>
-                          <td className="px-3 py-2 text-sm text-right text-muted-foreground">{stats.paid > 0 ? ((r.amount / stats.paid) * 100).toFixed(1) : 0}%</td>
-                        </tr>
-                      ));
+                      return rows.flatMap(r => {
+                        const isExpanded = expandedFor === r.f;
+                        const categoryPayments = timeline.filter(e => e.type === 'payment' && (e.paymentFor || 'uncategorized') === r.f);
+                        const mainRow = (
+                          <tr key={r.f} onClick={() => setExpandedFor(isExpanded ? null : r.f)} className="cursor-pointer hover:bg-blue-50/50 transition">
+                            <td className="px-3 py-2 text-sm font-medium text-foreground flex items-center gap-1.5">
+                              <ChevronRight className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                              {paymentForLabel(r.f === 'uncategorized' ? null : r.f)}
+                            </td>
+                            <td className="px-3 py-2 text-sm text-center text-muted-foreground">{r.count}</td>
+                            <td className="px-3 py-2 text-sm text-right font-medium text-green-600">{formatCurrency(r.amount)}</td>
+                            <td className="px-3 py-2 text-sm text-right text-muted-foreground">{stats.paid > 0 ? ((r.amount / stats.paid) * 100).toFixed(1) : 0}%</td>
+                          </tr>
+                        );
+                        if (!isExpanded) return [mainRow];
+                        const detailRow = (
+                          <tr key={r.f + '-detail'}>
+                            <td colSpan={4} className="px-0 py-0 bg-blue-50/30">
+                              <div className="max-h-48 overflow-y-auto">
+                                <table className="w-full">
+                                  <thead className="bg-blue-50/50 text-xs text-muted-foreground sticky top-0">
+                                    <tr>
+                                      <th className="px-4 py-1.5 text-left font-medium">Date</th>
+                                      <th className="px-4 py-1.5 text-left font-medium">Description</th>
+                                      <th className="px-4 py-1.5 text-left font-medium">Method</th>
+                                      <th className="px-4 py-1.5 text-right font-medium">Amount</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-border/50">
+                                    {categoryPayments.map((e, i) => (
+                                      <tr key={i} className="hover:bg-blue-50/40">
+                                        <td className="px-4 py-1.5 text-xs text-muted-foreground whitespace-nowrap">{new Date(e.date).toLocaleDateString()}</td>
+                                        <td className="px-4 py-1.5 text-xs text-foreground truncate max-w-[200px]">{e.description}</td>
+                                        <td className="px-4 py-1.5 text-xs text-muted-foreground">{methodLabel(e.method)}</td>
+                                        <td className="px-4 py-1.5 text-xs text-right font-medium text-green-600">{formatCurrency(e.amount)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                        return [mainRow, detailRow];
+                      });
                     })()}
                   </tbody>
                 </table>
