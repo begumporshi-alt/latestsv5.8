@@ -82,7 +82,7 @@ export default function DashboardPage() {
       supabase.from('inventory_items').select('quantity_on_hand, product:products(id, name, sku, min_stock_level, image_url)').lt('quantity_on_hand', 20).limit(5),
       supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(5),
       supabase.from('journal_entries').select('total_debit, entry_date').eq('reference_type', 'manual').eq('is_posted', true).gte('entry_date', yearStart),
-      supabase.from('payments').select('amount').eq('payment_date', today).eq('payment_type', 'received').neq('is_reversed', true),
+      supabase.from('payments').select('amount').eq('payment_date', today).eq('payment_type', 'received').neq('is_reversed', true).neq('payment_for', 'reversal_payment'),
     ]);
 
     // Paginate inventory_items to avoid the 1000-row Supabase default cap

@@ -121,7 +121,8 @@ export default function SalesPage() {
       .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
       .eq('payment_type', 'received')
       .in('reference_type', ['invoice', 'receivable'])
-      .eq('is_reversed', false);
+      .eq('is_reversed', false)
+      .neq('payment_for', 'reversal_payment');
     if (from) receivablePaymentsQuery = receivablePaymentsQuery.gte('payment_date', from);
     if (to) receivablePaymentsQuery = receivablePaymentsQuery.lte('payment_date', to);
 
@@ -1904,6 +1905,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
         .eq('payment_type', 'received')
         .eq('reference_type', 'invoice')
         .eq('is_reversed', false)
+        .neq('payment_for', 'reversal_payment')
         .order('payment_date', { ascending: true });
       if (from) invoicePayQuery = invoicePayQuery.gte('payment_date', from);
       if (to) invoicePayQuery = invoicePayQuery.lte('payment_date', to);
@@ -1914,6 +1916,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
         .eq('payment_type', 'received')
         .eq('reference_type', 'receivable')
         .eq('is_reversed', false)
+        .neq('payment_for', 'reversal_payment')
         .order('payment_date', { ascending: true });
       if (from) receivablePayQuery = receivablePayQuery.gte('payment_date', from);
       if (to) receivablePayQuery = receivablePayQuery.lte('payment_date', to);

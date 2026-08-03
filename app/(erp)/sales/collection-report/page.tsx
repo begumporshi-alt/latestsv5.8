@@ -140,6 +140,7 @@ export default function CollectionReportPage() {
       .eq('payment_type', 'received')
       .in('reference_type', ['invoice', 'receivable'])
       .eq('is_reversed', false)
+      .neq('payment_for', 'reversal_payment')
       .order('payment_date', { ascending: false })
       .order('created_at', { ascending: false });
     if (from) payQuery = payQuery.gte('payment_date', from);
