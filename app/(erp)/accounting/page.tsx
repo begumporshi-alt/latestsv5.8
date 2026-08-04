@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { DollarSign, CreditCard, TrendingUp, TrendingDown, ChartBar as BarChart3, Plus, X, ArrowUpRight, ArrowDownLeft, ExternalLink, User, Building2, HandCoins, CircleCheck as CheckCircle2, ChevronDown, Receipt } from 'lucide-react';
+import { DollarSign, CreditCard, TrendingUp, TrendingDown, ChartBar as BarChart3, Plus, X, ArrowUpRight, ArrowDownLeft, ExternalLink, User, Building2, HandCoins, CircleCheck as CheckCircle2, ChevronDown, Receipt, Calendar } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Link from 'next/link';
 import type { Account } from '@/lib/types';
@@ -41,6 +41,39 @@ interface ManualReceivablePayable {
   party_id?: string;
 }
 
+type PeriodPreset = 'this_month' | 'this_quarter' | 'this_year' | 'last_month' | 'last_quarter' | 'last_year' | 'all_time' | 'custom';
+
+function getPeriodRange(preset: PeriodPreset, customStart?: string, customEnd?: string): { start: string; end: string; label: string } {
+  const now = new Date();
+  const fmt = (d: Date) => d.toISOString().split('T')[0];
+
+  if (preset === 'custom' && customStart && customEnd) {
+    return { start: customStart, end: customEnd, label: `${customStart} to ${customEnd}` };
+  }
+
+  switch (preset) {
+    case 'this_month':
+      return { start: fmt(new Date(now.getFullYear(), now.getMonth(), 1)), end: fmt(new Date(now.getFullYear(), now.getMonth() + 1, 0)), label: 'This Month' };
+    case 'this_quarter': {
+      const qs = Math.floor(now.getMonth() / 3) * 3;
+      return { start: fmt(new Date(now.getFullYear(), qs, 1)), end: fmt(new Date(now.getFullYear(), qs + 3, 0)), label: 'This Quarter' };
+    }
+    case 'this_year':
+      return { start: fmt(new Date(now.getFullYear(), 0, 1)), end: fmt(new Date(now.getFullYear(), 11, 31)), label: 'This Year' };
+    case 'last_month':
+      return { start: fmt(new Date(now.getFullYear(), now.getMonth() - 1, 1)), end: fmt(new Date(now.getFullYear(), now.getMonth(), 0)), label: 'Last Month' };
+    case 'last_quarter': {
+      const qs = Math.floor(now.getMonth() / 3) * 3 - 3;
+      return { start: fmt(new Date(now.getFullYear(), qs, 1)), end: fmt(new Date(now.getFullYear(), qs + 3, 0)), label: 'Last Quarter' };
+    }
+    case 'last_year':
+      return { start: fmt(new Date(now.getFullYear() - 1, 0, 1)), end: fmt(new Date(now.getFullYear() - 1, 11, 31)), label: 'Last Year' };
+    case 'all_time':
+    default:
+      return { start: '2000-01-01', end: fmt(now), label: 'All Time' };
+  }
+}
+
 export default function AccountingPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,25 +85,53 @@ export default function AccountingPage() {
   const [showPayablePayment, setShowPayablePayment] = useState<ManualReceivablePayable | null>(null);
   const [modalType, setModalType] = useState<'expense' | 'receivable' | 'payable' | null>(null);
 
-  useEffect(() => { loadData(); }, []);
+  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>('all_time');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [periodLabel, setPeriodLabel] = useState('All Time');
+  const [dateRange, setDateRange] = useState<{ start: string; end: string }>({ start: '2000-01-01', end: new Date().toISOString().split('T')[0] });
+  const [showCustom, setShowCustom] = useState(false);
+
+  const periodRef = useRef(periodPreset);
+  periodRef.current = periodPreset;
+
+  const updatePeriod = useCallback((preset: PeriodPreset, cStart?: string, cEnd?: string) => {
+    const range = getPeriodRange(preset, cStart, cEnd);
+    setDateRange({ start: range.start, end: range.end });
+    setPeriodLabel(range.label);
+  }, []);
+
+  useEffect(() => {
+    updatePeriod(periodPreset, customStart, customEnd);
+  }, [periodPreset, customStart, customEnd, updatePeriod]);
+
+  useEffect(() => { loadData(); }, [dateRange]);
 
   async function loadData() {
     setLoading(true);
+    const { start, end } = dateRange;
 
     const { data: accountsData } = await supabase.from('accounts').select('*').eq('is_active', true).order('code');
-    setAccounts(accountsData || []);
+    const allAccounts = (accountsData || []) as Account[];
+    setAccounts(allAccounts);
 
+    // Recent journal entries within period
     const { data: entriesData } = await supabase.from('journal_entries')
       .select('id, entry_number, entry_date, description, reference_type, total_debit, total_credit, lines:journal_lines(id, account_id, description, debit, credit, account:accounts(name, code, balance, account_type))')
       .eq('is_posted', true)
+      .gte('entry_date', start)
+      .lte('entry_date', end)
       .order('created_at', { ascending: false })
       .limit(10);
 
     const entries = (entriesData as JournalEntry[]) || [];
 
+    // For balance-before/after display, fetch ordered entries in period
     const { data: orderedEntries } = await supabase.from('journal_entries')
       .select('id')
       .eq('is_posted', true)
+      .gte('entry_date', start)
+      .lte('entry_date', end)
       .order('entry_date', { ascending: true })
       .order('created_at', { ascending: true });
 
@@ -136,11 +197,13 @@ export default function AccountingPage() {
 
     setRecentEntries(entries);
 
-    // Load manual receivables
+    // Manual receivables within period
     const { data: receivableEntries } = await supabase.from('journal_entries')
       .select('id, entry_number, entry_date, description, total_debit, customer_id')
       .eq('is_posted', true)
       .eq('reference_type', 'receivable')
+      .gte('entry_date', start)
+      .lte('entry_date', end)
       .order('entry_date', { ascending: false });
 
     const { data: receivablePayments } = await supabase.from('payments')
@@ -175,11 +238,13 @@ export default function AccountingPage() {
     }
     setManualReceivables(receivablesList);
 
-    // Load manual payables
+    // Manual payables within period
     const { data: payableEntries } = await supabase.from('journal_entries')
       .select('id, entry_number, entry_date, description, total_credit')
       .eq('is_posted', true)
       .eq('reference_type', 'payable')
+      .gte('entry_date', start)
+      .lte('entry_date', end)
       .order('entry_date', { ascending: false });
 
     const { data: payablePayments } = await supabase.from('payments')
@@ -215,46 +280,113 @@ export default function AccountingPage() {
     setLoading(false);
   }
 
-  // Compute P&L from journal lines (period-aware, computed not stale stored balances)
-  // For the overview cards we use stored account balances — they reflect all-time net position
-  const assets = accounts.filter(a => a.account_type === 'asset');
-  const liabilities = accounts.filter(a => a.account_type === 'liability');
-  const revenue = accounts.filter(a => a.account_type === 'revenue');
-  const expenses = accounts.filter(a => a.account_type === 'expense');
-
-  const totalAssets = assets.reduce((s, a) => s + Number(a.balance), 0);
-  const totalLiabilities = liabilities.reduce((s, a) => s + Number(a.balance), 0);
-  // Contra-revenue & COGS accounts: treated as debit-normal (expense type) but excluded from operating expenses
-  // 4050 = Sales Returns & Allowances, 4100 = Sales Returns & Allowances (legacy), 4200 = Discount Given, 5000 = COGS
-  const COGS_RETURN_CODES = new Set(['4050', '4100', '4200', '5000']);
-  const netRevenue = revenue.reduce((s, a) => s + Number(a.balance), 0);
-  const operatingExpenses = expenses
-    .filter(a => !COGS_RETURN_CODES.has(a.code))
-    .reduce((s, a) => s + Number(a.balance), 0);
-  // COGS account balance can be negative if reversal credits exceed original debits. Use max(0, balance) for display.
-  const cogsBalance = expenses.filter(a => a.code === '5000').reduce((s, a) => s + Number(a.balance), 0);
-  // Aggregate all sales-return/discount contra-revenue accounts
-  const salesReturnsBalance = expenses
-    .filter(a => COGS_RETURN_CODES.has(a.code) && a.code !== '5000')
-    .reduce((s, a) => s + Math.max(0, Number(a.balance)), 0);
-  // Gross profit: revenue minus returns/discounts minus COGS
-  const grossProfit = netRevenue - salesReturnsBalance - Math.max(0, cogsBalance);
-  const netProfit = grossProfit - Math.max(0, operatingExpenses);
+  // Compute period-aware statistics from journal lines using period RPCs
+  const [periodStats, setPeriodStats] = useState({ totalAssets: 0, totalLiabilities: 0, netRevenue: 0, operatingExpenses: 0, cogs: 0, salesReturns: 0, grossProfit: 0, netProfit: 0 });
 
   useEffect(() => {
+    if (accounts.length === 0) return;
+    async function computePeriodStats() {
+      const { start, end } = dateRange;
+      const COGS_RETURN_CODES = new Set(['4050', '4100', '4200', '5000']);
+
+      const assets = accounts.filter(a => a.account_type === 'asset');
+      const liabilities = accounts.filter(a => a.account_type === 'liability');
+      const revenue = accounts.filter(a => a.account_type === 'revenue');
+      const expenses = accounts.filter(a => a.account_type === 'expense');
+
+      // For assets/liabilities, period net = sum of (debit - credit) for assets, (credit - debit) for liabilities
+      async function periodNet(accountId: string, normalSide: 'debit' | 'credit'): Promise<number> {
+        const { data } = await supabase.rpc('period_net_debit', {
+          p_account_id: accountId,
+          p_start_date: start,
+          p_end_date: end,
+        });
+        const netDebit = Number(data || 0);
+        return normalSide === 'debit' ? netDebit : -netDebit;
+      }
+
+      let totalAssets = 0;
+      for (const a of assets) totalAssets += await periodNet(a.id, 'debit');
+
+      let totalLiabilities = 0;
+      for (const a of liabilities) totalLiabilities += await periodNet(a.id, 'credit');
+
+      let netRevenue = 0;
+      for (const a of revenue) netRevenue += await periodNet(a.id, 'credit');
+
+      let operatingExpenses = 0;
+      let cogs = 0;
+      let salesReturns = 0;
+      for (const a of expenses) {
+        const netDebit = await periodNet(a.id, 'debit');
+        if (a.code === '5000') {
+          cogs = Math.max(0, netDebit);
+        } else if (COGS_RETURN_CODES.has(a.code)) {
+          salesReturns += Math.max(0, netDebit);
+        } else {
+          operatingExpenses += Math.max(0, netDebit);
+        }
+      }
+
+      const grossProfit = netRevenue - salesReturns - cogs;
+      const netProfit = grossProfit - operatingExpenses;
+
+      setPeriodStats({ totalAssets, totalLiabilities, netRevenue, operatingExpenses, cogs, salesReturns, grossProfit, netProfit });
+    }
+    computePeriodStats();
+  }, [accounts, dateRange]);
+
+  // Monthly chart data within period
+  useEffect(() => {
     async function loadMonthlyData() {
-      const sixMonthsAgo = new Date();
-      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
-      sixMonthsAgo.setDate(1);
+      const { start, end } = dateRange;
+      const startDate = new Date(start);
+      const endDate = new Date(end);
+      const now = new Date();
 
-      // Fetch revenue from invoice journal credits on account 4000
-      const { data: revenueLines } = await supabase
-        .from('journal_lines')
-        .select('credit, journal_entry:journal_entries!inner(entry_date, reference_type)')
-        .eq('account_id', (await supabase.from('accounts').select('id').eq('code', '4000').maybeSingle()).data?.id || '')
-        .gte('journal_entries.entry_date', sixMonthsAgo.toISOString().split('T')[0]);
+      // Build month buckets spanning the period (max 12 months)
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthMap = new Map<string, { income: number; expense: number }>();
 
-      // Fetch expenses from expense account debits (excluding COGS/returns)
+      const cur = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+      const endLimit = new Date(Math.min(endDate.getFullYear(), now.getFullYear()), Math.min(endDate.getMonth(), now.getMonth()), 1);
+      let monthCount = 0;
+      while (cur <= endLimit && monthCount < 12) {
+        const key = `${monthNames[cur.getMonth()]} ${cur.getFullYear().toString().slice(2)}`;
+        monthMap.set(key, { income: 0, expense: 0 });
+        cur.setMonth(cur.getMonth() + 1);
+        monthCount++;
+      }
+
+      // If period is all_time or very wide, default to last 6 months
+      if (monthCount === 0 || monthCount > 6) {
+        monthMap.clear();
+        for (let i = 5; i >= 0; i--) {
+          const d = new Date();
+          d.setMonth(d.getMonth() - i);
+          const key = `${monthNames[d.getMonth()]} ${d.getFullYear().toString().slice(2)}`;
+          monthMap.set(key, { income: 0, expense: 0 });
+        }
+      }
+
+      const { data: revenueAccount } = await supabase.from('accounts').select('id').eq('code', '4000').maybeSingle();
+      if (revenueAccount) {
+        const { data: revenueLines } = await supabase
+          .from('journal_lines')
+          .select('credit, journal_entry:journal_entries!inner(entry_date)')
+          .eq('account_id', revenueAccount.id)
+          .gte('journal_entries.entry_date', start)
+          .lte('journal_entries.entry_date', end);
+
+        for (const line of (revenueLines || [])) {
+          const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
+          if (!je?.entry_date) continue;
+          const d = new Date(je.entry_date);
+          const key = `${monthNames[d.getMonth()]} ${d.getFullYear().toString().slice(2)}`;
+          if (monthMap.has(key)) monthMap.get(key)!.income += Number(line.credit || 0);
+        }
+      }
+
       const { data: expenseAccounts } = await supabase
         .from('accounts')
         .select('id')
@@ -262,44 +394,27 @@ export default function AccountingPage() {
         .not('code', 'in', '(5000,4050,4100,4200)');
 
       const expenseAccIds = (expenseAccounts || []).map(a => a.id);
-      let expenseLines: any[] = [];
       if (expenseAccIds.length > 0) {
-        const { data: el } = await supabase
+        const { data: expenseLines } = await supabase
           .from('journal_lines')
           .select('debit, journal_entry:journal_entries!inner(entry_date)')
           .in('account_id', expenseAccIds)
-          .gte('journal_entries.entry_date', sixMonthsAgo.toISOString().split('T')[0]);
-        expenseLines = el || [];
-      }
+          .gte('journal_entries.entry_date', start)
+          .lte('journal_entries.entry_date', end);
 
-      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const monthMap = new Map<string, { income: number; expense: number }>();
-
-      // Seed last 6 months with zeros
-      for (let i = 5; i >= 0; i--) {
-        const d = new Date();
-        d.setMonth(d.getMonth() - i);
-        monthMap.set(monthNames[d.getMonth()], { income: 0, expense: 0 });
-      }
-
-      for (const line of (revenueLines || [])) {
-        const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
-        if (!je?.entry_date) continue;
-        const month = monthNames[new Date(je.entry_date).getMonth()];
-        if (monthMap.has(month)) monthMap.get(month)!.income += Number(line.credit || 0);
-      }
-
-      for (const line of expenseLines) {
-        const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
-        if (!je?.entry_date) continue;
-        const month = monthNames[new Date(je.entry_date).getMonth()];
-        if (monthMap.has(month)) monthMap.get(month)!.expense += Number(line.debit || 0);
+        for (const line of (expenseLines || [])) {
+          const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
+          if (!je?.entry_date) continue;
+          const d = new Date(je.entry_date);
+          const key = `${monthNames[d.getMonth()]} ${d.getFullYear().toString().slice(2)}`;
+          if (monthMap.has(key)) monthMap.get(key)!.expense += Number(line.debit || 0);
+        }
       }
 
       setMonthlyData(Array.from(monthMap.entries()).map(([month, data]) => ({ month, ...data })));
     }
     loadMonthlyData();
-  }, []);
+  }, [dateRange]);
 
   const typeColors: Record<string, string> = {
     asset: 'text-blue-600 bg-blue-50',
@@ -309,14 +424,87 @@ export default function AccountingPage() {
     expense: 'text-orange-600 bg-orange-50',
   };
 
+  // Period-aware account balances (for Chart of Accounts display)
+  const [periodAccountBalances, setPeriodAccountBalances] = useState<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    if (accounts.length === 0) return;
+    async function computeBalances() {
+      const { start, end } = dateRange;
+      const balanceMap = new Map<string, number>();
+      for (const a of accounts) {
+        const { data } = await supabase.rpc('period_net_debit', {
+          p_account_id: a.id,
+          p_start_date: start,
+          p_end_date: end,
+        });
+        const netDebit = Number(data || 0);
+        const normalSide = ['asset', 'expense'].includes(a.account_type) ? 'debit' : 'credit';
+        balanceMap.set(a.id, normalSide === 'debit' ? netDebit : -netDebit);
+      }
+      setPeriodAccountBalances(balanceMap);
+    }
+    computeBalances();
+  }, [accounts, dateRange]);
+
+  function applyCustomDate() {
+    if (!customStart || !customEnd) return;
+    setPeriodPreset('custom');
+  }
+
   return (
     <div className="space-y-5 animate-fade-in">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Accounting</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Financial overview with automated double-entry</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Date Filter */}
+          <div className="flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-muted-foreground" />
+            <select
+              value={periodPreset}
+              onChange={e => {
+                const val = e.target.value as PeriodPreset;
+                setPeriodPreset(val);
+                setShowCustom(val === 'custom');
+              }}
+              className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
+            >
+              <option value="this_month">This Month</option>
+              <option value="this_quarter">This Quarter</option>
+              <option value="this_year">This Year</option>
+              <option value="last_month">Last Month</option>
+              <option value="last_quarter">Last Quarter</option>
+              <option value="last_year">Last Year</option>
+              <option value="all_time">All Time</option>
+              <option value="custom">Custom Range</option>
+            </select>
+            {showCustom && (
+              <div className="flex items-center gap-1">
+                <input
+                  type="date"
+                  value={customStart}
+                  onChange={e => setCustomStart(e.target.value)}
+                  className="border border-border rounded-lg px-2 py-2 text-sm focus:outline-none bg-white"
+                />
+                <span className="text-muted-foreground text-xs">to</span>
+                <input
+                  type="date"
+                  value={customEnd}
+                  onChange={e => setCustomEnd(e.target.value)}
+                  className="border border-border rounded-lg px-2 py-2 text-sm focus:outline-none bg-white"
+                />
+                <button
+                  onClick={applyCustomDate}
+                  className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition"
+                >
+                  Apply
+                </button>
+              </div>
+            )}
+          </div>
           <RecordDropdown
             onExpense={() => setModalType('expense')}
             onReceivable={() => setModalType('receivable')}
@@ -328,13 +516,21 @@ export default function AccountingPage() {
         </div>
       </div>
 
+      {/* Period indicator */}
+      <div className="text-xs text-muted-foreground -mt-2">
+        Showing data for: <span className="font-medium text-foreground">{periodLabel}</span>
+        {periodPreset !== 'all_time' && (
+          <span className="ml-2 text-muted-foreground">({dateRange.start} to {dateRange.end})</span>
+        )}
+      </div>
+
       {/* Financial Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Total Assets', value: totalAssets, icon: DollarSign, color: 'text-blue-500 bg-blue-50' },
-          { label: 'Total Liabilities', value: totalLiabilities, icon: CreditCard, color: 'text-red-500 bg-red-50' },
-          { label: 'Gross Profit', value: grossProfit, icon: TrendingUp, color: grossProfit >= 0 ? 'text-green-500 bg-green-50' : 'text-red-500 bg-red-50' },
-          { label: 'Net Profit', value: netProfit, icon: BarChart3, color: netProfit >= 0 ? 'text-blue-500 bg-blue-50' : 'text-red-500 bg-red-50' },
+          { label: 'Total Assets', value: periodStats.totalAssets, icon: DollarSign, color: 'text-blue-500 bg-blue-50' },
+          { label: 'Total Liabilities', value: periodStats.totalLiabilities, icon: CreditCard, color: 'text-red-500 bg-red-50' },
+          { label: 'Gross Profit', value: periodStats.grossProfit, icon: TrendingUp, color: periodStats.grossProfit >= 0 ? 'text-green-500 bg-green-50' : 'text-red-500 bg-red-50' },
+          { label: 'Net Profit', value: periodStats.netProfit, icon: BarChart3, color: periodStats.netProfit >= 0 ? 'text-blue-500 bg-blue-50' : 'text-red-500 bg-red-50' },
         ].map(s => (
           <div key={s.label} className="stat-card">
             <div className="flex items-center justify-between mb-2">
@@ -355,7 +551,7 @@ export default function AccountingPage() {
       <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-semibold text-foreground">Revenue vs Expenses</h3>
-          <span className="text-xs text-muted-foreground">Last 6 months</span>
+          <span className="text-xs text-muted-foreground">{periodLabel}</span>
         </div>
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={monthlyData} barSize={20} barGap={4}>
@@ -373,7 +569,7 @@ export default function AccountingPage() {
       <div className="table-wrapper">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold text-foreground">Chart of Accounts</h3>
-          <span className="text-xs text-muted-foreground">{accounts.length} active accounts</span>
+          <span className="text-xs text-muted-foreground">{accounts.length} active accounts &middot; {periodLabel}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -382,7 +578,7 @@ export default function AccountingPage() {
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Code</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Account Name</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Type</th>
-                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Balance</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Balance ({periodLabel})</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -397,30 +593,33 @@ export default function AccountingPage() {
                   </td>
                 </tr>
               ) : (
-                accounts.map(a => (
-                  <tr key={a.id} className="hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => window.location.href = `/accounting/accounts/${a.id}`}>
-                    <td className="px-4 py-3 text-sm font-mono text-muted-foreground">{a.code}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-foreground hover:text-blue-600 transition">{a.name}</span>
-                        {a.is_cash && <span className="badge-status bg-green-50 text-green-600">Cash</span>}
-                        {a.is_bank && <span className="badge-status bg-blue-50 text-blue-600">Bank</span>}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`badge-status ${typeColors[a.account_type] || 'bg-gray-100 text-gray-600'} capitalize`}>
-                        {a.account_type}
-                      </span>
-                    </td>
-                    <td className={`px-4 py-3 text-right text-sm font-bold ${
-                      a.account_type === 'expense' ? 'text-red-600' :
-                      a.account_type === 'liability' ? 'text-red-600' :
-                      'text-green-600'
-                    }`}>
-                      {formatCurrency(Math.abs(Number(a.balance)))}
-                    </td>
-                  </tr>
-                ))
+                accounts.map(a => {
+                  const periodBalance = periodAccountBalances.get(a.id) ?? 0;
+                  return (
+                    <tr key={a.id} className="hover:bg-muted/30 transition-colors cursor-pointer" onClick={() => window.location.href = `/accounting/accounts/${a.id}`}>
+                      <td className="px-4 py-3 text-sm font-mono text-muted-foreground">{a.code}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-foreground hover:text-blue-600 transition">{a.name}</span>
+                          {a.is_cash && <span className="badge-status bg-green-50 text-green-600">Cash</span>}
+                          {a.is_bank && <span className="badge-status bg-blue-50 text-blue-600">Bank</span>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`badge-status ${typeColors[a.account_type] || 'bg-gray-100 text-gray-600'} capitalize`}>
+                          {a.account_type}
+                        </span>
+                      </td>
+                      <td className={`px-4 py-3 text-right text-sm font-bold ${
+                        a.account_type === 'expense' ? 'text-red-600' :
+                        a.account_type === 'liability' ? 'text-red-600' :
+                        'text-green-600'
+                      }`}>
+                        {formatCurrency(Math.abs(Number(periodBalance)))}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -435,13 +634,13 @@ export default function AccountingPage() {
               <User className="w-4 h-4 text-green-600" />
               <h3 className="text-sm font-semibold text-foreground">Manual Receivables</h3>
             </div>
-            <span className="text-xs text-muted-foreground">{manualReceivables.length} outstanding</span>
+            <span className="text-xs text-muted-foreground">{manualReceivables.length} outstanding &middot; {periodLabel}</span>
           </div>
           <div className="max-h-[300px] overflow-y-auto">
             {manualReceivables.length === 0 ? (
               <div className="p-6 text-center text-muted-foreground text-sm">
                 <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-green-200" />
-                No outstanding manual receivables
+                No outstanding manual receivables in this period
               </div>
             ) : (
               <div className="divide-y divide-border">
@@ -475,13 +674,13 @@ export default function AccountingPage() {
               <Building2 className="w-4 h-4 text-amber-600" />
               <h3 className="text-sm font-semibold text-foreground">Manual Payables</h3>
             </div>
-            <span className="text-xs text-muted-foreground">{manualPayables.length} outstanding</span>
+            <span className="text-xs text-muted-foreground">{manualPayables.length} outstanding &middot; {periodLabel}</span>
           </div>
           <div className="max-h-[300px] overflow-y-auto">
             {manualPayables.length === 0 ? (
               <div className="p-6 text-center text-muted-foreground text-sm">
                 <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-amber-200" />
-                No outstanding manual payables
+                No outstanding manual payables in this period
               </div>
             ) : (
               <div className="divide-y divide-border">
@@ -513,14 +712,17 @@ export default function AccountingPage() {
       {/* Recent Journal Entries */}
       <div className="bg-white rounded-xl border border-border shadow-sm">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-foreground">Recent Journal Entries</h3>
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-foreground">Recent Journal Entries</h3>
+            <span className="text-xs text-muted-foreground">&middot; {periodLabel}</span>
+          </div>
           <Link href="/accounting/journal" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
             View All <ExternalLink className="w-3 h-3" />
           </Link>
         </div>
         <div className="max-h-[400px] overflow-y-auto">
           {recentEntries.length === 0 ? (
-            <div className="p-8 text-center text-muted-foreground text-sm">No journal entries yet</div>
+            <div className="p-8 text-center text-muted-foreground text-sm">No journal entries in this period</div>
           ) : (
             <div className="divide-y divide-border">
               {recentEntries.map(entry => (
@@ -676,7 +878,6 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
         { journal_entry_id: entry.id, account_id: form.paid_from, description: form.description, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      // Atomic balance updates — no stale read risk
       await supabase.rpc('increment_account_balance', { p_account_id: form.expense_account, p_delta: amount });
       await supabase.rpc('increment_account_balance', { p_account_id: form.paid_from, p_delta: -amount });
 
@@ -748,7 +949,6 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
 
   const manualReceivableAccount = accounts.find(a => a.code === '1300');
 
-  // Offset accounts: revenue, equity, liability accounts (where the credit goes)
   const offsetAccounts = accounts.filter(a =>
     ['revenue', 'equity', 'liability'].includes(a.account_type)
   );
@@ -798,7 +998,6 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
         { journal_entry_id: entry.id, account_id: offsetAcc.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      // Atomic balance updates
       await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: amount });
       await supabase.rpc('increment_account_balance', { p_account_id: offsetAcc.id, p_delta: amount });
 
@@ -887,7 +1086,6 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
 
   const apAccount = accounts.find(a => a.code === '2000');
 
-  // Debit account choices: asset accounts (inventory, prepaid, etc.) + expense accounts
   const debitAccounts = accounts.filter(a =>
     (a.account_type === 'asset' || a.account_type === 'expense') &&
     !a.is_cash && !a.is_bank
@@ -898,7 +1096,6 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
   useEffect(() => {
     supabase.from('suppliers').select('id, name, code, outstanding_balance').eq('is_active', true).order('name')
       .then(({ data }) => setSuppliers(data || []));
-    // Default debit account to Inventory (1200)
     const invAccount = accounts.find(a => a.code === '1200');
     if (invAccount) setForm(f => ({ ...f, debit_account_id: invAccount.id }));
   }, [accounts]);
@@ -940,7 +1137,6 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
         { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      // Atomic balance updates
       const debitAcc = accounts.find(a => a.id === form.debit_account_id);
       const debitDelta = (debitAcc?.account_type === 'asset' || debitAcc?.account_type === 'expense') ? amount : -amount;
       await supabase.rpc('increment_account_balance', { p_account_id: form.debit_account_id, p_delta: debitDelta });
@@ -1057,7 +1253,6 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
 
       if (!manualReceivableAccount) throw new Error('Manual Receivable account (1300) not found');
 
-      // Payment journal entry: Dr. Cash/Bank / Cr. Manual Receivable (1300)
       if (amount > 0) {
         const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
           entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
@@ -1079,7 +1274,6 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
         await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: -amount });
       }
 
-      // Bad debt journal entry: Dr. Bad Debt Expense (5600) / Cr. Manual Receivable (1300)
       if (badDebt > 0) {
         const { data: jeNum2 } = await supabase.rpc('get_next_journal_number');
         const { data: bdEntry, error: bdEntryError } = await supabase.from('journal_entries').insert({
@@ -1107,7 +1301,6 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
         await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: -badDebt });
       }
 
-      // Update customer outstanding balance (reduce by payment + bad debt)
       if (receivable.party_id) {
         const { data: customer } = await supabase.from('customers').select('outstanding_balance, total_purchases').eq('id', receivable.party_id).single();
         if (customer) {
@@ -1251,7 +1444,6 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
         { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: 0, credit: amount, sort_order: 1 },
       ]);
 
-      // Atomic balance updates
       await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: -amount });
       await supabase.rpc('increment_account_balance', { p_account_id: form.account_id, p_delta: -amount });
 
