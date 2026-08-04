@@ -369,12 +369,13 @@ export default function AccountingPage() {
         }
       }
 
-      const { data: revenueAccount } = await supabase.from('accounts').select('id').eq('code', '4000').maybeSingle();
-      if (revenueAccount) {
+      const { data: revenueAccounts } = await supabase.from('accounts').select('id').in('code', ['4000', '4001']);
+      const revenueAccIds = (revenueAccounts || []).map(a => a.id);
+      if (revenueAccIds.length > 0) {
         const { data: revenueLines } = await supabase
           .from('journal_lines')
           .select('credit, journal_entry:journal_entries!inner(entry_date)')
-          .eq('account_id', revenueAccount.id)
+          .in('account_id', revenueAccIds)
           .gte('journal_entries.entry_date', start)
           .lte('journal_entries.entry_date', end);
 
@@ -949,14 +950,19 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
 
   const manualReceivableAccount = accounts.find(a => a.code === '1300');
 
+  // Exclude 4000 (Sales Revenue - POS/invoice only) from manual receivable offset accounts;
+  // 4001 is the default for manual receivables (no COGS triggered)
   const offsetAccounts = accounts.filter(a =>
-    ['revenue', 'equity', 'liability'].includes(a.account_type)
+    ['revenue', 'equity', 'liability'].includes(a.account_type) && a.code !== '4000'
   );
 
   useEffect(() => {
     supabase.from('customers').select('id, name, code, outstanding_balance, total_purchases').eq('is_active', true).order('name')
       .then(({ data }) => setCustomers(data || []));
-  }, []);
+    // Default offset to 4001 (Sales Revenue - no COGS for manual receivables)
+    const defaultOffset = accounts.find(a => a.code === '4001');
+    if (defaultOffset) setForm(f => ({ ...f, offset_account_id: defaultOffset.id }));
+  }, [accounts]);
 
   const selectedOffset = accounts.find(a => a.id === form.offset_account_id);
 
@@ -1051,7 +1057,7 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
               <option value="">Select offset account</option>
               {offsetAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
             </select>
-            <p className="text-[11px] text-muted-foreground mt-1">Choose where the credit goes: Sales Revenue for credit sales, Service Revenue for services, Opening Balance Equity for opening balances, Other Income for miscellaneous.</p>
+            <p className="text-[11px] text-muted-foreground mt-1">Defaulted to 4001 (Sales Revenue - no COGS). Use Service Revenue for services, Opening Balance Equity for opening balances, Other Income for miscellaneous. Account 4000 is reserved for POS/invoice sales only.</p>
           </div>
           <div className="bg-muted/30 rounded-lg p-3 text-xs text-muted-foreground">
             Dr. Manual Receivable ({manualReceivableAccount?.code || '1300'}) &rarr; Cr. {selectedOffset ? `${selectedOffset.code} - ${selectedOffset.name}` : 'Select offset account'}
