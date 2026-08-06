@@ -45,6 +45,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
     invoice_date: invoice.invoice_date,
     due_date: invoice.due_date || '',
     notes: (invoice as any).notes || '',
+    reference: (invoice as any).reference || '',
     cart_discount_percent: Number((invoice as any).cart_discount_percent) || 0,
     extra_discount: Number((invoice as any).extra_discount) || 0,
     payment_term: 'full' as 'full' | 'partial' | 'credit',
@@ -233,7 +234,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
   const hasItemChanges = JSON.stringify(items.map(i => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price, discount_percent: i.discount_percent, selected_unit_id: i.selected_unit?.id }))) !== JSON.stringify(originalItems.map(i => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price, discount_percent: i.discount_percent, selected_unit_id: i.selected_unit?.id })));
-  const hasHeaderChanges = form.customer_id !== originalHeader.customer_id || form.invoice_date !== originalHeader.invoice_date || form.due_date !== originalHeader.due_date || form.notes !== originalHeader.notes || (form.cart_discount_percent || 0) !== (originalHeader.cart_discount_percent || 0) || (form.extra_discount || 0) !== (originalHeader.extra_discount || 0) || form.payment_term !== originalHeader.payment_term || form.payment_method !== originalHeader.payment_method || form.partial_amount !== originalHeader.partial_amount;
+  const hasHeaderChanges = form.customer_id !== originalHeader.customer_id || form.invoice_date !== originalHeader.invoice_date || form.due_date !== originalHeader.due_date || form.notes !== originalHeader.notes || form.reference !== originalHeader.reference || (form.cart_discount_percent || 0) !== (originalHeader.cart_discount_percent || 0) || (form.extra_discount || 0) !== (originalHeader.extra_discount || 0) || form.payment_term !== originalHeader.payment_term || form.payment_method !== originalHeader.payment_method || form.partial_amount !== originalHeader.partial_amount;
   const hasChanges = hasItemChanges || hasHeaderChanges;
 
   useEffect(() => {
@@ -275,6 +276,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
         invoice_date: form.invoice_date,
         due_date: form.due_date || null,
         notes: form.notes || null,
+        reference: form.reference || null,
         extra_discount: form.extra_discount || 0,
         cart_discount_percent: form.cart_discount_percent || 0,
         payment_term: form.payment_term,
@@ -589,6 +591,14 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
               <span className="font-semibold">{formatCurrency(Math.max(0, totalAmount - form.partial_amount))}</span>
             </div>
           )}
+
+          {/* Reference */}
+          <div>
+            <label className="block text-xs font-medium mb-1">Reference</label>
+            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })}
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              placeholder="e.g. PO number, external reference..." />
+          </div>
 
           {/* Notes */}
           <div>
