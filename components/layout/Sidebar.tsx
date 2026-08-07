@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, Users, Truck, Calculator, Store, UserRound, ChartBar as BarChart3, Settings, Building2, ChevronDown, ChevronRight, FileText, Receipt, TrendingUp, Boxes, Shield, ArrowRightLeft, BookOpen, Wallet, RotateCcw, BookOpen as GuideIcon } from 'lucide-react';
+import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, Users, Truck, Calculator, Store, UserRound, ChartBar as BarChart3, Settings, Building2, ChevronDown, ChevronRight, FileText, Receipt, TrendingUp, Boxes, Shield, ArrowRightLeft, BookOpen, Wallet, RotateCcw, BookOpen as GuideIcon, QrCode } from 'lucide-react';
 
 interface NavItem {
   title: string;
@@ -28,6 +28,7 @@ const navItems: NavItem[] = [
       { title: 'Stock Movements', href: '/inventory/movements' },
       { title: 'Stock Transfers', href: '/inventory/transfers' },
       { title: 'Warehouses', href: '/inventory/warehouses' },
+      { title: 'Barcode / QR Print', href: '/inventory/barcode-print' },
     ],
   },
   {

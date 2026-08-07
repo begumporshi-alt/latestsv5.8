@@ -79,6 +79,7 @@ export default function SalesPage() {
   const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
+  const [showOutstandingModal, setShowOutstandingModal] = useState(false);
   const [viewingInvoice, setViewingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [invoicePayments, setInvoicePayments] = useState<any[]>([]);
@@ -542,13 +543,13 @@ export default function SalesPage() {
             { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false },
             { label: 'Net Collected', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true },
             { label: 'Store Credit', value: formatCurrency(stats.storeCreditBalance), icon: Wallet, color: 'text-indigo-500 bg-indigo-50', clickable: false },
-            { label: 'Outstanding', value: formatCurrency(stats.outstanding), icon: Clock, color: 'text-amber-500 bg-amber-50', clickable: false },
+            { label: 'Outstanding', value: formatCurrency(stats.outstanding), icon: Clock, color: 'text-amber-500 bg-amber-50', clickable: true },
             { label: 'Bad Debt', value: formatCurrency(stats.badDebt), icon: AlertTriangle, color: 'text-red-500 bg-red-50', clickable: false },
           ].map(s => (
             <div
               key={s.label}
               className={`stat-card flex items-center gap-3 shrink-0 min-w-[180px] ${s.clickable ? 'cursor-pointer hover:shadow-md hover:border-teal-300 transition-all' : ''}`}
-              onClick={s.clickable ? () => setShowNetCollectedModal(true) : undefined}
+              onClick={s.clickable ? () => s.label === 'Outstanding' ? setShowOutstandingModal(true) : setShowNetCollectedModal(true) : undefined}
             >
               <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color} shrink-0`}><s.icon className="w-5 h-5" /></div>
               <div className="min-w-0">
@@ -848,6 +849,12 @@ export default function SalesPage() {
           stats={stats}
           periodRange={getPeriodRange()}
           onClose={() => setShowNetCollectedModal(false)}
+        />
+      )}
+
+      {showOutstandingModal && (
+        <OutstandingBreakdownModal
+          onClose={() => setShowOutstandingModal(false)}
         />
       )}
 
@@ -2652,4 +2659,177 @@ function CostPriceHistoryTab({ items, invoiceId }: { items: any[]; invoiceId: st
       </div>
     </div>
   );
+}
+
+function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [invoices, setInvoices] = useState<(Invoice & { customer?: { name: string } })[]>([]);
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const { data } = await supabase
+        .from('invoices')
+        .select('*, customer:customers(name)')
+        .in('status', ['sent', 'partially_paid', 'overdue'])
+        .order('invoice_date', { ascending: false });
+      const outstanding = (data || []).filter((i: any) => Number(i.balance_due || 0) > 0);
+      setInvoices(outstanding as any);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  const filtered = invoices.filter(inv => {
+    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase());
+    const matchStatus = !filterStatus || inv.status === filterStatus;
+    return matchSearch && matchStatus;
+  });
+
+  const totalOutstanding = filtered.reduce((s, i) => s + Number(i.balance_due || 0), 0);
+  const overdueCount = filtered.filter(i => i.status === 'overdue').length;
+  const partialCount = filtered.filter(i => i.status === 'partially_paid').length;
+  const onCreditCount = filtered.filter(i => i.status === 'sent').length;
+
+  function getDaysOverdue(inv: Invoice): number {
+    if (!inv.due_date) return 0;
+    const due = new Date(inv.due_date);
+    const today = new Date();
+    const diff = Math.floor((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+    return diff > 0 ? diff : 0;
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+      <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <Clock className="w-5 h-5 text-amber-500" />
+            Outstanding Breakdown
+          </h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="px-6 py-4 border-b border-border shrink-0 space-y-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+              <p className="text-xs text-amber-600 font-medium">Total Outstanding</p>
+              <p className="text-lg font-bold text-amber-700">{formatCurrency(totalOutstanding)}</p>
+            </div>
+            <div className="bg-red-50 rounded-lg p-3 border border-red-100">
+              <p className="text-xs text-red-600 font-medium">Overdue</p>
+              <p className="text-lg font-bold text-red-700">{overdueCount} invoices</p>
+            </div>
+            <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+              <p className="text-xs text-blue-600 font-medium">Partial</p>
+              <p className="text-lg font-bold text-blue-700">{partialCount} invoices</p>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+              <p className="text-xs text-gray-600 font-medium">On Credit</p>
+              <p className="text-lg font-bold text-gray-700">{onCreditCount} invoices</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search by invoice # or customer..."
+                className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white">
+              <option value="">All Status</option>
+              <option value="sent">On Credit</option>
+              <option value="partially_paid">Partial</option>
+              <option value="overdue">Overdue</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto overflow-y-auto flex-1">
+          <table className="w-full">
+            <thead className="bg-muted/40 border-b border-border sticky top-0 z-10">
+              <tr>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Invoice #</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Customer</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Due Date</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Total</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Paid</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Balance</th>
+                <th className="text-center text-xs font-semibold text-muted-foreground px-4 py-3">Days Overdue</th>
+                <th className="text-center text-xs font-semibold text-muted-foreground px-4 py-3">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {loading ? Array.from({ length: 6 }).map((_, i) => (
+                <tr key={i}><td colSpan={9} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
+              )) : filtered.length === 0 ? (
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-sm text-muted-foreground">No outstanding invoices</td></tr>
+              ) : filtered.map(inv => {
+                const daysOverdue = getDaysOverdue(inv);
+                return (
+                  <tr key={inv.id} className="hover:bg-muted/30 transition-colors">
+                    <td className="px-4 py-3 text-sm font-semibold text-blue-600">{inv.invoice_number}</td>
+                    <td className="px-4 py-3 text-sm text-foreground">{inv.customer?.name || 'Walk-in'}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(inv.invoice_date).toLocaleDateString()}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{inv.due_date ? new Date(inv.due_date).toLocaleDateString() : '—'}</td>
+                    <td className="px-4 py-3 text-right text-sm text-foreground">{formatCurrency(inv.total_amount)}</td>
+                    <td className="px-4 py-3 text-right text-sm text-green-600">{formatCurrency(inv.amount_paid)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-bold text-amber-600">{formatCurrency(inv.balance_due)}</td>
+                    <td className="px-4 py-3 text-center text-sm">
+                      {daysOverdue > 0 ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-xs font-medium">
+                          <AlertTriangle className="w-3 h-3" />
+                          {daysOverdue}d
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <StatusBadge status={inv.status} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            {!loading && filtered.length > 0 && (
+              <tfoot className="bg-muted/30 border-t border-border sticky bottom-0">
+                <tr>
+                  <td colSpan={6} className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Total Outstanding:</td>
+                  <td className="px-4 py-3 text-right text-sm font-bold text-amber-600">{formatCurrency(totalOutstanding)}</td>
+                  <td colSpan={2}></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+
+        <div className="border-t border-border px-6 py-3 flex justify-end shrink-0">
+          <button onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: InvoiceStatus }) {
+  const config: Record<InvoiceStatus, { label: string; className: string }> = {
+    draft: { label: 'Draft', className: 'bg-gray-100 text-gray-600' },
+    sent: { label: 'On Credit', className: 'bg-blue-50 text-blue-600' },
+    partially_paid: { label: 'Partial', className: 'bg-yellow-50 text-yellow-600' },
+    paid: { label: 'Paid', className: 'bg-green-50 text-green-600' },
+    overdue: { label: 'Overdue', className: 'bg-red-50 text-red-600' },
+    cancelled: { label: 'Cancelled', className: 'bg-gray-100 text-gray-400' },
+    refunded: { label: 'Refunded', className: 'bg-purple-50 text-purple-600' },
+    refundable: { label: 'Refundable', className: 'bg-orange-50 text-orange-600' },
+  };
+  const c = config[status] || config.draft;
+  return <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${c.className}`}>{c.label}</span>;
 }
