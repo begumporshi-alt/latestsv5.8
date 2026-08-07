@@ -8,7 +8,7 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
-import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote } from 'lucide-react';
+import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown } from 'lucide-react';
 import type { Customer } from '@/lib/types';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280'];
@@ -54,6 +54,8 @@ export default function DashboardPage() {
   const [outstandingDues, setOutstandingDues] = useState<Customer[]>([]);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [recentActivities, setRecentActivities] = useState<any[]>([]);
+  const [showReceivablesModal, setShowReceivablesModal] = useState(false);
+  const [showExpensesModal, setShowExpensesModal] = useState(false);
 
   useEffect(() => {
     loadDashboardData();
@@ -200,9 +202,9 @@ export default function DashboardPage() {
     { label: 'Monthly Revenue', value: formatCurrency(stats.monthlySales), icon: TrendingUp, bg: 'bg-green-50', color: 'text-green-500' },
     { label: 'Inventory Value', value: formatCurrency(stats.inventoryValue), icon: Package, bg: 'bg-purple-50', color: 'text-purple-500' },
     { label: 'Pending Deliveries', value: String(stats.deliveryPending + stats.deliveryInTransit), icon: Truck, bg: 'bg-orange-50', color: 'text-orange-500' },
-    { label: 'Receivables', value: formatCurrency(stats.receivables), icon: Receipt, bg: 'bg-red-50', color: 'text-red-500' },
+    { label: 'Receivables', value: formatCurrency(stats.receivables), icon: Receipt, bg: 'bg-red-50', color: 'text-red-500', clickable: true, modal: 'receivables' as const },
     { label: 'Payables', value: formatCurrency(stats.payables), icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500' },
-    { label: 'Total Expenses', value: formatCurrency(stats.totalExpenses), icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500' },
+    { label: 'Total Expenses', value: formatCurrency(stats.totalExpenses), icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500', clickable: true, modal: 'expenses' as const },
   ];
 
   return (
@@ -230,7 +232,11 @@ export default function DashboardPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {kpis.map((kpi) => (
-          <div key={kpi.label} className="stat-card group cursor-default">
+          <div
+            key={kpi.label}
+            onClick={(kpi as any).clickable ? () => (kpi as any).modal === 'receivables' ? setShowReceivablesModal(true) : setShowExpensesModal(true) : undefined}
+            className={`stat-card group ${(kpi as any).clickable ? 'cursor-pointer hover:ring-2 hover:ring-blue-500/20 hover:shadow-md transition-all' : 'cursor-default'}`}
+          >
             <div className="flex items-start justify-between mb-2">
               <div>
                 <p className="text-xs text-muted-foreground font-medium">{kpi.label}</p>
@@ -450,6 +456,381 @@ export default function DashboardPage() {
             <p className="text-xs text-muted-foreground mb-1">Monthly Expenses</p>
             <p className="text-lg font-bold text-foreground">{formatCurrency(stats.totalExpenses)}</p>
           </div>
+        </div>
+      </div>
+
+      {showReceivablesModal && (
+        <ReceivablesBreakdownModal totalReceivables={stats.receivables} onClose={() => setShowReceivablesModal(false)} />
+      )}
+      {showExpensesModal && (
+        <ExpensesBreakdownModal onClose={() => setShowExpensesModal(false)} />
+      )}
+    </div>
+  );
+}
+
+function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceivables: number; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<'invoice' | 'manual'>('invoice');
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+
+  const [invoiceReceivables, setInvoiceReceivables] = useState<any[]>([]);
+  const [manualReceivables, setManualReceivables] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      const [invRes, jeRes] = await Promise.all([
+        supabase
+          .from('invoices')
+          .select('id, invoice_number, customer_id, customer:customers(name), status, invoice_date, due_date, total_amount, amount_paid, balance_due')
+          .in('status', ['sent', 'partially_paid', 'overdue'])
+          .order('invoice_date', { ascending: false }),
+        supabase
+          .from('journal_entries')
+          .select('id, entry_number, entry_date, description, total_debit, total_credit, customer_id, customer:customers(name)')
+          .eq('reference_type', 'receivable')
+          .eq('is_posted', true)
+          .order('entry_date', { ascending: false }),
+      ]);
+
+      const outstandingInv = (invRes.data || []).filter((i: any) => Number(i.balance_due || 0) > 0);
+      setInvoiceReceivables(outstandingInv);
+
+      const manualEntries = (jeRes.data || []).map((je: any) => {
+        const net = Number(je.total_debit || 0) - Number(je.total_credit || 0);
+        return { ...je, net_amount: net };
+      }).filter((je: any) => je.net_amount > 0);
+      setManualReceivables(manualEntries);
+      setLoading(false);
+    }
+    load();
+  }, []);
+
+  const filteredInvoices = invoiceReceivables.filter((inv: any) => {
+    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase());
+    const matchStatus = !filterStatus || inv.status === filterStatus;
+    return matchSearch && matchStatus;
+  });
+
+  const filteredManual = manualReceivables.filter((je: any) => {
+    const matchSearch = !search || je.entry_number.toLowerCase().includes(search.toLowerCase()) || (je.description || '').toLowerCase().includes(search.toLowerCase()) || (je.customer?.name || '').toLowerCase().includes(search.toLowerCase());
+    return matchSearch;
+  });
+
+  const invoiceTotal = filteredInvoices.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0);
+  const manualTotal = filteredManual.reduce((s: number, j: any) => s + j.net_amount, 0);
+
+  function getDaysOverdue(inv: any): number {
+    if (!inv.due_date) return 0;
+    const due = new Date(inv.due_date);
+    const today = new Date();
+    const diff = Math.floor((today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24));
+    return diff > 0 ? diff : 0;
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+      <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <Receipt className="w-5 h-5 text-red-500" />
+            Receivables Breakdown
+          </h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="px-6 py-4 border-b border-border shrink-0 space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-red-50 rounded-lg p-3 border border-red-100">
+              <p className="text-xs text-red-600 font-medium">Total Receivables</p>
+              <p className="text-lg font-bold text-red-700">{formatCurrency(totalReceivables)}</p>
+            </div>
+            <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+              <p className="text-xs text-blue-600 font-medium">From Invoices</p>
+              <p className="text-lg font-bold text-blue-700">{formatCurrency(invoiceTotal)}</p>
+            </div>
+            <div className="bg-purple-50 rounded-lg p-3 border border-purple-100">
+              <p className="text-xs text-purple-600 font-medium">Manual Receivables</p>
+              <p className="text-lg font-bold text-purple-700">{formatCurrency(manualTotal)}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex bg-muted/50 rounded-lg p-1">
+              <button onClick={() => setTab('invoice')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === 'invoice' ? 'bg-white text-blue-600 shadow-sm' : 'text-muted-foreground'}`}>Invoice Receivables</button>
+              <button onClick={() => setTab('manual')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === 'manual' ? 'bg-white text-blue-600 shadow-sm' : 'text-muted-foreground'}`}>Manual Receivables</button>
+            </div>
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            {tab === 'invoice' && (
+              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white">
+                <option value="">All Status</option>
+                <option value="sent">On Credit</option>
+                <option value="partially_paid">Partial</option>
+                <option value="overdue">Overdue</option>
+              </select>
+            )}
+          </div>
+        </div>
+
+        <div className="overflow-x-auto overflow-y-auto flex-1">
+          {tab === 'invoice' ? (
+            <table className="w-full">
+              <thead className="bg-muted/40 border-b border-border sticky top-0 z-10">
+                <tr>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Invoice #</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Customer</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Due Date</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Total</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Paid</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Balance</th>
+                  <th className="text-center text-xs font-semibold text-muted-foreground px-4 py-3">Overdue</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {loading ? Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={i}><td colSpan={8} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
+                )) : filteredInvoices.length === 0 ? (
+                  <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">No outstanding invoices</td></tr>
+                ) : filteredInvoices.map((inv: any) => {
+                  const days = getDaysOverdue(inv);
+                  return (
+                    <tr key={inv.id} className="hover:bg-muted/30 transition-colors">
+                      <td className="px-4 py-3 text-sm font-semibold text-blue-600">{inv.invoice_number}</td>
+                      <td className="px-4 py-3 text-sm text-foreground">{inv.customer?.name || 'Walk-in'}</td>
+                      <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(inv.invoice_date).toLocaleDateString()}</td>
+                      <td className="px-4 py-3 text-sm text-muted-foreground">{inv.due_date ? new Date(inv.due_date).toLocaleDateString() : '—'}</td>
+                      <td className="px-4 py-3 text-right text-sm text-foreground">{formatCurrency(inv.total_amount)}</td>
+                      <td className="px-4 py-3 text-right text-sm text-green-600">{formatCurrency(inv.amount_paid)}</td>
+                      <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{formatCurrency(inv.balance_due)}</td>
+                      <td className="px-4 py-3 text-center text-sm">
+                        {days > 0 ? <span className="inline-flex px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-xs font-medium">{days}d</span> : <span className="text-muted-foreground text-xs">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {!loading && filteredInvoices.length > 0 && (
+                <tfoot className="bg-muted/30 border-t border-border sticky bottom-0">
+                  <tr>
+                    <td colSpan={6} className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Invoice Total:</td>
+                    <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{formatCurrency(invoiceTotal)}</td>
+                    <td></td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          ) : (
+            <table className="w-full">
+              <thead className="bg-muted/40 border-b border-border sticky top-0 z-10">
+                <tr>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Entry #</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Description</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Customer</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Debit</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Credit</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Net Amount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {loading ? Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={i}><td colSpan={7} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
+                )) : filteredManual.length === 0 ? (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No manual receivables</td></tr>
+                ) : filteredManual.map((je: any) => (
+                  <tr key={je.id} className="hover:bg-muted/30 transition-colors">
+                    <td className="px-4 py-3 text-sm font-semibold text-purple-600">{je.entry_number}</td>
+                    <td className="px-4 py-3 text-sm text-foreground">{je.description || '—'}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{je.customer?.name || '—'}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(je.entry_date).toLocaleDateString()}</td>
+                    <td className="px-4 py-3 text-right text-sm text-foreground">{formatCurrency(je.total_debit)}</td>
+                    <td className="px-4 py-3 text-right text-sm text-muted-foreground">{formatCurrency(je.total_credit)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-bold text-purple-600">{formatCurrency(je.net_amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              {!loading && filteredManual.length > 0 && (
+                <tfoot className="bg-muted/30 border-t border-border sticky bottom-0">
+                  <tr>
+                    <td colSpan={6} className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Manual Total:</td>
+                    <td className="px-4 py-3 text-right text-sm font-bold text-purple-600">{formatCurrency(manualTotal)}</td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          )}
+        </div>
+
+        <div className="border-t border-border px-6 py-3 flex justify-end shrink-0">
+          <button onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'quarter' | 'year'>('year');
+  const [search, setSearch] = useState('');
+  const [entries, setEntries] = useState<any[]>([]);
+
+  useEffect(() => {
+    loadExpenses();
+  }, [period]);
+
+  async function loadExpenses() {
+    setLoading(true);
+    const now = new Date();
+    let startDate: string;
+
+    switch (period) {
+      case 'today':
+        startDate = now.toISOString().split('T')[0];
+        break;
+      case 'week': {
+        const weekAgo = new Date(now);
+        weekAgo.setDate(now.getDate() - 7);
+        startDate = weekAgo.toISOString().split('T')[0];
+        break;
+      }
+      case 'month':
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        break;
+      case 'quarter': {
+        const q = Math.floor(now.getMonth() / 3);
+        startDate = new Date(now.getFullYear(), q * 3, 1).toISOString().split('T')[0];
+        break;
+      }
+      case 'year':
+        startDate = new Date(now.getFullYear(), 0, 1).toISOString().split('T')[0];
+        break;
+    }
+
+    const { data } = await supabase
+      .from('journal_entries')
+      .select('id, entry_number, entry_date, description, total_debit, total_credit, reference_type')
+      .eq('is_posted', true)
+      .gte('entry_date', startDate)
+      .order('entry_date', { ascending: false });
+
+    const expenseEntries = (data || []).filter((je: any) => je.reference_type === 'manual' || je.reference_type === 'expense');
+    setEntries(expenseEntries);
+    setLoading(false);
+  }
+
+  const filtered = entries.filter((je: any) => {
+    const matchSearch = !search || je.entry_number.toLowerCase().includes(search.toLowerCase()) || (je.description || '').toLowerCase().includes(search.toLowerCase());
+    return matchSearch;
+  });
+
+  const totalDebit = filtered.reduce((s: number, je: any) => s + Number(je.total_debit || 0), 0);
+  const totalCredit = filtered.reduce((s: number, je: any) => s + Number(je.total_credit || 0), 0);
+  const netExpenses = totalDebit - totalCredit;
+
+  const periodLabels: Record<typeof period, string> = {
+    today: 'Today',
+    week: 'This Week',
+    month: 'This Month',
+    quarter: 'This Quarter',
+    year: 'This Year',
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
+      <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <Wallet className="w-5 h-5 text-rose-500" />
+            Total Expenses Breakdown
+          </h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="px-6 py-4 border-b border-border shrink-0 space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-rose-50 rounded-lg p-3 border border-rose-100">
+              <p className="text-xs text-rose-600 font-medium">Total Expenses ({periodLabels[period]})</p>
+              <p className="text-lg font-bold text-rose-700">{formatCurrency(netExpenses)}</p>
+            </div>
+            <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+              <p className="text-xs text-blue-600 font-medium">Total Debit</p>
+              <p className="text-lg font-bold text-blue-700">{formatCurrency(totalDebit)}</p>
+            </div>
+            <div className="bg-green-50 rounded-lg p-3 border border-green-100">
+              <p className="text-xs text-green-600 font-medium">Total Credit</p>
+              <p className="text-lg font-bold text-green-700">{formatCurrency(totalCredit)}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex bg-muted/50 rounded-lg p-1">
+              {(['today', 'week', 'month', 'quarter', 'year'] as const).map(p => (
+                <button key={p} onClick={() => setPeriod(p)} className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${period === p ? 'bg-white text-rose-600 shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+                  {periodLabels[p]}
+                </button>
+              ))}
+            </div>
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search entries..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500/20" />
+            </div>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto overflow-y-auto flex-1">
+          <table className="w-full">
+            <thead className="bg-muted/40 border-b border-border sticky top-0 z-10">
+              <tr>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Entry #</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Description</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Type</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Debit</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Credit</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Net</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {loading ? Array.from({ length: 6 }).map((_, i) => (
+                <tr key={i}><td colSpan={7} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
+              )) : filtered.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No expense entries for this period</td></tr>
+              ) : filtered.map((je: any) => (
+                <tr key={je.id} className="hover:bg-muted/30 transition-colors">
+                  <td className="px-4 py-3 text-sm font-semibold text-rose-600">{je.entry_number}</td>
+                  <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(je.entry_date).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-sm text-foreground">{je.description || '—'}</td>
+                  <td className="px-4 py-3 text-sm">
+                    <span className="inline-flex px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-xs font-medium capitalize">{je.reference_type || 'manual'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-right text-sm text-foreground">{formatCurrency(je.total_debit)}</td>
+                  <td className="px-4 py-3 text-right text-sm text-muted-foreground">{formatCurrency(je.total_credit)}</td>
+                  <td className="px-4 py-3 text-right text-sm font-bold text-rose-600">{formatCurrency(Number(je.total_debit || 0) - Number(je.total_credit || 0))}</td>
+                </tr>
+              ))}
+            </tbody>
+            {!loading && filtered.length > 0 && (
+              <tfoot className="bg-muted/30 border-t border-border sticky bottom-0">
+                <tr>
+                  <td colSpan={4} className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Total ({periodLabels[period]}):</td>
+                  <td className="px-4 py-3 text-right text-sm font-bold text-blue-700">{formatCurrency(totalDebit)}</td>
+                  <td className="px-4 py-3 text-right text-sm font-bold text-green-700">{formatCurrency(totalCredit)}</td>
+                  <td className="px-4 py-3 text-right text-sm font-bold text-rose-600">{formatCurrency(netExpenses)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+
+        <div className="border-t border-border px-6 py-3 flex justify-end shrink-0">
+          <button onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Close</button>
         </div>
       </div>
     </div>
