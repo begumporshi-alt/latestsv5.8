@@ -460,7 +460,10 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
           delivered_quantity: Number(item.quantity),
           unit_name: item.unit_name,
         }));
-        await supabase.from('delivery_items').insert(delItems);
+        const { error: delItemsError } = await supabase.from('delivery_items').insert(delItems);
+        if (delItemsError) {
+          toast({ title: 'Warning', description: 'Delivery created but items could not be copied: ' + delItemsError.message, variant: 'destructive' });
+        }
       }
     }
 
