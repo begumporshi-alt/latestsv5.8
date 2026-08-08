@@ -1371,10 +1371,22 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
     setError('');
 
     // Fetch quotation items with product info and stock
-    const { data: items } = await supabase
+    const { data: items, error: itemsFetchError } = await supabase
       .from('quotation_items')
       .select('*, product:products(cost_price, name)')
       .eq('quotation_id', quotation.id);
+
+    if (itemsFetchError) {
+      setError('Failed to load quotation items: ' + itemsFetchError.message);
+      setSaving(false);
+      return;
+    }
+
+    if (!items || items.length === 0) {
+      setError('This quotation has no items to convert');
+      setSaving(false);
+      return;
+    }
 
     // Validate stock before conversion
     const stockChecks = await Promise.all(
@@ -1435,7 +1447,12 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
         unit_conversion_factor: (item as any).unit_conversion_factor || null,
         base_quantity: (item as any).base_quantity || item.quantity,
       }));
-      await supabase.from('invoice_items').insert(invoiceItems);
+      const { error: itemsInsertError } = await supabase.from('invoice_items').insert(invoiceItems);
+      if (itemsInsertError) {
+        setError('Failed to create invoice items: ' + itemsInsertError.message);
+        setSaving(false);
+        return;
+      }
     }
 
     if (effectiveAmountPaid > 0) {
