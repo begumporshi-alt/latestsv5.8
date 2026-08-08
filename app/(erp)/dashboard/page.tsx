@@ -8,7 +8,8 @@ import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
 } from 'recharts';
-import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown } from 'lucide-react';
+import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown, TriangleAlert as AlertTriangle } from 'lucide-react';
+import AppPagination from '@/components/ui/AppPagination';
 import type { Customer } from '@/lib/types';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280'];
@@ -475,52 +476,79 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
 
-  const [invoiceReceivables, setInvoiceReceivables] = useState<any[]>([]);
-  const [manualReceivables, setManualReceivables] = useState<any[]>([]);
+  const PAGE_SIZE = 25;
+  const [invPage, setInvPage] = useState(1);
+  const [invTotal, setInvTotal] = useState(0);
+  const [invData, setInvData] = useState<any[]>([]);
+  const [invPageTotal, setInvPageTotal] = useState(0);
 
-  useEffect(() => {
-    async function load() {
-      setLoading(true);
-      const [invRes, jeRes] = await Promise.all([
-        supabase
-          .from('invoices')
-          .select('id, invoice_number, customer_id, customer:customers(name), status, invoice_date, due_date, total_amount, amount_paid, balance_due')
-          .in('status', ['sent', 'partially_paid', 'overdue'])
-          .order('invoice_date', { ascending: false }),
-        supabase
-          .from('journal_entries')
-          .select('id, entry_number, entry_date, description, total_debit, total_credit, customer_id, customer:customers(name)')
-          .eq('reference_type', 'receivable')
-          .eq('is_posted', true)
-          .order('entry_date', { ascending: false }),
-      ]);
+  const [manPage, setManPage] = useState(1);
+  const [manTotal, setManTotal] = useState(0);
+  const [manData, setManData] = useState<any[]>([]);
+  const [manPageTotal, setManPageTotal] = useState(0);
 
-      const outstandingInv = (invRes.data || []).filter((i: any) => Number(i.balance_due || 0) > 0);
-      setInvoiceReceivables(outstandingInv);
+  useEffect(() => { if (tab === 'invoice') loadInvoices(); }, [invPage, search, filterStatus, tab]);
+  useEffect(() => { if (tab === 'manual') loadManual(); }, [manPage, search, tab]);
 
-      const manualEntries = (jeRes.data || []).map((je: any) => {
-        const net = Number(je.total_debit || 0) - Number(je.total_credit || 0);
-        return { ...je, net_amount: net };
-      }).filter((je: any) => je.net_amount > 0);
-      setManualReceivables(manualEntries);
-      setLoading(false);
+  async function loadInvoices() {
+    setLoading(true);
+    let baseQuery = supabase
+      .from('invoices')
+      .select('id, invoice_number, customer:customers(name), status, invoice_date, due_date, total_amount, amount_paid, balance_due', { count: 'exact' })
+      .in('status', ['sent', 'partially_paid', 'overdue'])
+      .gt('balance_due', 0)
+      .order('invoice_date', { ascending: false });
+
+    if (filterStatus) baseQuery = baseQuery.eq('status', filterStatus);
+
+    const from = (invPage - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    const { data, count } = await baseQuery.range(from, to);
+
+    let filtered = data || [];
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter((i: any) => i.invoice_number?.toLowerCase().includes(q) || (i.customer?.name || '').toLowerCase().includes(q));
     }
-    load();
-  }, []);
 
-  const filteredInvoices = invoiceReceivables.filter((inv: any) => {
-    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase());
-    const matchStatus = !filterStatus || inv.status === filterStatus;
-    return matchSearch && matchStatus;
-  });
+    setInvData(filtered);
+    setInvTotal(count || 0);
+    setInvPageTotal(filtered.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0));
+    setLoading(false);
+  }
 
-  const filteredManual = manualReceivables.filter((je: any) => {
-    const matchSearch = !search || je.entry_number.toLowerCase().includes(search.toLowerCase()) || (je.description || '').toLowerCase().includes(search.toLowerCase()) || (je.customer?.name || '').toLowerCase().includes(search.toLowerCase());
-    return matchSearch;
-  });
+  async function loadManual() {
+    setLoading(true);
+    let baseQuery = supabase
+      .from('journal_entries')
+      .select('id, entry_number, entry_date, description, total_debit, total_credit, customer:customers(name)', { count: 'exact' })
+      .eq('reference_type', 'receivable')
+      .eq('is_posted', true)
+      .gt('total_debit', 0)
+      .order('entry_date', { ascending: false });
 
-  const invoiceTotal = filteredInvoices.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0);
-  const manualTotal = filteredManual.reduce((s: number, j: any) => s + j.net_amount, 0);
+    const from = (manPage - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    const { data, count } = await baseQuery.range(from, to);
+
+    let filtered = (data || []).map((je: any) => ({
+      ...je,
+      net_amount: Number(je.total_debit || 0) - Number(je.total_credit || 0),
+    }));
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter((je: any) =>
+        je.entry_number?.toLowerCase().includes(q) ||
+        (je.description || '').toLowerCase().includes(q) ||
+        (je.customer?.name || '').toLowerCase().includes(q)
+      );
+    }
+
+    setManData(filtered);
+    setManTotal(count || 0);
+    setManPageTotal(filtered.reduce((s: number, j: any) => s + j.net_amount, 0));
+    setLoading(false);
+  }
 
   function getDaysOverdue(inv: any): number {
     if (!inv.due_date) return 0;
@@ -548,26 +576,26 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
               <p className="text-lg font-bold text-red-700">{formatCurrency(totalReceivables)}</p>
             </div>
             <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
-              <p className="text-xs text-blue-600 font-medium">From Invoices</p>
-              <p className="text-lg font-bold text-blue-700">{formatCurrency(invoiceTotal)}</p>
+              <p className="text-xs text-blue-600 font-medium">From Invoices (this page)</p>
+              <p className="text-lg font-bold text-blue-700">{formatCurrency(invPageTotal)}</p>
             </div>
             <div className="bg-purple-50 rounded-lg p-3 border border-purple-100">
-              <p className="text-xs text-purple-600 font-medium">Manual Receivables</p>
-              <p className="text-lg font-bold text-purple-700">{formatCurrency(manualTotal)}</p>
+              <p className="text-xs text-purple-600 font-medium">Manual Receivables (this page)</p>
+              <p className="text-lg font-bold text-purple-700">{formatCurrency(manPageTotal)}</p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex bg-muted/50 rounded-lg p-1">
-              <button onClick={() => setTab('invoice')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === 'invoice' ? 'bg-white text-blue-600 shadow-sm' : 'text-muted-foreground'}`}>Invoice Receivables</button>
-              <button onClick={() => setTab('manual')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === 'manual' ? 'bg-white text-blue-600 shadow-sm' : 'text-muted-foreground'}`}>Manual Receivables</button>
+              <button onClick={() => { setTab('invoice'); setInvPage(1); }} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === 'invoice' ? 'bg-white text-blue-600 shadow-sm' : 'text-muted-foreground'}`}>Invoice Receivables</button>
+              <button onClick={() => { setTab('manual'); setManPage(1); }} className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${tab === 'manual' ? 'bg-white text-blue-600 shadow-sm' : 'text-muted-foreground'}`}>Manual Receivables</button>
             </div>
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <input value={search} onChange={e => { setSearch(e.target.value); setInvPage(1); setManPage(1); }} placeholder="Search..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
             </div>
             {tab === 'invoice' && (
-              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white">
+              <select value={filterStatus} onChange={e => { setFilterStatus(e.target.value); setInvPage(1); }} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white">
                 <option value="">All Status</option>
                 <option value="sent">On Credit</option>
                 <option value="partially_paid">Partial</option>
@@ -595,9 +623,9 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
               <tbody className="divide-y divide-border">
                 {loading ? Array.from({ length: 6 }).map((_, i) => (
                   <tr key={i}><td colSpan={8} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
-                )) : filteredInvoices.length === 0 ? (
+                )) : invData.length === 0 ? (
                   <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">No outstanding invoices</td></tr>
-                ) : filteredInvoices.map((inv: any) => {
+                ) : invData.map((inv: any) => {
                   const days = getDaysOverdue(inv);
                   return (
                     <tr key={inv.id} className="hover:bg-muted/30 transition-colors">
@@ -609,21 +637,12 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
                       <td className="px-4 py-3 text-right text-sm text-green-600">{formatCurrency(inv.amount_paid)}</td>
                       <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{formatCurrency(inv.balance_due)}</td>
                       <td className="px-4 py-3 text-center text-sm">
-                        {days > 0 ? <span className="inline-flex px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-xs font-medium">{days}d</span> : <span className="text-muted-foreground text-xs">—</span>}
+                        {days > 0 ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-50 text-red-600 text-xs font-medium"><AlertTriangle className="w-3 h-3" />{days}d</span> : <span className="text-muted-foreground text-xs">—</span>}
                       </td>
                     </tr>
                   );
                 })}
               </tbody>
-              {!loading && filteredInvoices.length > 0 && (
-                <tfoot className="bg-muted/30 border-t border-border sticky bottom-0">
-                  <tr>
-                    <td colSpan={6} className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Invoice Total:</td>
-                    <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{formatCurrency(invoiceTotal)}</td>
-                    <td></td>
-                  </tr>
-                </tfoot>
-              )}
             </table>
           ) : (
             <table className="w-full">
@@ -641,9 +660,9 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
               <tbody className="divide-y divide-border">
                 {loading ? Array.from({ length: 6 }).map((_, i) => (
                   <tr key={i}><td colSpan={7} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
-                )) : filteredManual.length === 0 ? (
+                )) : manData.length === 0 ? (
                   <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No manual receivables</td></tr>
-                ) : filteredManual.map((je: any) => (
+                ) : manData.map((je: any) => (
                   <tr key={je.id} className="hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3 text-sm font-semibold text-purple-600">{je.entry_number}</td>
                     <td className="px-4 py-3 text-sm text-foreground">{je.description || '—'}</td>
@@ -655,17 +674,15 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
                   </tr>
                 ))}
               </tbody>
-              {!loading && filteredManual.length > 0 && (
-                <tfoot className="bg-muted/30 border-t border-border sticky bottom-0">
-                  <tr>
-                    <td colSpan={6} className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Manual Total:</td>
-                    <td className="px-4 py-3 text-right text-sm font-bold text-purple-600">{formatCurrency(manualTotal)}</td>
-                  </tr>
-                </tfoot>
-              )}
             </table>
           )}
         </div>
+
+        {tab === 'invoice' ? (
+          <AppPagination page={invPage} pageSize={PAGE_SIZE} total={invTotal} onPageChange={setInvPage} />
+        ) : (
+          <AppPagination page={manPage} pageSize={PAGE_SIZE} total={manTotal} onPageChange={setManPage} />
+        )}
 
         <div className="border-t border-border px-6 py-3 flex justify-end shrink-0">
           <button onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Close</button>
@@ -677,18 +694,21 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
 
 function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'quarter' | 'year'>('year');
+  const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'quarter' | 'year' | 'all'>('year');
   const [search, setSearch] = useState('');
-  const [entries, setEntries] = useState<any[]>([]);
 
-  useEffect(() => {
-    loadExpenses();
-  }, [period]);
+  const PAGE_SIZE = 25;
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [entries, setEntries] = useState<any[]>([]);
+  const [pageTotal, setPageTotal] = useState(0);
+
+  useEffect(() => { loadExpenses(); }, [period, page, search]);
 
   async function loadExpenses() {
     setLoading(true);
     const now = new Date();
-    let startDate: string;
+    let startDate: string | null = null;
 
     switch (period) {
       case 'today':
@@ -711,28 +731,43 @@ function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
       case 'year':
         startDate = new Date(now.getFullYear(), 0, 1).toISOString().split('T')[0];
         break;
+      case 'all':
+        startDate = null;
+        break;
     }
 
-    const { data } = await supabase
+    let baseQuery = supabase
       .from('journal_entries')
-      .select('id, entry_number, entry_date, description, total_debit, total_credit, reference_type')
+      .select(`
+        id, entry_number, entry_date, description, total_debit, total_credit, reference_type,
+        lines:journal_lines(account_id, debit, credit, account:accounts(id, code, name, account_type))
+      `, { count: 'exact' })
       .eq('is_posted', true)
-      .gte('entry_date', startDate)
-      .order('entry_date', { ascending: false });
+      .eq('reference_type', 'manual')
+      .order('entry_date', { ascending: false })
+      .order('created_at', { ascending: false });
 
-    const expenseEntries = (data || []).filter((je: any) => je.reference_type === 'manual' || je.reference_type === 'expense');
-    setEntries(expenseEntries);
+    if (startDate) baseQuery = baseQuery.gte('entry_date', startDate);
+
+    const from = (page - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+    const { data, count } = await baseQuery.range(from, to);
+
+    let filtered = data || [];
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      filtered = filtered.filter((je: any) =>
+        je.entry_number?.toLowerCase().includes(q) ||
+        (je.description || '').toLowerCase().includes(q) ||
+        je.lines?.some((l: any) => l.account?.name?.toLowerCase().includes(q))
+      );
+    }
+
+    setEntries(filtered);
+    setTotal(count || 0);
+    setPageTotal(filtered.reduce((s: number, je: any) => s + Number(je.total_debit || 0), 0));
     setLoading(false);
   }
-
-  const filtered = entries.filter((je: any) => {
-    const matchSearch = !search || je.entry_number.toLowerCase().includes(search.toLowerCase()) || (je.description || '').toLowerCase().includes(search.toLowerCase());
-    return matchSearch;
-  });
-
-  const totalDebit = filtered.reduce((s: number, je: any) => s + Number(je.total_debit || 0), 0);
-  const totalCredit = filtered.reduce((s: number, je: any) => s + Number(je.total_credit || 0), 0);
-  const netExpenses = totalDebit - totalCredit;
 
   const periodLabels: Record<typeof period, string> = {
     today: 'Today',
@@ -740,7 +775,15 @@ function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
     month: 'This Month',
     quarter: 'This Quarter',
     year: 'This Year',
+    all: 'All Time',
   };
+
+  function getExpenseAccount(je: any): any | null {
+    return je.lines?.find((l: any) => Number(l.debit) > 0 && l.account?.account_type === 'expense') || null;
+  }
+  function getPaidFromAccount(je: any): any | null {
+    return je.lines?.find((l: any) => Number(l.credit) > 0) || null;
+  }
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[100] p-4">
@@ -754,32 +797,29 @@ function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="px-6 py-4 border-b border-border shrink-0 space-y-3">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div className="bg-rose-50 rounded-lg p-3 border border-rose-100">
               <p className="text-xs text-rose-600 font-medium">Total Expenses ({periodLabels[period]})</p>
-              <p className="text-lg font-bold text-rose-700">{formatCurrency(netExpenses)}</p>
+              <p className="text-lg font-bold text-rose-700">{formatCurrency(pageTotal)}</p>
+              <p className="text-xs text-muted-foreground mt-0.5">{total} entries total</p>
             </div>
             <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
-              <p className="text-xs text-blue-600 font-medium">Total Debit</p>
-              <p className="text-lg font-bold text-blue-700">{formatCurrency(totalDebit)}</p>
-            </div>
-            <div className="bg-green-50 rounded-lg p-3 border border-green-100">
-              <p className="text-xs text-green-600 font-medium">Total Credit</p>
-              <p className="text-lg font-bold text-green-700">{formatCurrency(totalCredit)}</p>
+              <p className="text-xs text-blue-600 font-medium">This Page Total</p>
+              <p className="text-lg font-bold text-blue-700">{formatCurrency(pageTotal)}</p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex bg-muted/50 rounded-lg p-1">
-              {(['today', 'week', 'month', 'quarter', 'year'] as const).map(p => (
-                <button key={p} onClick={() => setPeriod(p)} className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${period === p ? 'bg-white text-rose-600 shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+            <div className="flex bg-muted/50 rounded-lg p-1 flex-wrap">
+              {(['today', 'week', 'month', 'quarter', 'year', 'all'] as const).map(p => (
+                <button key={p} onClick={() => { setPeriod(p); setPage(1); }} className={`px-3 py-1.5 rounded-md text-xs font-medium transition ${period === p ? 'bg-white text-rose-600 shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
                   {periodLabels[p]}
                 </button>
               ))}
             </div>
             <div className="relative flex-1 min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search entries..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500/20" />
+              <input value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} placeholder="Search by description, entry #, or account..." className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-500/20" />
             </div>
           </div>
         </div>
@@ -791,43 +831,39 @@ function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Entry #</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Description</th>
-                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Type</th>
-                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Debit</th>
-                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Credit</th>
-                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Net</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Expense Type</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Paid From</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Amount</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {loading ? Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i}><td colSpan={7} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
-              )) : filtered.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No expense entries for this period</td></tr>
-              ) : filtered.map((je: any) => (
-                <tr key={je.id} className="hover:bg-muted/30 transition-colors">
-                  <td className="px-4 py-3 text-sm font-semibold text-rose-600">{je.entry_number}</td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(je.entry_date).toLocaleDateString()}</td>
-                  <td className="px-4 py-3 text-sm text-foreground">{je.description || '—'}</td>
-                  <td className="px-4 py-3 text-sm">
-                    <span className="inline-flex px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-xs font-medium capitalize">{je.reference_type || 'manual'}</span>
-                  </td>
-                  <td className="px-4 py-3 text-right text-sm text-foreground">{formatCurrency(je.total_debit)}</td>
-                  <td className="px-4 py-3 text-right text-sm text-muted-foreground">{formatCurrency(je.total_credit)}</td>
-                  <td className="px-4 py-3 text-right text-sm font-bold text-rose-600">{formatCurrency(Number(je.total_debit || 0) - Number(je.total_credit || 0))}</td>
-                </tr>
-              ))}
+                <tr key={i}><td colSpan={6} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
+              )) : entries.length === 0 ? (
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">No expense entries for this period</td></tr>
+              ) : entries.map((je: any) => {
+                const expAcct = getExpenseAccount(je);
+                const paidAcct = getPaidFromAccount(je);
+                return (
+                  <tr key={je.id} className="hover:bg-muted/30 transition-colors">
+                    <td className="px-4 py-3 text-sm font-semibold text-rose-600">{je.entry_number}</td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(je.entry_date).toLocaleDateString()}</td>
+                    <td className="px-4 py-3 text-sm text-foreground">{je.description || '—'}</td>
+                    <td className="px-4 py-3 text-sm">
+                      {expAcct ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-50 text-red-700 text-xs rounded-full">{expAcct.account?.name || '—'}</span>
+                      ) : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">{paidAcct ? `${paidAcct.account?.code} - ${paidAcct.account?.name}` : '—'}</td>
+                    <td className="px-4 py-3 text-right text-sm font-bold text-rose-600">{formatCurrency(je.total_debit)}</td>
+                  </tr>
+                );
+              })}
             </tbody>
-            {!loading && filtered.length > 0 && (
-              <tfoot className="bg-muted/30 border-t border-border sticky bottom-0">
-                <tr>
-                  <td colSpan={4} className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground">Total ({periodLabels[period]}):</td>
-                  <td className="px-4 py-3 text-right text-sm font-bold text-blue-700">{formatCurrency(totalDebit)}</td>
-                  <td className="px-4 py-3 text-right text-sm font-bold text-green-700">{formatCurrency(totalCredit)}</td>
-                  <td className="px-4 py-3 text-right text-sm font-bold text-rose-600">{formatCurrency(netExpenses)}</td>
-                </tr>
-              </tfoot>
-            )}
           </table>
         </div>
+
+        <AppPagination page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} />
 
         <div className="border-t border-border px-6 py-3 flex justify-end shrink-0">
           <button onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Close</button>
