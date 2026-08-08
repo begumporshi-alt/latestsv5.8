@@ -140,36 +140,6 @@ export interface InventoryItem {
   warehouse?: Warehouse;
 }
 
-export interface InventoryBatch {
-  id: string;
-  tenant_id: string;
-  product_id: string;
-  variant_id?: string;
-  warehouse_id: string;
-  batch_number?: string;
-  quantity_received: number;
-  quantity_remaining: number;
-  unit_cost: number;
-  batch_type: 'purchase' | 'opening' | 'adjustment' | 'return';
-  reference_type?: string;
-  reference_id?: string;
-  reference_number?: string;
-  notes?: string;
-  created_at: string;
-}
-
-export interface InvoiceItemBatchConsumption {
-  id: string;
-  invoice_item_id: string;
-  batch_id?: string;
-  product_id: string;
-  warehouse_id: string;
-  quantity_consumed: number;
-  unit_cost: number;
-  cogs_amount: number;
-  created_at: string;
-}
-
 export interface Supplier {
   id: string;
   code: string;
