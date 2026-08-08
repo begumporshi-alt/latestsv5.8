@@ -14,6 +14,7 @@ export default function InventoryReportPage() {
   const [filterWarehouse, setFilterWarehouse] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [warehouses, setWarehouses] = useState<{ id: string; name: string }[]>([]);
+  const [fifoValueMap, setFifoValueMap] = useState<Record<string, number>>({});
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
@@ -40,10 +41,24 @@ export default function InventoryReportPage() {
         }
       }
 
+      const { data: batchData } = await supabase
+        .from('inventory_batches')
+        .select('product_id, warehouse_id, quantity_remaining, unit_cost')
+        .gt('quantity_remaining', 0);
+      const fMap: Record<string, number> = {};
+      (batchData || []).forEach((b: any) => {
+        const key = `${b.product_id}|${b.warehouse_id}`;
+        fMap[key] = (fMap[key] || 0) + Number(b.quantity_remaining) * Number(b.unit_cost);
+      });
+      setFifoValueMap(fMap);
+
       setItems(allItems);
       setWarehouses(whRes.data || []);
       setCategories(catRes.data || []);
-      const value = allItems.reduce((s: number, i: any) => s + Number(i.quantity_on_hand) * Number(i.product?.cost_price || 0), 0);
+      const value = allItems.reduce((s: number, i: any) => {
+        const key = `${i.product_id}|${i.warehouse_id}`;
+        return s + (fMap[key] !== undefined ? fMap[key] : Number(i.quantity_on_hand) * Number(i.product?.cost_price || 0));
+      }, 0);
       const low = allItems.filter((i: any) => i.quantity_on_hand > 0 && i.quantity_on_hand <= (i.product?.min_stock_level || 0)).length;
       const out = allItems.filter((i: any) => i.quantity_on_hand === 0).length;
       setStats({ total: allItems.length, value, lowStock: low, outOfStock: out });
@@ -67,7 +82,11 @@ export default function InventoryReportPage() {
   useEffect(() => { setPage(1); }, [search, filterWarehouse, filterCategory]);
 
   function exportToCSV() {
-    const csv = 'Product,SKU,Category,Warehouse,On Hand,Unit,Value\n' + filtered.map(i => `"${i.product?.name || ''}","${i.product?.sku || ''}","${i.product?.category?.name || ''}","${i.warehouse?.name || ''}",${i.quantity_on_hand},"${i.product?.unit || 'pcs'}",${i.quantity_on_hand * Number(i.product?.cost_price || 0)}`).join('\n');
+    const csv = 'Product,SKU,Category,Warehouse,On Hand,Unit,Value\n' + filtered.map(i => {
+      const key = `${i.product_id}|${i.warehouse_id}`;
+      const value = fifoValueMap[key] !== undefined ? fifoValueMap[key] : Number(i.quantity_on_hand) * Number(i.product?.cost_price || 0);
+      return `"${i.product?.name || ''}","${i.product?.sku || ''}","${i.product?.category?.name || ''}","${i.warehouse?.name || ''}",${i.quantity_on_hand},"${i.product?.unit || 'pcs'}",${value}`;
+    }).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -127,7 +146,8 @@ export default function InventoryReportPage() {
                   <tr><td colSpan={8} className="px-4 py-12 text-center text-muted-foreground text-sm">No items found</td></tr>
                 ) : pagedItems.map((item: any) => {
                   const avail = item.quantity_on_hand - (item.quantity_reserved || 0);
-                  const value = item.quantity_on_hand * Number(item.product?.cost_price || 0);
+                  const key = `${item.product_id}|${item.warehouse_id}`;
+                  const value = fifoValueMap[key] !== undefined ? fifoValueMap[key] : Number(item.quantity_on_hand) * Number(item.product?.cost_price || 0);
                   const isLow = item.quantity_on_hand <= (item.product?.min_stock_level || 0) && item.quantity_on_hand > 0;
                   const unit = item.product?.unit || 'pcs';
                   return (

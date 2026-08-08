@@ -166,6 +166,7 @@ export default function InventoryPage() {
   const [showManageModal, setShowManageModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [stats, setStats] = useState({ total: 0, lowStock: 0, outOfStock: 0, value: 0 });
+  const [fifoValueMap, setFifoValueMap] = useState<Record<string, number>>({});
   const [unitTypes, setUnitTypes] = useState<{ id: string; unit_name: string; unit_short: string }[]>([]);
 
   useEffect(() => { loadData(); }, []);
@@ -276,7 +277,18 @@ export default function InventoryPage() {
     const activeProds = prods.filter((p: any) => p.is_active);
     const lowStock = activeProds.filter((p: any) => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length;
     const outOfStock = activeProds.filter((p: any) => (p.total_stock || 0) === 0).length;
-    const value = activeProds.reduce((sum: number, p: any) => sum + (p.total_stock || 0) * p.cost_price, 0);
+    // Fetch FIFO batch data for accurate valuation
+    const { data: batchData } = await supabase
+      .from('inventory_batches')
+      .select('product_id, quantity_remaining, unit_cost')
+      .gt('quantity_remaining', 0);
+    const fMap: Record<string, number> = {};
+    (batchData || []).forEach((b: any) => {
+      fMap[b.product_id] = (fMap[b.product_id] || 0) + Number(b.quantity_remaining) * Number(b.unit_cost);
+    });
+    setFifoValueMap(fMap);
+
+    const value = activeProds.reduce((sum: number, p: any) => sum + (fMap[p.id] !== undefined ? fMap[p.id] : (p.total_stock || 0) * p.cost_price), 0);
 
     setStats({ total: activeProds.length, lowStock, outOfStock, value });
     setLoading(false);
@@ -492,7 +504,7 @@ export default function InventoryPage() {
           </span>
           <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-muted text-muted-foreground rounded-lg font-medium">
             <BarChart3 className="w-4 h-4" />
-            Filtered value: {formatCurrency(filtered.reduce((sum, p) => sum + (p.total_stock || 0) * p.cost_price, 0))}
+            Filtered value: {formatCurrency(filtered.reduce((sum, p) => sum + (fifoValueMap[p.id] !== undefined ? fifoValueMap[p.id] : (p.total_stock || 0) * p.cost_price), 0))}
           </span>
         </div>
       )}
