@@ -263,6 +263,20 @@ export default function PurchasesPage() {
 
     // If marking as received, add stock to inventory
     if (newStatus === 'received' || newStatus === 'partially_received') {
+      // Guard against duplicate stock movements on re-receive
+      const { data: existingMovements } = await supabase
+        .from('stock_movements')
+        .select('id')
+        .eq('reference_type', 'purchase_order')
+        .eq('reference_id', order.id)
+        .limit(1);
+
+      if (existingMovements && existingMovements.length > 0) {
+        toast({ title: 'Info', description: 'Stock already received for this order' });
+        loadData();
+        return;
+      }
+
       const { data: poItems } = await supabase
         .from('purchase_order_items')
         .select('*, product_id, quantity, unit_cost, warehouse_id, unit_name, unit_conversion_factor, base_quantity')
@@ -691,7 +705,7 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         extra_discount: form.extra_discount || 0,
         discount_amount: cartDiscountAmount,
         total_amount: totalAmount,
-        amount_paid: amountPaid,
+        amount_paid: 0,
         status: 'draft',
         notes: form.notes || null,
         reference: form.reference || null,
@@ -1262,17 +1276,7 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
 
     if (payError) { setError(payError.message); setSaving(false); return; }
 
-    const newAmountPaid = Number(order.amount_paid) + form.amount;
-
-    const { error: poError } = await supabase
-      .from('purchase_orders')
-      .update({
-        amount_paid: newAmountPaid,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', order.id);
-
-    if (poError) { setError(poError.message); setSaving(false); return; }
+    // amount_paid is updated automatically by the payment_po_amount_paid_trigger
 
     // Update supplier outstanding balance
     const { data: currentSupplier } = await supabase

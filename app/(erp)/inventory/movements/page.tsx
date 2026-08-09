@@ -70,6 +70,19 @@ export default function StockMovementsPage() {
       .from('stock_movements')
       .select('*, product:products(name, sku), warehouse:warehouses(name)', { count: 'exact' });
 
+    // If searching by text, find matching product IDs first
+    let productIds: string[] | null = null;
+    if (filters.search) {
+      const s = filters.search.trim();
+      if (s) {
+        const { data: matchingProducts } = await supabase
+          .from('products')
+          .select('id')
+          .or(`name.ilike.%${s}%,sku.ilike.%${s}%`);
+        productIds = (matchingProducts || []).map((p: any) => p.id);
+      }
+    }
+
     // Apply filters to both queries
     const applyFilters = (q: any) => {
       if (filters.movementType !== 'all') q = q.eq('movement_type', filters.movementType);
@@ -78,7 +91,13 @@ export default function StockMovementsPage() {
       if (filters.dateTo) q = q.lte('created_at', `${filters.dateTo}T23:59:59`);
       if (filters.search) {
         const s = filters.search.trim();
-        if (s) q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+        if (s) {
+          if (productIds && productIds.length > 0) {
+            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%,product_id.in.(${productIds.join(',')})`);
+          } else {
+            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+          }
+        }
       }
       return q;
     };
@@ -97,12 +116,12 @@ export default function StockMovementsPage() {
     setMovements(rows);
 
     // Fetch current stock per product for this page's products
-    const productIds = [...new Set(rows.map((m: any) => m.product_id).filter(Boolean))];
-    if (productIds.length > 0) {
+    const pageProductIds = [...new Set(rows.map((m: any) => m.product_id).filter(Boolean))] as string[];
+    if (pageProductIds.length > 0) {
       const { data: invData } = await supabase
         .from('inventory_items')
         .select('product_id, warehouse_id, quantity_on_hand, warehouse:warehouses(name)')
-        .in('product_id', productIds);
+        .in('product_id', pageProductIds);
       const stocks: Record<string, { warehouse_id: string; warehouse_name: string; qty: number }[]> = {};
       (invData || []).forEach((inv: any) => {
         if (!stocks[inv.product_id]) stocks[inv.product_id] = [];
@@ -134,7 +153,18 @@ export default function StockMovementsPage() {
       if (filters.dateTo) q = q.lte('created_at', `${filters.dateTo}T23:59:59`);
       if (filters.search) {
         const s = filters.search.trim();
-        if (s) q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+        if (s) {
+          const { data: matchingProducts } = await supabase
+            .from('products')
+            .select('id')
+            .or(`name.ilike.%${s}%,sku.ilike.%${s}%`);
+          const pIds = (matchingProducts || []).map((p: any) => p.id);
+          if (pIds.length > 0) {
+            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%,product_id.in.(${pIds.join(',')})`);
+          } else {
+            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+          }
+        }
       }
       const { data } = await q;
       const all = data || [];
@@ -178,7 +208,18 @@ export default function StockMovementsPage() {
     if (filters.dateTo) q = q.lte('created_at', `${filters.dateTo}T23:59:59`);
     if (filters.search) {
       const s = filters.search.trim();
-      if (s) q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+      if (s) {
+        const { data: matchingProducts } = await supabase
+          .from('products')
+          .select('id')
+          .or(`name.ilike.%${s}%,sku.ilike.%${s}%`);
+        const pIds = (matchingProducts || []).map((p: any) => p.id);
+        if (pIds.length > 0) {
+          q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%,product_id.in.(${pIds.join(',')})`);
+        } else {
+          q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
+        }
+      }
     }
     q = q.order('created_at', { ascending: false }).limit(10000);
     const { data } = await q;
@@ -284,12 +325,12 @@ export default function StockMovementsPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {/* Search */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Search (ref no. / notes)</label>
+              <label className="text-xs font-medium text-muted-foreground">Search (product, SKU, ref no., notes)</label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <input
                   type="text"
-                  placeholder="Reference or notes..."
+                  placeholder="Product name, SKU, reference..."
                   value={filters.search}
                   onChange={(e) => handleFilterChange('search', e.target.value)}
                   className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
