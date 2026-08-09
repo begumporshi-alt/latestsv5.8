@@ -188,13 +188,14 @@ export default function PurchasesPage() {
         .eq('id', order.supplier_id);
     }
 
-    // Mark any payments for this PO as cancelled
+    // Mark any payments for this PO as reversed
     if (Number(order.amount_paid) > 0) {
       await supabase
         .from('payments')
-        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+        .update({ is_reversed: true })
         .eq('reference_type', 'purchase_order')
-        .eq('reference_id', order.id);
+        .eq('reference_id', order.id)
+        .eq('is_reversed', false);
     }
 
     // If order was received, reverse stock additions
