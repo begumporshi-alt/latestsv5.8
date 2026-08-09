@@ -518,9 +518,9 @@ export default function PrintTemplate({
                 { label: 'ITEM DETAILS',align: 'left'   as const               },
                 { label: 'UNIT',        align: 'center' as const, width: '64px'  },
                 { label: 'QTY',         align: 'center' as const, width: '48px'  },
-                ...(hideRate ? [] : [{ label: 'RATE (৳)',    align: 'right'  as const, width: '80px'  }]),
+                ...(hideRate || hideDiscountPercent ? [] : [{ label: 'RATE (৳)',    align: 'right'  as const, width: '80px'  }]),
                 ...(hideDiscountPercent ? [] : [{ label: 'DISC %',      align: 'center' as const, width: '52px'  }]),
-                ...(hideDiscountPercent ? [] : [{ label: 'NET RATE (৳)', align: 'right'  as const, width: '80px'  }]),
+                { label: 'NET RATE (৳)', align: 'right'  as const, width: '80px'  },
                 { label: 'AMOUNT (৳)', align: 'right'  as const, width: '88px'  },
               ].map((col) => (
                 <th
@@ -543,7 +543,7 @@ export default function PrintTemplate({
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={5 + (hideRate ? 0 : 1) + (hideDiscountPercent ? 0 : 2)} style={{ padding: '20px', textAlign: 'center', color: '#aaa', fontSize: '13px' }}>
+                <td colSpan={5 + (hideRate || hideDiscountPercent ? 0 : 1) + (hideDiscountPercent ? 0 : 1) + 1} style={{ padding: '20px', textAlign: 'center', color: '#aaa', fontSize: '13px' }}>
                   No items
                 </td>
               </tr>
@@ -561,7 +561,7 @@ export default function PrintTemplate({
                   <td style={{ padding: '3px 8px', textAlign: 'left',   fontSize: '11px', fontWeight: '500' }}>{item.product_name}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>{item.unit_name || '—'}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px' }}>{item.quantity}</td>
-                  {!hideRate && (
+                  {!(hideRate || hideDiscountPercent) && (
                     <td style={{ padding: '3px 8px', textAlign: 'right',  fontSize: '11px' }}>{Number(item.unit_price).toFixed(2)}</td>
                   )}
                   {!hideDiscountPercent && (
@@ -569,11 +569,9 @@ export default function PrintTemplate({
                       {(item.discount_percent || 0) > 0 ? `${item.discount_percent}%` : '—'}
                     </td>
                   )}
-                  {!hideDiscountPercent && (
-                    <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px', fontWeight: '600', color: PRIMARY }}>
-                      {(Number(item.unit_price) * (1 - (item.discount_percent || 0) / 100)).toFixed(2)}
-                    </td>
-                  )}
+                  <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px', fontWeight: '600', color: PRIMARY }}>
+                    {(Number(item.unit_price) * (1 - (item.discount_percent || 0) / 100)).toFixed(2)}
+                  </td>
                   <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px', fontWeight: '600' }}>
                     {Number(item.subtotal).toFixed(2)}
                   </td>
@@ -590,7 +588,7 @@ export default function PrintTemplate({
                   borderBottom: '1px solid #e8edf6',
                 }}
               >
-                {Array.from({ length: 5 + (hideRate ? 0 : 1) + (hideDiscountPercent ? 0 : 2) }).map((_, colIdx) => (
+                {Array.from({ length: 5 + (hideRate || hideDiscountPercent ? 0 : 1) + (hideDiscountPercent ? 0 : 1) + 1 }).map((_, colIdx) => (
                   <td key={colIdx} style={{ padding: '3px 8px', fontSize: '11px', height: '20px' }}>&nbsp;</td>
                 ))}
               </tr>
