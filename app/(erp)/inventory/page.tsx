@@ -903,6 +903,17 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
                 reference_id: productId,
                 notes: 'Initial stock on product creation',
               });
+
+              await supabase.rpc('create_opening_batch', {
+                p_product_id: productId,
+                p_warehouse_id: warehouseId,
+                p_quantity: quantity,
+                p_unit_cost: Number(form.cost_price),
+                p_batch_type: 'opening',
+                p_reference_type: 'product_creation',
+                p_reference_id: productId,
+                p_notes: 'Initial stock on product creation',
+              });
             }
           }
         } else {
@@ -947,6 +958,19 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
                 reference_id: productId,
                 notes: diff > 0 ? 'Stock increase adjustment' : 'Stock decrease adjustment',
               });
+
+              if (diff > 0) {
+                await supabase.rpc('create_opening_batch', {
+                  p_product_id: productId,
+                  p_warehouse_id: warehouseId,
+                  p_quantity: diff,
+                  p_unit_cost: Number(form.cost_price) || 0,
+                  p_batch_type: 'adjustment',
+                  p_reference_type: 'stock_adjustment',
+                  p_reference_id: productId,
+                  p_notes: 'Stock increase adjustment',
+                });
+              }
             }
           }
         }
@@ -1664,6 +1688,16 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
                 reference_type: 'import_update',
                 notes: 'Stock updated from import',
               });
+
+              await supabase.rpc('create_opening_batch', {
+                p_product_id: productId,
+                p_warehouse_id: defaultWarehouse,
+                p_quantity: addQty,
+                p_unit_cost: Number(firstRow['Cost Price'] || 0),
+                p_batch_type: 'adjustment',
+                p_reference_type: 'import_update',
+                p_notes: 'Stock updated from import',
+              });
             }
           } else {
             // Check if inventory already exists
@@ -1702,6 +1736,16 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
                 unit_cost: Number(firstRow['Cost Price'] || 0),
                 reference_type: 'import',
                 notes: 'Initial stock from import',
+              });
+
+              await supabase.rpc('create_opening_batch', {
+                p_product_id: productId,
+                p_warehouse_id: defaultWarehouse,
+                p_quantity: currentStock,
+                p_unit_cost: Number(firstRow['Cost Price'] || 0),
+                p_batch_type: 'opening',
+                p_reference_type: 'import',
+                p_notes: 'Initial stock from import',
               });
             } else {
               errors.push(`Row ${firstRow._rowIndex}: Failed to set stock - ${invError.message}`);

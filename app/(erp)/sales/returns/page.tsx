@@ -395,9 +395,32 @@ function ReturnModal({ invoices, onClose, onSaved }: {
   const isOnCredit = (selectedInvoice?.amount_paid || 0) === 0;
   const cappedRefundAmount = Math.min(totalRefundAmount, maxRefundable);
 
+  const [fifoCostMap, setFifoCostMap] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    if (items.length === 0) return;
+    const itemIds = items.map(i => i.id);
+    supabase
+      .from('invoice_item_batch_consumption')
+      .select('invoice_item_id, cogs_amount, quantity_consumed')
+      .in('invoice_item_id', itemIds)
+      .then(({ data }) => {
+        const map: Record<string, number> = {};
+        (data || []).forEach((c: any) => {
+          const consumed = Number(c.quantity_consumed) || 0;
+          if (consumed > 0) {
+            map[c.invoice_item_id] = Number(c.cogs_amount) / consumed;
+          }
+        });
+        setFifoCostMap(map);
+      });
+  }, [items]);
+
   const totalCOGS = Object.entries(returnItems).reduce((sum, [itemId, { qty }]) => {
     const item = items.find(i => i.id === itemId);
-    return sum + (item ? qty * (item.cost_price || 0) : 0);
+    if (!item) return sum;
+    const fifoCost = fifoCostMap[itemId] !== undefined ? fifoCostMap[itemId] : (item.cost_price || 0);
+    return sum + qty * fifoCost;
   }, 0);
 
   async function handleReturn() {
@@ -665,6 +688,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
         if (!item) continue;
 
         const discountMultiplier = 1 - (item.discount_percent || 0) / 100;
+        const fifoCost = fifoCostMap[itemId] !== undefined ? fifoCostMap[itemId] : (item.cost_price || 0);
         await supabase.from('sales_return_items').insert({
           sales_return_id: salesReturn.id,
           invoice_item_id: itemId,
@@ -672,9 +696,20 @@ function ReturnModal({ invoices, onClose, onSaved }: {
           quantity_returned: qty,
           unit_price: item.unit_price,
           discount_percent: item.discount_percent || 0,
-          cost_price: item.cost_price || 0,
+          cost_price: fifoCost,
           subtotal: qty * item.unit_price * discountMultiplier,
           reason: reason || 'Not specified'
+        });
+
+        // Restore FIFO batches
+        await supabase.rpc('restore_fifo_on_return', {
+          p_invoice_item_id: itemId,
+          p_product_id: item.product_id,
+          p_warehouse_id: warehouseId,
+          p_quantity: qty,
+          p_unit_cost: fifoCost,
+          p_reference_id: salesReturn.id,
+          p_reference_number: returnNumber,
         });
 
         // Create stock movement for return
@@ -684,7 +719,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
           warehouse_id: warehouseId,
           movement_type: 'return_in',
           quantity: qty,
-          unit_cost: item.cost_price || item.unit_price,
+          unit_cost: fifoCost,
           reference_type: 'sales_return',
           reference_id: salesReturn.id,
           reference_number: returnNumber,
@@ -841,7 +876,9 @@ function ReturnModal({ invoices, onClose, onSaved }: {
                           {item.discount_percent > 0 && (
                             <p className="text-xs text-blue-600">Discount: {item.discount_percent}%</p>
                           )}
-                          {item.cost_price > 0 && (
+                          {fifoCostMap[item.id] !== undefined ? (
+                            <p className="text-xs text-muted-foreground">Cost (FIFO): {formatCurrency(fifoCostMap[item.id])}</p>
+                          ) : item.cost_price > 0 && (
                             <p className="text-xs text-muted-foreground">Cost: {formatCurrency(item.cost_price)}</p>
                           )}
                         </div>

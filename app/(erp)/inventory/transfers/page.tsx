@@ -312,6 +312,16 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
       });
       if (inError) throw inError;
 
+      // Move FIFO batches between warehouses
+      await supabase.rpc('transfer_fifo_batches', {
+        p_product_id: form.product_id,
+        p_from_warehouse_id: form.from_warehouse_id,
+        p_to_warehouse_id: form.to_warehouse_id,
+        p_quantity: qty,
+        p_reference_id: transferId,
+        p_reference_number: transferNumber,
+      });
+
       const sourceItem = inventory.find(i => i.product_id === form.product_id && i.warehouse_id === form.from_warehouse_id);
       if (sourceItem) {
         await supabase.from('inventory_items').update({ quantity_on_hand: sourceItem.quantity_on_hand - qty, updated_at: new Date().toISOString() }).eq('id', sourceItem.id);

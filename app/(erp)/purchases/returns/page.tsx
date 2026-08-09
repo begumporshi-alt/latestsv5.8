@@ -346,6 +346,16 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
           notes: reason || `Return to supplier from PO ${selectedPO.po_number}`,
         });
 
+        // Reverse FIFO batches (reduce youngest batches first)
+        await supabase.rpc('reverse_fifo_on_purchase_return', {
+          p_product_id: item.product_id,
+          p_warehouse_id: itemWarehouseId,
+          p_quantity: qty,
+          p_unit_cost: item.unit_cost,
+          p_reference_id: returnId,
+          p_reference_number: returnNumber,
+        });
+
         // Update inventory - reduce stock from the correct warehouse
         const { data: invItem } = await supabase
           .from('inventory_items')
