@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
@@ -76,7 +76,7 @@ export default function SalesPage() {
   const [productFilteredIds, setProductFilteredIds] = useState<Set<string> | null>(null);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0 });
+  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0, cogs: 0, paidInvoiceCollection: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
   const [showOutstandingModal, setShowOutstandingModal] = useState(false);
@@ -134,7 +134,7 @@ export default function SalesPage() {
     if (from) returnsForStatsQuery = returnsForStatsQuery.gte('return_date', from);
     if (to) returnsForStatsQuery = returnsForStatsQuery.lte('return_date', to);
 
-    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes, returnsForStatsRes] = await Promise.all([
+    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes, returnsForStatsRes, accountsRes] = await Promise.all([
       invQuery.limit(500),
       supabase.from('customers').select('*').eq('is_active', true).order('name'),
       supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name'),
@@ -146,6 +146,7 @@ export default function SalesPage() {
       supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
       receivablePaymentsQuery,
       returnsForStatsQuery,
+      supabase.from('accounts').select('id, code, name, account_type'),
     ]);
 
     // Refunds for the stats cards — filtered by return_date to match the payment period window.
@@ -213,6 +214,23 @@ export default function SalesPage() {
       .eq('status', 'active');
     const storeCreditBalance = (creditData || []).reduce((s: number, c: any) => s + Number(c.balance), 0);
 
+    // COGS: net debit balance on account code 5000 within the period
+    const cogsAccount = (accountsRes.data || []).find((a: any) => a.code === '5000');
+    let cogsAmount = 0;
+    if (cogsAccount) {
+      const { data: cogsData } = await supabase.rpc('period_net_debit', {
+        p_account_id: cogsAccount.id,
+        p_start_date: from || '1900-01-01',
+        p_end_date: to || '2100-12-31',
+      });
+      cogsAmount = Math.max(0, Number(cogsData || 0));
+    }
+
+    // Paid invoice payment collection: total amount collected from fully-paid invoices
+    const paidInvoiceCollection = activeInv
+      .filter((i: any) => i.status === 'paid')
+      .reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0);
+
     setStats({
       total: activeInv.reduce((s: number, i: any) => s + Number(i.total_amount), 0),
       paid: totalCollected,
@@ -222,6 +240,8 @@ export default function SalesPage() {
       overdue: activeInv.filter((i: any) => i.status === 'overdue').length,
       storeCreditBalance,
       badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
+      cogs: cogsAmount,
+      paidInvoiceCollection,
     });
     setLoading(false);
   }
@@ -539,6 +559,8 @@ export default function SalesPage() {
         <div className="flex gap-4 min-w-min">
           {[
             { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false },
+            { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false },
+            { label: 'Paid Invoice Collection', value: formatCurrency(stats.paidInvoiceCollection), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false },
             { label: 'Collected', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false },
             { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false },
             { label: 'Net Collected', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true },
