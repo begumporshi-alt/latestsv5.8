@@ -67,7 +67,7 @@ export default function ReportsPage() {
       applyDateRange(supabase.from('purchase_orders').select('total_amount'), 'order_date'),
       supabase.from('customers').select('total_purchases'),
       supabase.from('products').select('id, unit'),
-      applyDateRange(supabase.from('invoice_items').select('product_id, quantity, subtotal, unit_name, product:products(name, cost_price)').order('quantity', { ascending: false }).limit(50), 'created_at'),
+      applyDateRange(supabase.from('invoice_items').select('product_id, quantity, subtotal, unit_name, cost_price, product:products(name)').order('quantity', { ascending: false }).limit(50), 'created_at'),
       supabase.from('customers').select('name, total_purchases').order('total_purchases', { ascending: false }).limit(10),
       applyDateRange(supabase.from('payments').select('amount').eq('payment_type', 'received'), 'payment_date'),
       supabase.from('accounts').select('id, code, name, account_type').eq('is_active', true),
@@ -158,7 +158,7 @@ export default function ReportsPage() {
         if (!productMap[id]) productMap[id] = { name: item.product.name, sales: 0, revenue: 0, cost: 0, unit: item.unit_name };
         productMap[id].sales += Number(item.quantity);
         productMap[id].revenue += Number(item.subtotal);
-        productMap[id].cost += Number(item.quantity) * Number(item.product.cost_price || 0);
+        productMap[id].cost += Number(item.quantity) * Number(item.cost_price || 0);
       }
     });
     setTopProducts(Object.values(productMap).map(p => ({ ...p, profit: p.revenue - p.cost })).sort((a, b) => b.revenue - a.revenue).slice(0, 10));

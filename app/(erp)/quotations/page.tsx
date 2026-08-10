@@ -1447,11 +1447,36 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
         unit_conversion_factor: (item as any).unit_conversion_factor || null,
         base_quantity: (item as any).base_quantity || item.quantity,
       }));
-      const { error: itemsInsertError } = await supabase.from('invoice_items').insert(invoiceItems);
+      const { data: insertedInvoiceItems, error: itemsInsertError } = await supabase.from('invoice_items').insert(invoiceItems).select();
       if (itemsInsertError) {
         setError('Failed to create invoice items: ' + itemsInsertError.message);
         setSaving(false);
         return;
+      }
+
+      // Record cost price history snapshot for each item at time of sale
+      if (insertedInvoiceItems && insertedInvoiceItems.length > 0) {
+        const costHistoryRecords = insertedInvoiceItems.map((ii: any) => {
+          const origItem = items.find((qi: any) => qi.product_id === ii.product_id);
+          const costPerUnit = Number(ii.cost_price) || 0;
+          const totalCostAdded = costPerUnit * Number(ii.quantity);
+          return {
+            product_id: ii.product_id,
+            product_name: Array.isArray(origItem?.product) ? origItem.product[0]?.name : origItem?.product?.name || '',
+            product_sku: '',
+            invoice_id: invoice.id,
+            unit: ii.unit_name || 'pcs',
+            quantity: ii.quantity,
+            unit_price: ii.unit_price,
+            cost_price_per_qty: costPerUnit,
+            cost_price_for_added_qty: totalCostAdded,
+            total_cost_price_single: costPerUnit,
+            total_cost_price_added: totalCostAdded,
+          };
+        });
+        if (costHistoryRecords.length > 0) {
+          await supabase.from('cost_price_history').insert(costHistoryRecords);
+        }
       }
     }
 
