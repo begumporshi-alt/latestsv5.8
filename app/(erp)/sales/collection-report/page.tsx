@@ -408,7 +408,7 @@ export default function CollectionReportPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Collection Report</h1>
           <p className="text-muted-foreground text-sm mt-0.5">
-            Collected amounts, refund deductions, and balance movement history
+            Collection amounts, refund deductions, and balance movement history
           </p>
         </div>
         <button
@@ -464,7 +464,7 @@ export default function CollectionReportPage() {
             <div className="w-8 h-8 rounded-lg bg-green-50 flex items-center justify-center">
               <CheckCircle2 className="w-4 h-4 text-green-600" />
             </div>
-            <span className="text-xs font-medium text-muted-foreground">Collected</span>
+            <span className="text-xs font-medium text-muted-foreground">Total Collection</span>
           </div>
           <p className="text-xl font-bold text-green-600">{formatCurrency(totalCollected)}</p>
           <p className="text-xs text-muted-foreground mt-1">{payments.length} transactions</p>
@@ -484,10 +484,10 @@ export default function CollectionReportPage() {
             <div className="w-8 h-8 rounded-lg bg-teal-50 flex items-center justify-center">
               <DollarSign className="w-4 h-4 text-teal-600" />
             </div>
-            <span className="text-xs font-medium text-muted-foreground">Net Collected</span>
+            <span className="text-xs font-medium text-muted-foreground">Net Collection</span>
           </div>
           <p className="text-xl font-bold text-teal-600">{formatCurrency(netCollected)}</p>
-          <p className="text-xs text-muted-foreground mt-1">Collected - Refunded</p>
+          <p className="text-xs text-muted-foreground mt-1">Total Collection - Refunded</p>
         </div>
         <div className="bg-white rounded-xl border border-border p-4 shadow-sm">
           <div className="flex items-center gap-2 mb-2">
@@ -509,7 +509,7 @@ export default function CollectionReportPage() {
         <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
           <div className="px-4 py-3 border-b border-border flex items-center gap-2">
             <ArrowDownCircle className="w-4 h-4 text-green-500" />
-            <h3 className="text-sm font-semibold text-foreground">Collected by Payment Method</h3>
+            <h3 className="text-sm font-semibold text-foreground">Collection by Payment Method</h3>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -552,7 +552,7 @@ export default function CollectionReportPage() {
                 <tfoot className="bg-muted/30">
                   <tr>
                     <td colSpan={2} className="px-4 py-2.5 text-sm font-bold text-foreground">
-                      Total Collected
+                      Total Collection
                     </td>
                     <td className="px-4 py-2.5 text-sm text-right font-bold text-green-600">
                       {formatCurrency(totalCollected)}
@@ -630,7 +630,7 @@ export default function CollectionReportPage() {
       <div className="bg-white rounded-xl border border-border shadow-sm overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex items-center gap-2">
           <Receipt className="w-4 h-4 text-blue-500" />
-          <h3 className="text-sm font-semibold text-foreground">Collected by Payment For</h3>
+          <h3 className="text-sm font-semibold text-foreground">Collection by Payment For</h3>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -673,7 +673,7 @@ export default function CollectionReportPage() {
               <tfoot className="bg-muted/30">
                 <tr>
                   <td colSpan={2} className="px-4 py-2.5 text-sm font-bold text-foreground">
-                    Total Collected
+                    Total Collection
                   </td>
                   <td className="px-4 py-2.5 text-sm text-right font-bold text-green-600">
                     {formatCurrency(totalCollected)}

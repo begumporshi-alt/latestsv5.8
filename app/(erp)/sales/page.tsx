@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
@@ -76,7 +76,7 @@ export default function SalesPage() {
   const [productFilteredIds, setProductFilteredIds] = useState<Set<string> | null>(null);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0 });
+  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0, cogs: 0, paymentCollectedAtSale: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
   const [showOutstandingModal, setShowOutstandingModal] = useState(false);
@@ -134,7 +134,7 @@ export default function SalesPage() {
     if (from) returnsForStatsQuery = returnsForStatsQuery.gte('return_date', from);
     if (to) returnsForStatsQuery = returnsForStatsQuery.lte('return_date', to);
 
-    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes, returnsForStatsRes] = await Promise.all([
+    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes, returnsForStatsRes, accountsRes] = await Promise.all([
       invQuery.limit(500),
       supabase.from('customers').select('*').eq('is_active', true).order('name'),
       supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name'),
@@ -146,6 +146,7 @@ export default function SalesPage() {
       supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
       receivablePaymentsQuery,
       returnsForStatsQuery,
+      supabase.from('accounts').select('id, code, name, account_type'),
     ]);
 
     // Refunds for the stats cards — filtered by return_date to match the payment period window.
@@ -213,6 +214,23 @@ export default function SalesPage() {
       .eq('status', 'active');
     const storeCreditBalance = (creditData || []).reduce((s: number, c: any) => s + Number(c.balance), 0);
 
+    // COGS: net debit balance on account code 5000 within the period
+    const cogsAccount = (accountsRes.data || []).find((a: any) => a.code === '5000');
+    let cogsAmount = 0;
+    if (cogsAccount) {
+      const { data: cogsData } = await supabase.rpc('period_net_debit', {
+        p_account_id: cogsAccount.id,
+        p_start_date: from || '1900-01-01',
+        p_end_date: to || '2100-12-31',
+      });
+      cogsAmount = Math.max(0, Number(cogsData || 0));
+    }
+
+    // Payment collected at sale: total amount paid on invoices that were fully or partially paid at time of sale
+    const paymentCollectedAtSale = activeInv
+      .filter((i: any) => Number(i.amount_paid || 0) > 0)
+      .reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0);
+
     setStats({
       total: activeInv.reduce((s: number, i: any) => s + Number(i.total_amount), 0),
       paid: totalCollected,
@@ -222,6 +240,8 @@ export default function SalesPage() {
       overdue: activeInv.filter((i: any) => i.status === 'overdue').length,
       storeCreditBalance,
       badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
+      cogs: cogsAmount,
+      paymentCollectedAtSale,
     });
     setLoading(false);
   }
@@ -539,9 +559,11 @@ export default function SalesPage() {
         <div className="flex gap-4 min-w-min">
           {[
             { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false },
-            { label: 'Collected', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false },
+            { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false },
+            { label: 'Payment Collected at Sale', value: formatCurrency(stats.paymentCollectedAtSale), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false },
+            { label: 'Total Collection', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false },
             { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false },
-            { label: 'Net Collected', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true },
+            { label: 'Net Collection', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true },
             { label: 'Store Credit', value: formatCurrency(stats.storeCreditBalance), icon: Wallet, color: 'text-indigo-500 bg-indigo-50', clickable: false },
             { label: 'Outstanding', value: formatCurrency(stats.outstanding), icon: Clock, color: 'text-amber-500 bg-amber-50', clickable: true },
             { label: 'Bad Debt', value: formatCurrency(stats.badDebt), icon: AlertTriangle, color: 'text-red-500 bg-red-50', clickable: false },
@@ -2011,8 +2033,8 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
       <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4 border-b border-border sticky top-0 bg-white z-10">
           <div>
-            <h3 className="font-bold text-foreground text-lg">Net Collected Breakdown</h3>
-            <p className="text-sm text-muted-foreground">How Collected becomes Net Collected</p>
+            <h3 className="font-bold text-foreground text-lg">Net Collection Breakdown</h3>
+            <p className="text-sm text-muted-foreground">How Total Collection becomes Net Collection</p>
           </div>
           <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="w-5 h-5" /></button>
         </div>
@@ -2023,7 +2045,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
           <div className="p-4 space-y-5">
             <div className="grid grid-cols-3 gap-3">
               <div className="p-3 bg-green-50 rounded-lg">
-                <p className="text-xs text-muted-foreground">Collected (Gross)</p>
+                <p className="text-xs text-muted-foreground">Total Collection (Gross)</p>
                 <p className="text-lg font-bold text-green-600">{formatCurrency(stats.paid)}</p>
               </div>
               <div className="p-3 bg-purple-50 rounded-lg">
@@ -2031,7 +2053,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
                 <p className="text-lg font-bold text-purple-600">-{formatCurrency(stats.refunded)}</p>
               </div>
               <div className="p-3 bg-teal-50 rounded-lg border border-teal-100">
-                <p className="text-xs text-muted-foreground">Net Collected</p>
+                <p className="text-xs text-muted-foreground">Net Collection</p>
                 <p className="text-lg font-bold text-teal-600">{formatCurrency(stats.netCollected)}</p>
               </div>
             </div>
@@ -2039,7 +2061,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
             <div>
               <p className="text-sm font-medium text-foreground mb-2 flex items-center gap-2">
                 <ArrowDownCircle className="w-4 h-4 text-green-500" />
-                Collected by Payment Method
+                Collection by Payment Method
               </p>
               <div className="border border-border rounded-lg overflow-hidden">
                 <table className="w-full">
@@ -2065,7 +2087,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
                   </tbody>
                   <tfoot className="bg-muted/30">
                     <tr>
-                      <td colSpan={2} className="px-3 py-2 text-sm font-bold">Total Collected</td>
+                      <td colSpan={2} className="px-3 py-2 text-sm font-bold">Total Collection</td>
                       <td className="px-3 py-2 text-sm text-right font-bold text-green-600">{formatCurrency(stats.paid)}</td>
                       <td className="px-3 py-2 text-sm text-right font-bold">100%</td>
                     </tr>
@@ -2115,7 +2137,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
             <div>
               <p className="text-sm font-medium text-foreground mb-2 flex items-center gap-2">
                 <ArrowDownCircle className="w-4 h-4 text-blue-500" />
-                Collected by Payment For
+                Collection by Payment For
                 <span className="text-xs text-muted-foreground font-normal">(click a row to see transactions)</span>
               </p>
               <div className="border border-border rounded-lg overflow-hidden">
@@ -2192,7 +2214,7 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
 
             <div>
               <p className="text-sm font-medium text-foreground mb-2">Balance Change History</p>
-              <p className="text-xs text-muted-foreground mb-3">Chronological log of every payment and refund that changed the net collected amount</p>
+              <p className="text-xs text-muted-foreground mb-3">Chronological log of every payment and refund that changed the net collection amount</p>
               <div className="max-h-64 overflow-y-auto border border-border rounded-lg">
                 {timeline.length === 0 ? (
                   <p className="px-3 py-4 text-center text-sm text-muted-foreground">No transactions recorded</p>
