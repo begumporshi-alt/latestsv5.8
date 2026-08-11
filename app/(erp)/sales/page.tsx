@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
@@ -317,6 +317,19 @@ export default function SalesPage() {
     const [hideDiscountPercent, setHideDiscountPercent] = useState(false);
     const [hideRate, setHideRate] = useState(false);
 
+    async function copyProductList() {
+      const copiedItems = items.map((item: any) => ({
+        product_id: item.product_id,
+        quantity: Number(item.quantity),
+        unit_price: Number(item.unit_price),
+        discount_percent: Number(item.discount_percent || 0),
+        unit_name: item.unit_name || item.product?.unit || null,
+        warehouse_id: item.warehouse_id || null,
+      }));
+      await navigator.clipboard.writeText(JSON.stringify({ type: 'invoice-product-list', items: copiedItems }));
+      toast({ title: 'Copied', description: `${copiedItems.length} product${copiedItems.length === 1 ? '' : 's'} copied from this invoice` });
+    }
+
     return (
       <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
         <div className="print-modal bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -347,6 +360,9 @@ export default function SalesPage() {
                   <Ban className="w-3.5 h-3.5" />Cancel
                 </button>
               )}
+              <button onClick={copyProductList} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition" title="Copy this invoice's product list">
+                <Copy className="w-3.5 h-3.5" />Copy Products
+              </button>
               <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
                 <Printer className="w-3.5 h-3.5" />Print
               </button>
@@ -973,6 +989,47 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [formTab, setFormTab] = useState<'items' | 'cost'>('items');
 
+  async function pasteProductList() {
+    try {
+      const raw = await navigator.clipboard.readText();
+      const parsed = JSON.parse(raw);
+      if (parsed?.type !== 'invoice-product-list' || !Array.isArray(parsed.items)) throw new Error('invalid');
+
+      const pastedItems = parsed.items.map((row: any) => {
+        const product: any = products.find(p => p.id === row.product_id);
+        if (!product) return null;
+        const availableUnits = product.enable_multi_unit && product.units
+          ? product.units.filter((u: ProductUnit) => u.is_active)
+          : [];
+        const selectedUnit = availableUnits.find((u: ProductUnit) => u.unit_name === row.unit_name) || (availableUnits.length ? getDefaultSaleUnit(product) : undefined);
+        const availableWhs = (product.inventory_items || []).filter((i: any) => Number(i.quantity_on_hand) > 0).map((i: any) => ({
+          warehouse_id: i.warehouse_id,
+          warehouse_name: warehouses.find((w: { id: string; name: string; code: string }) => w.id === i.warehouse_id)?.name || i.warehouse_id,
+          stock: Number(i.quantity_on_hand),
+          inventory_item_id: i.id,
+        }));
+        const warehouse = availableWhs.find((w: { warehouse_id: string }) => w.warehouse_id === row.warehouse_id) || availableWhs.reduce((a: any, b: any) => a.stock > b.stock ? a : b, null);
+        const quantity = Math.max(1, Number(row.quantity) || 1);
+        const baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
+        if (warehouse && baseQuantity > warehouse.stock) return null;
+        return {
+          product_id: product.id, product_name: product.name, product_sku: product.sku,
+          product_unit: product.unit, product_base_unit: product.base_unit, stock_qty: warehouse ? warehouse.stock : (product.inventory_items?.length ? 0 : null),
+          quantity, unit_price: Number(row.unit_price) || (selectedUnit?.price || product.sale_price || 0), cost_price: selectedUnit?.cost_price || product.cost_price || 0,
+          discount_percent: Math.min(100, Math.max(0, Number(row.discount_percent) || 0)), selected_unit: selectedUnit,
+          available_units: availableUnits.length ? availableUnits : undefined, base_quantity: baseQuantity,
+          warehouse_id: warehouse?.warehouse_id, inventory_item_id: warehouse?.inventory_item_id, available_warehouses: availableWhs,
+        };
+      }).filter(Boolean);
+      if (!pastedItems.length) { setError('No matching products were found in the copied list.'); return; }
+      setItems(prev => [...(pastedItems as any[]), ...prev]);
+      setError('');
+      toast({ title: 'Pasted', description: `${pastedItems.length} product${pastedItems.length === 1 ? '' : 's'} added to the invoice` });
+    } catch {
+      setError('Copy an invoice product list first, then use Paste Products.');
+    }
+  }
+
   useEffect(() => {
     supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
       .then(({ data }) => { if (data) setPaymentMethods(data); });
@@ -990,7 +1047,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       .filter((i: any) => Number(i.quantity_on_hand) > 0)
       .map((i: any) => ({
         warehouse_id: i.warehouse_id,
-        warehouse_name: warehouses.find(w => w.id === i.warehouse_id)?.name || i.warehouse_id,
+        warehouse_name: warehouses.find((w: { id: string; name: string; code: string }) => w.id === i.warehouse_id)?.name || i.warehouse_id,
         stock: Number(i.quantity_on_hand),
         inventory_item_id: i.id,
       }));
@@ -1309,12 +1366,17 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
               <label className="text-xs font-medium">Line Items</label>
               {items.length > 0 && <span className="text-xs text-muted-foreground">{items.length} item{items.length !== 1 ? 's' : ''}</span>}
             </div>
-            <ProductSearchInput
-              onSelect={addProductToItems}
-              showStock
-              placeholder="Search and add products..."
-              className="mb-3"
-            />
+            <div className="flex items-center gap-2 mb-3">
+              <ProductSearchInput
+                onSelect={addProductToItems}
+                showStock
+                placeholder="Search and add products..."
+                className="flex-1"
+              />
+              <button type="button" onClick={pasteProductList} className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Paste products copied from an invoice">
+                <ClipboardPaste className="w-3.5 h-3.5" />Paste Products
+              </button>
+            </div>
             {items.length > 0 && (
             <div className="border border-border rounded-lg overflow-hidden">
               <table className="w-full">
