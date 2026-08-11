@@ -1024,7 +1024,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       stock_qty: stock,
       quantity: 1,
       unit_price: unitPrice,
-      cost_price: defaultUnit ? (defaultUnit.cost_price || product.cost_price || 0) : (product.cost_price || 0),
+      cost_price: defaultUnit ? (defaultUnit.cost_price || (product.cost_price || 0) * (defaultUnit.conversion_factor || 1)) : (product.cost_price || 0),
       discount_percent: 0,
       selected_unit: defaultUnit,
       available_units: multiUnit ? product.units.filter((u: any) => u.is_active) : undefined,
@@ -1060,7 +1060,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         ...updated[index],
         selected_unit: unit,
         unit_price: unit.price,
-        cost_price: unit.cost_price || updated[index].cost_price || 0,
+        cost_price: unit.cost_price || (updated[index].cost_price / (updated[index].selected_unit?.conversion_factor || 1)) * unit.conversion_factor || updated[index].cost_price || 0,
         base_quantity: newBaseQty,
       };
     } else if (field === 'quantity') {
