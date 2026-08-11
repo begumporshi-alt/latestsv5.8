@@ -802,7 +802,7 @@ export default function POSPage() {
                 <span className="text-xs text-muted-foreground shrink-0">▾</span>
               </button>
               {customerDropdownOpen && (
-                <div className="absolute top-full mt-1 left-0 right-0 sm:w-72 bg-white border border-border rounded-xl shadow-lg z-50 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                <div className="absolute top-full mt-1 left-0 right-0 sm:w-80 bg-white border border-border rounded-xl shadow-lg z-50 overflow-hidden" onClick={(e) => e.stopPropagation()}>
                   <div className="p-2 border-b border-border">
                     <div className="relative">
                       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -816,13 +816,13 @@ export default function POSPage() {
                       />
                     </div>
                   </div>
-                  <div className="max-h-60 overflow-y-auto">
+                  <div className="max-h-72 overflow-y-auto">
                     <button
                       type="button"
                       onClick={() => { setSelectedCustomer(walkInCustomerId); setCustomerDropdownOpen(false); setCustomerSearch(''); }}
-                      className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-blue-50 transition text-left ${selectedCustomer === walkInCustomerId ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
+                      className={`w-full flex flex-col px-3 py-2 hover:bg-blue-50 transition text-left ${selectedCustomer === walkInCustomerId ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
                     >
-                      <span>Walk-in Customer</span>
+                      <span className="text-sm font-medium">Walk-in Customer</span>
                       <span className="text-[10px] text-muted-foreground">CUST-272756</span>
                     </button>
                     {(customerSearch.trim()
@@ -833,17 +833,18 @@ export default function POSPage() {
                         key={c.id}
                         type="button"
                         onClick={() => { setSelectedCustomer(c.id); setCustomerDropdownOpen(false); setCustomerSearch(''); }}
-                        className={`w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-blue-50 transition text-left ${selectedCustomer === c.id ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
+                        className={`w-full flex flex-col px-3 py-2 hover:bg-blue-50 transition text-left border-t border-border/40 ${selectedCustomer === c.id ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
                       >
-                        <span className="truncate">{c.name}</span>
-                        <span className="flex items-center gap-2 shrink-0 ml-2">
+                        <span className="text-sm font-medium leading-tight break-words">{c.name}</span>
+                        <div className="flex items-center gap-2 mt-0.5">
                           {Number(c.outstanding_balance) > 0 && (
                             <span className="text-[10px] font-medium text-amber-600">
                               Due: {Number(c.outstanding_balance).toLocaleString('en-BD', { minimumFractionDigits: 0 })}
                             </span>
                           )}
                           <span className="text-[10px] text-muted-foreground">{c.code}</span>
-                        </span>
+                          {c.phone && <span className="text-[10px] text-muted-foreground">· {c.phone}</span>}
+                        </div>
                       </button>
                     ))}
                     {customerSearch.trim() && customers.filter(c => c.name.toLowerCase().includes(customerSearch.trim().toLowerCase())).length === 0 && (
