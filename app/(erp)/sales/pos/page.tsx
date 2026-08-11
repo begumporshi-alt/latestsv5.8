@@ -121,7 +121,7 @@ export default function POSPage() {
           const unitPrice = gci.unit_price || unit.price || p.sale_price;
           newCartItems.push({
             id: p.id, name: p.name, sku: p.sku, sale_price: unitPrice,
-            cost_price: unit.cost_price || p.cost_price || 0,
+            cost_price: unit.cost_price || (p.cost_price || 0) * (unit.conversion_factor || 1),
             quantity: gci.quantity, image_url: p.image_url,
             inventory_item_id: bestInv?.inventory_item_id, warehouse_id: bestInv?.warehouse_id,
             stock_available: stockAvailableInBase, selected_unit: unit,
@@ -277,7 +277,7 @@ export default function POSPage() {
         name: product.name,
         sku: product.sku,
         sale_price: unitPrice,
-        cost_price: unit.cost_price || product.cost_price || 0,
+        cost_price: unit.cost_price || (product.cost_price || 0) * (unit.conversion_factor || 1),
         quantity: 1,
         image_url: product.image_url,
         inventory_item_id: bestInv?.inventory_item_id,
