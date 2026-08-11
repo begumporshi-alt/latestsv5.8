@@ -8,6 +8,7 @@ import { X, Save, TriangleAlert as AlertTriangle, History, Package, Trash2, Info
 import type { Invoice, InvoiceStatus, Customer, Product, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
+import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 
 interface EditableInvoice extends Omit<Invoice, 'customer'> {
   customer?: { name: string; code: string; phone?: string; address?: string };
@@ -336,14 +337,11 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
           <div className="grid grid-cols-3 gap-4">
             <div className="col-span-2">
               <label className="block text-xs font-medium mb-1">Customer *</label>
-              <select
-                required
-                value={form.customer_id}
-                onChange={e => setForm({ ...form, customer_id: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-              >
-                {customers.map(c => <option key={c.id} value={c.id}>{c.name} ({c.code})</option>)}
-              </select>
+              <CustomerSearchInput
+                onSelect={(c) => setForm({ ...form, customer_id: c.id })}
+                selectedName={customers.find(c => c.id === form.customer_id)?.name}
+                placeholder="Search customer by name, code, or phone..."
+              />
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
