@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
@@ -558,15 +558,15 @@ export default function SalesPage() {
       <div className="overflow-x-auto pb-2 -mx-1 px-1">
         <div className="flex gap-4 min-w-min">
           {[
-            { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false },
-            { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false },
-            { label: 'Payment Collected at Sale', value: formatCurrency(stats.paymentCollectedAtSale), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false },
-            { label: 'Total Collection', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false },
-            { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false },
-            { label: 'Net Collection', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true },
-            { label: 'Store Credit', value: formatCurrency(stats.storeCreditBalance), icon: Wallet, color: 'text-indigo-500 bg-indigo-50', clickable: false },
-            { label: 'Outstanding', value: formatCurrency(stats.outstanding), icon: Clock, color: 'text-amber-500 bg-amber-50', clickable: true },
-            { label: 'Bad Debt', value: formatCurrency(stats.badDebt), icon: AlertTriangle, color: 'text-red-500 bg-red-50', clickable: false },
+            { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false, info: 'Sum of total_amount for all non-cancelled invoices in the selected period.' },
+            { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false, info: 'Cost of Goods Sold: sum of (quantity x cost_price) for all items in non-cancelled invoices in the selected period.' },
+            { label: 'Payment Collected at Sale', value: formatCurrency(stats.paymentCollectedAtSale), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false, info: 'Amount paid at the time of sale (POS and paid invoices). Excludes later payments and manual receivable collections.' },
+            { label: 'Total Collection', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false, info: 'All payments received in the period: invoice payments + manual receivable collections. Excludes reversed payments from edits/cancels.' },
+            { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false, info: 'Total refund amounts from sales returns in the selected period.' },
+            { label: 'Net Collection', value: formatCurrency(stats.netCollected), icon: DollarSign, color: 'text-teal-500 bg-teal-50', clickable: true, info: 'Total Collection minus Refunded amounts. Click to see the breakdown.' },
+            { label: 'Store Credit', value: formatCurrency(stats.storeCreditBalance), icon: Wallet, color: 'text-indigo-500 bg-indigo-50', clickable: false, info: 'Total store credit balance across all customers. Store credit is issued from sales return refunds and can be used as payment.' },
+            { label: 'Outstanding', value: formatCurrency(stats.outstanding), icon: Clock, color: 'text-amber-500 bg-amber-50', clickable: true, info: 'Sum of balance_due for all sent and partially_paid invoices. Click to see the outstanding breakdown.' },
+            { label: 'Bad Debt', value: formatCurrency(stats.badDebt), icon: AlertTriangle, color: 'text-red-500 bg-red-50', clickable: false, info: 'Total bad debt written off from invoices that cannot be collected.' },
           ].map(s => (
             <div
               key={s.label}
@@ -574,8 +574,17 @@ export default function SalesPage() {
               onClick={s.clickable ? () => s.label === 'Outstanding' ? setShowOutstandingModal(true) : setShowNetCollectedModal(true) : undefined}
             >
               <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color} shrink-0`}><s.icon className="w-5 h-5" /></div>
-              <div className="min-w-0">
-                <p className="text-xs text-muted-foreground whitespace-nowrap">{s.label}</p>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1">
+                  <p className="text-xs text-muted-foreground whitespace-nowrap">{s.label}</p>
+                  <div className="group relative shrink-0">
+                    <Info className="w-3 h-3 text-muted-foreground/50 hover:text-muted-foreground cursor-help" />
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2.5 py-1.5 bg-gray-900 text-white text-[11px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-normal w-48 z-50 shadow-lg">
+                      {s.info}
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+                    </div>
+                  </div>
+                </div>
                 <p className="text-lg font-bold text-foreground whitespace-nowrap">{s.value}</p>
               </div>
             </div>

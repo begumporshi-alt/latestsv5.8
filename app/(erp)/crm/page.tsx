@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown, HandCoins } from 'lucide-react';
+import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown, HandCoins, ChevronLeft, ChevronRight } from 'lucide-react';
 import Link from 'next/link';
 import type { Customer, CustomerType } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
@@ -56,7 +56,9 @@ export default function CRMPage() {
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [deletingCustomer, setDeletingCustomer] = useState<Customer | null>(null);
   const [collectingCustomer, setCollectingCustomer] = useState<CustomerWithOutstanding | null>(null);
-  const [stats, setStats] = useState({ total: 0, totalRevenue: 0, outstanding: 0, active: 0, totalRefunds: 0 });
+  const [stats, setStats] = useState({ total: 0, totalRevenue: 0, outstanding: 0, active: 0, totalRefunds: 0, invoiceOutstanding: 0, manualOutstanding: 0 });
+  const [currentPage, setCurrentPage] = useState(1);
+  const PAGE_SIZE = 25;
 
   useEffect(() => { loadData(); }, []);
 
@@ -109,12 +111,16 @@ export default function CRMPage() {
     const totalRev = Object.values(purchasesMap).reduce((s, v) => s + v, 0);
     const totalOut = (custData || []).reduce((s: number, c: Customer) => s + Number(c.outstanding_balance), 0);
     const totalRef = Object.values(returnsMap).reduce((s, v) => s + v.total, 0);
+    const totalInvOut = Object.values(invoiceOutstandingMap).reduce((s, v) => s + v, 0);
+    const totalManualOut = Math.max(0, totalOut - totalInvOut);
     setStats({
       total: custData?.length || 0,
       totalRevenue: totalRev,
       outstanding: totalOut,
       active: (custData || []).filter((c: Customer) => c.is_active).length,
       totalRefunds: totalRef,
+      invoiceOutstanding: totalInvOut,
+      manualOutstanding: totalManualOut,
     });
     setLoading(false);
   }
@@ -165,6 +171,11 @@ export default function CRMPage() {
     });
   }, [customers, search, filterType, filterCity, filterOutstandingType, outstandingMin, outstandingMax, creditMin, creditMax, periodCutoff]);
 
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  useEffect(() => { setCurrentPage(1); }, [search, filterType, filterCity, filterOutstandingType, outstandingMin, outstandingMax, creditMin, creditMax, filterPeriod]);
+
   const activeFilterCount = [filterType, filterCity, filterPeriod, filterOutstandingType, outstandingMin, outstandingMax, creditMin, creditMax].filter(Boolean).length;
 
   async function handleDelete() {
@@ -201,11 +212,13 @@ export default function CRMPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
         {[
           { label: 'Total Customers', value: stats.total, color: 'text-blue-500' },
           { label: 'Active', value: stats.active, color: 'text-green-500' },
           { label: 'Total Revenue', value: formatCurrency(stats.totalRevenue), color: 'text-slate-600' },
+          { label: 'Invoice Outstanding', value: formatCurrency(stats.invoiceOutstanding), color: 'text-amber-600' },
+          { label: 'Manual Outstanding', value: formatCurrency(stats.manualOutstanding), color: 'text-purple-600' },
           { label: 'Total Outstanding', value: formatCurrency(stats.outstanding), color: 'text-red-500' },
           { label: 'Total Refunds', value: formatCurrency(stats.totalRefunds), color: 'text-orange-500' },
         ].map(s => (
@@ -345,7 +358,7 @@ export default function CRMPage() {
                 <tr key={i}>{Array.from({ length: 11 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
               )) : filtered.length === 0 ? (
                 <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground text-sm">No customers found</td></tr>
-              ) : filtered.map(c => {
+              ) : paginated.map(c => {
                 const cfg = typeConfig[c.type] || typeConfig.retail;
                 return (
                   <tr key={c.id} className={`hover:bg-muted/30 transition-colors ${!c.is_active ? 'opacity-50' : ''}`}>
@@ -404,8 +417,29 @@ export default function CRMPage() {
             </tbody>
           </table>
         </div>
-        <div className="px-4 py-3 border-t border-border">
+        <div className="px-4 py-3 border-t border-border flex items-center justify-between flex-wrap gap-2">
           <p className="text-xs text-muted-foreground">{filtered.length} of {customers.length} customers</p>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="w-8 h-8 flex items-center justify-center rounded-lg border border-border hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <span className="text-xs font-medium text-muted-foreground">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="w-8 h-8 flex items-center justify-center rounded-lg border border-border hover:bg-muted transition disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
