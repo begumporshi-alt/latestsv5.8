@@ -589,8 +589,8 @@ export default function SalesPage() {
         </div>
       </div>
 
-      <div className="overflow-x-auto pb-2 -mx-1 px-1">
-        <div className="flex gap-4 min-w-min">
+      <div className="pb-2 -mx-1 px-1">
+        <div className="flex flex-wrap gap-4">
           {[
             { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false, info: 'Sum of total_amount for all non-cancelled invoices in the selected period.' },
             { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false, info: 'Cost of Goods Sold: sum of (quantity x cost_price) for all items in non-cancelled invoices in the selected period.' },
