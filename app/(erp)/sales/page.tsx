@@ -326,8 +326,26 @@ export default function SalesPage() {
         unit_name: item.unit_name || item.product?.unit || null,
         warehouse_id: item.warehouse_id || null,
       }));
-      await navigator.clipboard.writeText(JSON.stringify({ type: 'invoice-product-list', items: copiedItems }));
-      toast({ title: 'Copied', description: `${copiedItems.length} product${copiedItems.length === 1 ? '' : 's'} copied from this invoice` });
+      const text = JSON.stringify({ type: 'invoice-product-list', items: copiedItems });
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.style.position = 'fixed';
+          textarea.style.opacity = '0';
+          document.body.appendChild(textarea);
+          textarea.focus();
+          textarea.select();
+          const copied = document.execCommand('copy');
+          textarea.remove();
+          if (!copied) throw new Error('copy failed');
+        }
+        toast({ title: 'Copied', description: `${copiedItems.length} product${copiedItems.length === 1 ? '' : 's'} copied from this invoice` });
+      } catch {
+        toast({ title: 'Copy failed', description: 'Your browser blocked clipboard access. Please allow clipboard access and try again.', variant: 'destructive' });
+      }
     }
 
     return (
@@ -335,8 +353,8 @@ export default function SalesPage() {
         <div className="print-modal bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
 
           {/* Toolbar */}
-          <div className="no-print flex items-center justify-between px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
-            <div className="flex items-center gap-4">
+          <div className="no-print flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
+            <div className="flex flex-wrap items-center gap-4">
               <span className="text-sm font-semibold text-muted-foreground">Invoice Preview</span>
               <div className="flex items-center gap-1 bg-muted/40 rounded-lg p-0.5">
                 <button onClick={() => setViewTab('details')} className={`px-3 py-1 rounded-md text-xs font-medium transition ${viewTab === 'details' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Details</button>
@@ -349,7 +367,7 @@ export default function SalesPage() {
                 </button>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2 w-full lg:w-auto">
               {canEditInvoice(invoice) && (
                 <button onClick={() => { onClose(); setEditingInvoice(invoice); }} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition">
                   <Pencil className="w-3.5 h-3.5" />Edit
