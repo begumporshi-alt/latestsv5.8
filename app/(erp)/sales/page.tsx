@@ -1013,9 +1013,25 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       const parsed = JSON.parse(raw);
       if (parsed?.type !== 'invoice-product-list' || !Array.isArray(parsed.items)) throw new Error('invalid');
 
+      const missingIds = parsed.items
+        .map((r: any) => r.product_id)
+        .filter((id: string) => id && !products.find((p: any) => p.id === id));
+
+      let extraProducts: any[] = [];
+      if (missingIds.length) {
+        const { data: fetched } = await supabase
+          .from('products')
+          .select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`)
+          .in('id', missingIds);
+        extraProducts = fetched || [];
+      }
+      const allProducts = [...products, ...extraProducts];
+
+      let notFoundCount = 0;
+      let cappedCount = 0;
       const pastedItems = parsed.items.map((row: any) => {
-        const product: any = products.find(p => p.id === row.product_id);
-        if (!product) return null;
+        const product: any = allProducts.find((p: any) => p.id === row.product_id);
+        if (!product) { notFoundCount++; return null; }
         const availableUnits = product.enable_multi_unit && product.units
           ? product.units.filter((u: ProductUnit) => u.is_active)
           : [];
@@ -1027,9 +1043,20 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           inventory_item_id: i.id,
         }));
         const warehouse = availableWhs.find((w: { warehouse_id: string }) => w.warehouse_id === row.warehouse_id) || availableWhs.reduce((a: any, b: any) => a.stock > b.stock ? a : b, null);
-        const quantity = Math.max(1, Number(row.quantity) || 1);
-        const baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
-        if (warehouse && baseQuantity > warehouse.stock) return null;
+        let quantity = Math.max(1, Number(row.quantity) || 1);
+        let baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
+        if (warehouse && baseQuantity > warehouse.stock && warehouse.stock > 0) {
+          const originalQty = quantity;
+          if (selectedUnit) {
+            const maxQty = Math.floor(warehouse.stock / (selectedUnit.conversion_factor || 1));
+            quantity = Math.max(1, maxQty);
+            baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
+          } else {
+            quantity = warehouse.stock;
+            baseQuantity = quantity;
+          }
+          if (quantity < originalQty) cappedCount++;
+        }
         return {
           product_id: product.id, product_name: product.name, product_sku: product.sku,
           product_unit: product.unit, product_base_unit: product.base_unit, stock_qty: warehouse ? warehouse.stock : (product.inventory_items?.length ? 0 : null),
@@ -1039,10 +1066,24 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           warehouse_id: warehouse?.warehouse_id, inventory_item_id: warehouse?.inventory_item_id, available_warehouses: availableWhs,
         };
       }).filter(Boolean);
-      if (!pastedItems.length) { setError('No matching products were found in the copied list.'); return; }
+      if (!pastedItems.length) {
+        if (notFoundCount > 0) {
+          setError(`${notFoundCount} product${notFoundCount === 1 ? '' : 's'} from the copied invoice were not found in your current product list. They may have been deleted or deactivated.`);
+        } else {
+          setError('No matching products were found in the copied list.');
+        }
+        return;
+      }
       setItems(prev => [...(pastedItems as any[]), ...prev]);
       setError('');
-      toast({ title: 'Pasted', description: `${pastedItems.length} product${pastedItems.length === 1 ? '' : 's'} added to the invoice` });
+      const desc = `${pastedItems.length} product${pastedItems.length === 1 ? '' : 's'} added to the invoice`;
+      if (cappedCount > 0) {
+        toast({ title: 'Pasted with adjustments', description: `${desc}. ${cappedCount} item${cappedCount === 1 ? '' : 's'} had quantity reduced due to insufficient stock.` });
+      } else if (notFoundCount > 0) {
+        toast({ title: 'Pasted', description: `${desc}. ${notFoundCount} product${notFoundCount === 1 ? '' : 's'} could not be found and were skipped.` });
+      } else {
+        toast({ title: 'Pasted', description: desc });
+      }
     } catch {
       setError('Copy an invoice product list first, then use Paste Products.');
     }
