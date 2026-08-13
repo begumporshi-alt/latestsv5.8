@@ -1013,10 +1013,24 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       const parsed = JSON.parse(raw);
       if (parsed?.type !== 'invoice-product-list' || !Array.isArray(parsed.items)) throw new Error('invalid');
 
+      const missingIds = parsed.items
+        .map((r: any) => r.product_id)
+        .filter((id: string) => id && !products.find((p: any) => p.id === id));
+
+      let extraProducts: any[] = [];
+      if (missingIds.length) {
+        const { data: fetched } = await supabase
+          .from('products')
+          .select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`)
+          .in('id', missingIds);
+        extraProducts = fetched || [];
+      }
+      const allProducts = [...products, ...extraProducts];
+
       let notFoundCount = 0;
       let cappedCount = 0;
       const pastedItems = parsed.items.map((row: any) => {
-        const product: any = products.find(p => p.id === row.product_id);
+        const product: any = allProducts.find((p: any) => p.id === row.product_id);
         if (!product) { notFoundCount++; return null; }
         const availableUnits = product.enable_multi_unit && product.units
           ? product.units.filter((u: ProductUnit) => u.is_active)
