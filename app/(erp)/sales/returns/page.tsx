@@ -33,6 +33,19 @@ interface InvoiceItem {
   discount_percent: number;
   subtotal: number;
   remaining_qty?: number;
+  unit_name?: string | null;
+  unit_conversion_factor?: number | null;
+  base_quantity?: number | null;
+}
+
+// Base units per sale unit. Derived from the invoice line itself so it stays
+// correct even if the product's unit definitions changed after the sale.
+function baseUnitsPerSaleUnit(item: InvoiceItem): number {
+  const qty = Number(item.quantity) || 0;
+  const baseQty = Number(item.base_quantity) || 0;
+  if (qty > 0 && baseQty > 0) return baseQty / qty;
+  const factor = Number(item.unit_conversion_factor) || 0;
+  return factor > 0 ? factor : 1;
 }
 
 interface SalesReturn {
@@ -332,7 +345,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
     setSelectedInvoice(invoice);
     const { data } = await supabase
       .from('invoice_items')
-      .select('id, invoice_id, product_id, quantity, unit_price, cost_price, discount_percent, subtotal, product:products(name, sku, unit)')
+      .select('id, invoice_id, product_id, quantity, unit_price, cost_price, discount_percent, subtotal, unit_name, unit_conversion_factor, base_quantity, product:products(name, sku, unit)')
       .eq('invoice_id', invoice.id);
 
     // Fetch previously returned quantities for each item
@@ -368,6 +381,9 @@ function ReturnModal({ invoices, onClose, onSaved }: {
       cost_price: item.cost_price || 0,
       discount_percent: item.discount_percent || 0,
       subtotal: item.subtotal,
+      unit_name: item.unit_name ?? null,
+      unit_conversion_factor: item.unit_conversion_factor ?? null,
+      base_quantity: item.base_quantity ?? null,
       product: Array.isArray(item.product) ? item.product[0] : item.product,
       remaining_qty: item.quantity - (returnedMap.get(item.id) || 0)
     }));
@@ -405,22 +421,32 @@ function ReturnModal({ invoices, onClose, onSaved }: {
       .select('invoice_item_id, cogs_amount, quantity_consumed')
       .in('invoice_item_id', itemIds)
       .then(({ data }) => {
-        const map: Record<string, number> = {};
+        // Aggregate across all batches per invoice_item_id, then divide.
+        // The consumption records are in BASE units, so the resulting
+        // cost is per BASE unit — use with base_quantity when computing COGS.
+        const totals: Record<string, { cogs: number; qty: number }> = {};
         (data || []).forEach((c: any) => {
-          const consumed = Number(c.quantity_consumed) || 0;
-          if (consumed > 0) {
-            map[c.invoice_item_id] = Number(c.cogs_amount) / consumed;
-          }
+          const t = totals[c.invoice_item_id] ??= { cogs: 0, qty: 0 };
+          t.cogs += Number(c.cogs_amount) || 0;
+          t.qty  += Number(c.quantity_consumed) || 0;
+        });
+        const map: Record<string, number> = {};
+        Object.entries(totals).forEach(([id, t]) => {
+          if (t.qty > 0) map[id] = t.cogs / t.qty;
         });
         setFifoCostMap(map);
       });
   }, [items]);
 
+  // fifoCostMap is per BASE unit. Compute COGS using base_quantity.
   const totalCOGS = Object.entries(returnItems).reduce((sum, [itemId, { qty }]) => {
     const item = items.find(i => i.id === itemId);
     if (!item) return sum;
-    const fifoCost = fifoCostMap[itemId] !== undefined ? fifoCostMap[itemId] : (item.cost_price || 0);
-    return sum + qty * fifoCost;
+    const conversion = baseUnitsPerSaleUnit(item);
+    const baseQty = qty * conversion;
+    const fifoCostPerBase = fifoCostMap[itemId];
+    const costPerBase = fifoCostPerBase !== undefined ? fifoCostPerBase : (item.cost_price || 0) / conversion;
+    return sum + baseQty * costPerBase;
   }, 0);
 
   async function handleReturn() {
@@ -687,46 +713,52 @@ function ReturnModal({ invoices, onClose, onSaved }: {
         const item = items.find(i => i.id === itemId);
         if (!item) continue;
 
+        const conversion = baseUnitsPerSaleUnit(item);
+        const baseQtyToReturn = qty * conversion;
+        const fifoCostPerBase = fifoCostMap[itemId];
+        const costPerBase = fifoCostPerBase !== undefined ? fifoCostPerBase : (item.cost_price || 0) / conversion;
+        const costPerSaleUnit = costPerBase * conversion;
+
         const discountMultiplier = 1 - (item.discount_percent || 0) / 100;
-        const fifoCost = fifoCostMap[itemId] !== undefined ? fifoCostMap[itemId] : (item.cost_price || 0);
         await supabase.from('sales_return_items').insert({
           sales_return_id: salesReturn.id,
           invoice_item_id: itemId,
           product_id: item.product_id,
           quantity_returned: qty,
+          base_quantity_returned: baseQtyToReturn,
           unit_price: item.unit_price,
           discount_percent: item.discount_percent || 0,
-          cost_price: fifoCost,
+          cost_price: costPerSaleUnit,
           subtotal: qty * item.unit_price * discountMultiplier,
           reason: reason || 'Not specified'
         });
 
-        // Restore FIFO batches
+        // Restore FIFO batches — ALWAYS in base units
         await supabase.rpc('restore_fifo_on_return', {
           p_invoice_item_id: itemId,
           p_product_id: item.product_id,
           p_warehouse_id: warehouseId,
-          p_quantity: qty,
-          p_unit_cost: fifoCost,
+          p_quantity: baseQtyToReturn,
+          p_unit_cost: costPerBase,
           p_reference_id: salesReturn.id,
           p_reference_number: returnNumber,
         });
 
-        // Create stock movement for return
+        // Create stock movement for return — in base units
         await supabase.from('stock_movements').insert({
           tenant_id: '00000000-0000-0000-0000-000000000001',
           product_id: item.product_id,
           warehouse_id: warehouseId,
           movement_type: 'return_in',
-          quantity: qty,
-          unit_cost: fifoCost,
+          quantity: baseQtyToReturn,
+          unit_cost: costPerBase,
           reference_type: 'sales_return',
           reference_id: salesReturn.id,
           reference_number: returnNumber,
           notes: reason || `Return from invoice ${selectedInvoice.invoice_number}`,
         });
 
-        // Update inventory
+        // Update inventory — in base units
         const { data: invItem } = await supabase
           .from('inventory_items')
           .select('id, quantity_on_hand')
@@ -736,7 +768,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
 
         if (invItem) {
           await supabase.from('inventory_items').update({
-            quantity_on_hand: invItem.quantity_on_hand + qty,
+            quantity_on_hand: invItem.quantity_on_hand + baseQtyToReturn,
             updated_at: new Date().toISOString(),
           }).eq('id', invItem.id);
         } else {
@@ -744,7 +776,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
             tenant_id: '00000000-0000-0000-0000-000000000001',
             product_id: item.product_id,
             warehouse_id: warehouseId,
-            quantity_on_hand: qty,
+            quantity_on_hand: baseQtyToReturn,
           });
         }
       }
@@ -877,9 +909,9 @@ function ReturnModal({ invoices, onClose, onSaved }: {
                             <p className="text-xs text-blue-600">Discount: {item.discount_percent}%</p>
                           )}
                           {fifoCostMap[item.id] !== undefined ? (
-                            <p className="text-xs text-muted-foreground">Cost (FIFO): {formatCurrency(fifoCostMap[item.id])}</p>
+                            <p className="text-xs text-muted-foreground">Cost (FIFO): {formatCurrency(fifoCostMap[item.id] * baseUnitsPerSaleUnit(item))}/unit</p>
                           ) : item.cost_price > 0 && (
-                            <p className="text-xs text-muted-foreground">Cost: {formatCurrency(item.cost_price)}</p>
+                            <p className="text-xs text-muted-foreground">Cost: {formatCurrency(item.cost_price)}/unit</p>
                           )}
                         </div>
                       </div>
