@@ -169,7 +169,7 @@ export default function ReportsPage() {
       revenue: c.total_purchases,
     })));
 
-    const monthly = await getMonthlyData();
+    const monthly = await getMonthlyData(cogsAccount?.id ?? null);
     setMonthlyData(monthly);
 
     const catData = await getCategoryRevenue(effectiveStart, effectiveEnd || null);
@@ -205,7 +205,7 @@ export default function ReportsPage() {
     }
   }
 
-  async function getMonthlyData() {
+  async function getMonthlyData(cogsAccountId: string | null) {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const result: { month: string; sales: number; purchases: number; profit: number }[] = [];
 
@@ -214,15 +214,22 @@ export default function ReportsPage() {
       const startDate = new Date(new Date().getFullYear(), i, 1).toISOString().split('T')[0];
       const endDate = new Date(new Date().getFullYear(), i + 1, 0).toISOString().split('T')[0];
 
-      const [invRes, poRes, stockRes] = await Promise.all([
-        supabase.from('invoices').select('total_amount').gte('invoice_date', startDate).lt('invoice_date', endDate).neq('status', 'cancelled'),
-        supabase.from('purchase_orders').select('total_amount').gte('order_date', startDate).lt('order_date', endDate),
-        supabase.from('stock_movements').select('quantity, unit_cost').eq('movement_type', 'sale').gte('created_at', startDate).lt('created_at', endDate),
+      // COGS comes from the ledger, not stock_movements. stock_movements.unit_cost
+      // mixes base-unit and sale-unit costs while quantity is in sale units, so
+      // quantity * unit_cost cannot be made correct for multi-unit products. The
+      // ledger is also what every other COGS figure on this page reports, so the
+      // chart no longer contradicts the stat cards above it.
+      const [invRes, poRes, cogsRes] = await Promise.all([
+        supabase.from('invoices').select('total_amount').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled'),
+        supabase.from('purchase_orders').select('total_amount').gte('order_date', startDate).lte('order_date', endDate),
+        cogsAccountId
+          ? supabase.rpc('period_net_debit', { p_account_id: cogsAccountId, p_start_date: startDate, p_end_date: endDate })
+          : Promise.resolve({ data: 0 }),
       ]);
 
       const sales = (invRes.data || []).reduce((s: number, inv: any) => s + Number(inv.total_amount), 0);
       const purchases = (poRes.data || []).reduce((s: number, po: any) => s + Number(po.total_amount), 0);
-      const cogs = (stockRes.data || []).reduce((s: number, m: any) => s + Math.abs(Number(m.quantity)) * Number(m.unit_cost || 0), 0);
+      const cogs = Math.max(0, Number(cogsRes.data || 0));
 
       result.push({ month: months[i], sales, purchases, profit: sales - cogs });
     }
