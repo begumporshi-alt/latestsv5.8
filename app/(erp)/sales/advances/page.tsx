@@ -474,7 +474,8 @@ function RecordAdvanceModal({ paymentMethods, onClose, onSaved }: {
       const { data } = await supabase
         .from('customers')
         .select('id, name, code')
-        .ilike('name', `%${customerSearch.trim()}%`)
+        .or(`name.ilike.%${customerSearch.trim()}%,code.ilike.%${customerSearch.trim()}%,phone.ilike.%${customerSearch.trim()}%`)
+        .order('name')
         .limit(10);
       setCustomers(data || []);
     }, 200);

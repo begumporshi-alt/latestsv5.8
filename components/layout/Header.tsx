@@ -24,14 +24,14 @@ interface SearchResult {
   color: string;
 }
 
-const searchSources: { table: string; labelCol: string; subCol?: string; type: string; href: string; icon: React.ElementType; color: string }[] = [
-  { table: 'customers', labelCol: 'name', subCol: 'code', type: 'Customer', href: '/crm', icon: Users, color: 'text-teal-600 bg-teal-50' },
-  { table: 'products', labelCol: 'name', subCol: 'sku', type: 'Product', href: '/inventory', icon: Package, color: 'text-blue-600 bg-blue-50' },
-  { table: 'invoices', labelCol: 'invoice_number', subCol: 'status', type: 'Invoice', href: '/sales', icon: Receipt, color: 'text-green-600 bg-green-50' },
-  { table: 'quotations', labelCol: 'quote_number', subCol: 'status', type: 'Quotation', href: '/quotations', icon: FileText, color: 'text-orange-600 bg-orange-50' },
-  { table: 'purchase_orders', labelCol: 'po_number', subCol: 'status', type: 'Purchase', href: '/purchases', icon: ShoppingBag, color: 'text-purple-600 bg-purple-50' },
-  { table: 'deliveries', labelCol: 'delivery_number', subCol: 'status', type: 'Delivery', href: '/delivery', icon: Truck, color: 'text-pink-600 bg-pink-50' },
-  { table: 'projects', labelCol: 'name', subCol: 'status', type: 'Project', href: '/projects', icon: FolderKanban, color: 'text-indigo-600 bg-indigo-50' },
+const searchSources: { table: string; labelCol: string; subCol?: string; searchCols: string[]; type: string; href: string; icon: React.ElementType; color: string }[] = [
+  { table: 'customers', labelCol: 'name', subCol: 'code', searchCols: ['name', 'code', 'phone'], type: 'Customer', href: '/crm', icon: Users, color: 'text-teal-600 bg-teal-50' },
+  { table: 'products', labelCol: 'name', subCol: 'sku', searchCols: ['name', 'sku'], type: 'Product', href: '/inventory', icon: Package, color: 'text-blue-600 bg-blue-50' },
+  { table: 'invoices', labelCol: 'invoice_number', subCol: 'status', searchCols: ['invoice_number'], type: 'Invoice', href: '/sales', icon: Receipt, color: 'text-green-600 bg-green-50' },
+  { table: 'quotations', labelCol: 'quote_number', subCol: 'status', searchCols: ['quote_number'], type: 'Quotation', href: '/quotations', icon: FileText, color: 'text-orange-600 bg-orange-50' },
+  { table: 'purchase_orders', labelCol: 'po_number', subCol: 'status', searchCols: ['po_number'], type: 'Purchase', href: '/purchases', icon: ShoppingBag, color: 'text-purple-600 bg-purple-50' },
+  { table: 'deliveries', labelCol: 'delivery_number', subCol: 'status', searchCols: ['delivery_number'], type: 'Delivery', href: '/delivery', icon: Truck, color: 'text-pink-600 bg-pink-50' },
+  { table: 'projects', labelCol: 'name', subCol: 'status', searchCols: ['name'], type: 'Project', href: '/projects', icon: FolderKanban, color: 'text-indigo-600 bg-indigo-50' },
 ];
 
 export default function Header({ onMenuToggle }: HeaderProps) {
@@ -106,10 +106,11 @@ export default function Header({ onMenuToggle }: HeaderProps) {
       const results: SearchResult[] = [];
 
       await Promise.all(searchSources.map(async (src) => {
+        const orFilter = src.searchCols.map(col => `${col}.ilike.%${q}%`).join(',');
         const { data } = await supabase
           .from(src.table)
           .select(`${src.labelCol}${src.subCol ? ', ' + src.subCol : ''}, id`)
-          .ilike(src.labelCol, `%${q}%`)
+          .or(orFilter)
           .limit(3);
 
         (data || []).forEach((row: any) => {
