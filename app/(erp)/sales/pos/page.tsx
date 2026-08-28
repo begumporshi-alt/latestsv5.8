@@ -219,7 +219,7 @@ export default function POSPage() {
       .from('customers')
       .select('id, name, code, phone, outstanding_balance')
       .eq('is_active', true)
-      .limit(100);
+      .order('name');
     setCustomers(data || []);
   }
 
@@ -847,7 +847,11 @@ export default function POSPage() {
                         </div>
                       </button>
                     ))}
-                    {customerSearch.trim() && customers.filter(c => c.name.toLowerCase().includes(customerSearch.trim().toLowerCase())).length === 0 && (
+                    {customerSearch.trim() && customers.filter(c =>
+                      c.name.toLowerCase().includes(customerSearch.trim().toLowerCase()) ||
+                      (c.code || '').toLowerCase().includes(customerSearch.trim().toLowerCase()) ||
+                      (c.phone || '').includes(customerSearch.trim())
+                    ).length === 0 && (
                       <div className="px-3 py-4 text-center text-xs text-muted-foreground">No customers found</div>
                     )}
                   </div>
