@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260828T145914259Z-4874-0a424231cc3b",
+  "runId": "20260828T145914259Z-4874-0a424231cc3b",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "bd385168442f8378380a4b1d22251ca3c62180ab",
+  "diffHash": "c6d4bc7c2ab45e5a13328e3a4e3ad320c3565dc6473366cbaf3d165c88b4c561",
+  "rulesVersion": "unavailable",
+  "sessionHash": "8fa9e5622d0350113e7140c943c7c94994dc80db23ad2d28e9c2b903e4029bde",
+  "reportRef": ".mimosa/reports/task-review-sess_a9997eb5-3299-4892-a4f4-3b2f8d16c3a6-20260828T145914259Z-4874-0a424231cc3b.json",
+  "events": [
+    {
+      "eventId": "hook-d83990ef5df35d3356dfbb723947d6f2",
+      "findingId": "mimosa-1f8aa3d76ac764a8233aa12a",
+      "type": "finding_blocked",
+      "at": "2026-08-28T14:51:55.814Z",
+      "identity": {
+        "projectRelativeFile": "app/(erp)/settings/page.tsx",
+        "ruleId": "security",
+        "codeEvidenceHash": "f4b1212a86c75ff3f1a43561abc3f7c622689c2fbe83ed5cc8549b43a98f20f7",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 130,
+      "endLine": 130,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "f4b1212a86c75ff3f1a43561abc3f7c622689c2fbe83ed5cc8549b43a98f20f7"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-4b1906c5dffc70fe6f08a7e8d6225d0d",
+      "findingId": "mimosa-1f8aa3d76ac764a8233aa12a",
+      "type": "static_fix_verified",
+      "at": "2026-08-28T14:53:36.296Z",
+      "identity": {
+        "projectRelativeFile": "app/(erp)/settings/page.tsx",
+        "ruleId": "security",
+        "codeEvidenceHash": "f4b1212a86c75ff3f1a43561abc3f7c622689c2fbe83ed5cc8549b43a98f20f7",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 130,
+      "endLine": 130,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "f4b1212a86c75ff3f1a43561abc3f7c622689c2fbe83ed5cc8549b43a98f20f7"
+      },
+      "sequence": 1
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "app/(auth)/login/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "supabase/functions/db-backup/index.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "supabase/functions/db-restore/index.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/api/admin/db/route.ts",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/(erp)/settings/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-08-28T14:59:14.544Z"
+}

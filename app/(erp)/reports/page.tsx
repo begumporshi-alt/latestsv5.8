@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { getInventoryValue } from '@/lib/inventory-value';
 import { ChartBar as BarChart3, TrendingUp, Package, Users, Download, FileSpreadsheet, Calendar, ArrowRight, RefreshCw, Printer, Info } from 'lucide-react';
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -61,7 +62,7 @@ export default function ReportsPage() {
     // Supabase caps queries at 1000 rows by default. Paginate inventory_items to fetch all.
     const [
       invoicesRes, purchasesRes, customersRes, productsRes,
-      topProductsRes, topCustomersRes, paymentsRes, accountsRes
+      topProductsRes, topCustomersRes, paymentsRes, accountsRes, invResult
     ] = await Promise.all([
       applyDateRange(supabase.from('invoices').select('total_amount, subtotal, invoice_date, status').neq('status', 'cancelled'), 'invoice_date'),
       applyDateRange(supabase.from('purchase_orders').select('total_amount'), 'order_date'),
@@ -71,22 +72,8 @@ export default function ReportsPage() {
       supabase.from('customers').select('name, total_purchases').order('total_purchases', { ascending: false }).limit(10),
       applyDateRange(supabase.from('payments').select('amount').eq('payment_type', 'received'), 'payment_date'),
       supabase.from('accounts').select('id, code, name, account_type').eq('is_active', true),
+      getInventoryValue(supabase),
     ]);
-
-    let allInvItems: any[] = [];
-    {
-      let pg = 0;
-      while (true) {
-        const { data: pageData } = await supabase
-          .from('inventory_items')
-          .select('quantity_on_hand, product:products(cost_price)')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        allInvItems = allInvItems.concat(pageData || []);
-        if (!pageData || pageData.length < 1000) break;
-        pg++;
-      }
-    }
-    const invItemsRes = { data: allInvItems };
 
     const totalRevenue = (invoicesRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
     const totalPurchases = (purchasesRes.data || []).reduce((s: number, p: any) => s + Number(p.total_amount), 0);
@@ -135,7 +122,7 @@ export default function ReportsPage() {
 
     const grossProfit = totalRevenue - Math.max(0, salesReturnsTotal) - Math.max(0, cogsActual);
     const netProfit = grossProfit - Math.max(0, totalOperatingExpenses);
-    const inventoryValue = (invItemsRes.data || []).reduce((s: number, item: any) => s + (Number(item.quantity_on_hand) * Number(item.product?.cost_price || 0)), 0);
+    const inventoryValue = invResult.total;
 
     setStats({
       totalRevenue,

@@ -125,12 +125,9 @@ export default function SettingsPage() {
     setBackupLoading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/db-backup`;
-      const res = await fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${session?.access_token || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-          'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-        },
+      if (!session) throw new Error('Not signed in');
+      const res = await fetch('/api/admin/db', {
+        headers: { 'Authorization': `Bearer ${session.access_token}` },
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
@@ -160,12 +157,11 @@ export default function SettingsPage() {
       try { backup = JSON.parse(text); } catch { throw new Error('File is not valid JSON'); }
       if (!backup.data && !backup.database?.tables) throw new Error('Unrecognized backup format. Expected a backup created by this system.');
       const { data: { session } } = await supabase.auth.getSession();
-      const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/db-restore`;
-      const res = await fetch(url, {
+      if (!session) throw new Error('Not signed in');
+      const res = await fetch('/api/admin/db', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${session?.access_token || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-          'apikey': process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+          'Authorization': `Bearer ${session.access_token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(backup),
