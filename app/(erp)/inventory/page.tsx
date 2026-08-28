@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { getInventoryValue } from '@/lib/inventory-value';
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
 import JsBarcode from 'jsbarcode';
@@ -288,7 +289,8 @@ export default function InventoryPage() {
     });
     setFifoValueMap(fMap);
 
-    const value = activeProds.reduce((sum: number, p: any) => sum + (fMap[p.id] !== undefined ? fMap[p.id] : (p.total_stock || 0) * p.cost_price), 0);
+    const invResult = await getInventoryValue(supabase);
+    const value = invResult.total;
 
     setStats({ total: activeProds.length, lowStock, outOfStock, value });
     setLoading(false);
