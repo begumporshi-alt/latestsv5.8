@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
@@ -48,6 +49,7 @@ interface GRNItem {
 }
 
 export default function GRNPage() {
+  const searchParams = useSearchParams();
   const [grns, setGrns] = useState<GRN[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -56,7 +58,13 @@ export default function GRNPage() {
   const [grnItems, setGrnItems] = useState<GRNItem[]>([]);
   const [stats, setStats] = useState({ total: 0, posted: 0, verified: 0, totalValue: 0 });
 
-  useEffect(() => { loadGRNs(); }, []);
+  useEffect(() => {
+    loadGRNs();
+    // Auto-open the create modal if redirected with ?poId= (from PO page "Mark as Received")
+    if (searchParams.get('poId')) {
+      setShowModal(true);
+    }
+  }, []);
 
   async function loadGRNs() {
     setLoading(true);
@@ -302,6 +310,7 @@ function ViewGRNModal({ grn, items, onClose }: { grn: GRN; items: GRNItem[]; onC
 }
 
 function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const searchParams = useSearchParams();
   const [step, setStep] = useState(1);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -316,6 +325,21 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
 
+  async function selectPO(po: PurchaseOrder) {
+    setSelectedPO(po);
+    const { data } = await supabase
+      .from('purchase_order_items')
+      .select('*, product:products(name, sku, unit)')
+      .eq('purchase_order_id', po.id);
+    setItems(data || []);
+    const initReceive: Record<string, number> = {};
+    (data || []).forEach((item: any) => {
+      initReceive[item.id] = Math.max(0, Number(item.quantity) - Number(item.received_quantity));
+    });
+    setReceiveItems(initReceive);
+    setStep(2);
+  }
+
   useEffect(() => {
     async function load() {
       const [supRes, whRes, poRes] = await Promise.all([
@@ -329,25 +353,36 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         ...po,
         supplier: Array.isArray(po.supplier) ? po.supplier[0] : po.supplier,
       })));
+
+      // Pre-fill from ?poId= query param (redirected from PO page "Mark as Received")
+      const prefillPOId = searchParams.get('poId');
+      if (prefillPOId) {
+        // First check if it's already in the loaded list
+        const inList = (poRes.data || []).find((po: any) => po.id === prefillPOId);
+        if (inList) {
+          await selectPO({
+            ...inList,
+            supplier: Array.isArray(inList.supplier) ? inList.supplier[0] : inList.supplier,
+          } as PurchaseOrder);
+          return;
+        }
+        // Otherwise fetch it directly (it may already be 'received')
+        const { data: poData } = await supabase
+          .from('purchase_orders')
+          .select('id, po_number, supplier_id, status, total_amount, supplier:suppliers(name)')
+          .eq('id', prefillPOId)
+          .single();
+        if (poData) {
+          const po = {
+            ...poData,
+            supplier: Array.isArray(poData.supplier) ? poData.supplier[0] : poData.supplier,
+          };
+          await selectPO(po as PurchaseOrder);
+        }
+      }
     }
     load();
   }, []);
-
-  async function selectPO(po: PurchaseOrder) {
-    setSelectedPO(po);
-    const { data } = await supabase
-      .from('purchase_order_items')
-      .select('*, product:products(name, sku, unit)')
-      .eq('purchase_order_id', po.id);
-    setItems(data || []);
-    // Initialize receive quantities with remaining quantities
-    const initReceive: Record<string, number> = {};
-    (data || []).forEach((item: any) => {
-      initReceive[item.id] = Math.max(0, Number(item.quantity) - Number(item.received_quantity));
-    });
-    setReceiveItems(initReceive);
-    setStep(2);
-  }
 
   async function handleSave() {
     setError('');
