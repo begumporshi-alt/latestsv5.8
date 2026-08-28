@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatRelativeTime } from '@/lib/format';
+import { getInventoryValue } from '@/lib/inventory-value';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
@@ -107,7 +108,8 @@ export default function DashboardPage() {
     const monthlySales = (monthlyInvRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
     const receivables = (customersRes.data || []).reduce((s: number, c: any) => s + Number(c.outstanding_balance), 0);
     const payables = (suppliersRes.data || []).reduce((s: number, s2: any) => s + Number(s2.outstanding_balance), 0);
-    const invValue = allInvItems.reduce((s: number, item: any) => s + (Number(item.quantity_on_hand) * Number(item.product?.cost_price || 0)), 0);
+    const invResult = await getInventoryValue(supabase);
+    const invValue = invResult.total;
 
     const deliveries = dlvRes.data || [];
     const onlineOrders = onlineOrdersRes.data || [];

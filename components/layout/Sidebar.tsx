@@ -25,6 +25,7 @@ const navItems: NavItem[] = [
     icon: Package,
     children: [
       { title: 'Products', href: '/inventory' },
+      { title: 'FIFO Ledger', href: '/inventory/fifo' },
       { title: 'Stock Movements', href: '/inventory/movements' },
       { title: 'Stock Transfers', href: '/inventory/transfers' },
       { title: 'Warehouses', href: '/inventory/warehouses' },

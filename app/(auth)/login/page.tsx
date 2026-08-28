@@ -26,31 +26,6 @@ export default function LoginPage() {
     }
   }
 
-  async function handleDemoLogin() {
-    setError('');
-    setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({
-      email: 'admin@sibuilding.com',
-      password: 'Admin@123456',
-    });
-    if (error) {
-      // Try to create demo account
-      const { error: signUpError } = await supabase.auth.signUp({
-        email: 'admin@sibuilding.com',
-        password: 'Admin@123456',
-        options: { data: { full_name: 'Admin User', role: 'super_admin' } },
-      });
-      if (signUpError) {
-        setError('Demo login failed. Please create an account.');
-        setLoading(false);
-        return;
-      }
-      router.push('/dashboard');
-    } else {
-      router.push('/dashboard');
-    }
-  }
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -89,7 +64,7 @@ export default function LoginPage() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@sibuilding.com"
+                  placeholder="you@company.com"
                   required
                   className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
@@ -128,27 +103,6 @@ export default function LoginPage() {
               {loading ? 'Signing in...' : 'Sign in'}
             </button>
           </form>
-
-          <div className="relative my-5">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-100" />
-            </div>
-            <div className="relative flex justify-center text-xs text-slate-400">
-              <span className="bg-white px-2">or</span>
-            </div>
-          </div>
-
-          <button
-            onClick={handleDemoLogin}
-            disabled={loading}
-            className="w-full border-2 border-slate-200 hover:border-blue-300 hover:bg-blue-50 text-slate-700 font-semibold py-2.5 rounded-lg transition duration-200 text-sm"
-          >
-            Continue with Demo Account
-          </button>
-
-          <p className="text-xs text-slate-400 text-center mt-5">
-            Demo: admin@sibuilding.com / Admin@123456
-          </p>
         </div>
 
         <p className="text-center text-slate-400 text-xs mt-6">
