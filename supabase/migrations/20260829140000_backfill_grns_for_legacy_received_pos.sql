@@ -18,6 +18,68 @@
 --   quantities in inventory_items are already correct from the legacy flow.
 -- ============================================================
 
+-- ============================================================
+-- Phase 2: Fix GRNs inserted as 'posted' before INSERT-trigger fix was applied
+-- GRN-485187 (test12) and any other GRNs with purchase_order_id and
+-- received_quantity > 0 but no inventory_batches.
+-- The INSERT trigger was only added on 2026-08-29, so any GRN inserted
+-- before that date via the GRN page (INSERT as 'posted') missed batch creation.
+-- ============================================================
+DO $$
+DECLARE
+  v_grn record;
+  v_item record;
+  v_po record;
+  v_warehouse_id uuid;
+BEGIN
+  FOR v_grn IN
+    SELECT grn.id, grn.grn_number, grn.warehouse_id, grn.purchase_order_id, grn.received_date
+    FROM goods_receipt_notes grn
+    WHERE grn.status = 'posted'
+      AND grn.purchase_order_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM inventory_batches ib
+        WHERE ib.reference_type = 'grn' AND ib.reference_id = grn.id
+      )
+  LOOP
+    -- Get warehouse from GRN or fall back
+    v_warehouse_id := v_grn.warehouse_id;
+    IF v_warehouse_id IS NULL THEN
+      SELECT id INTO v_warehouse_id FROM warehouses WHERE is_default = true LIMIT 1;
+    END IF;
+    IF v_warehouse_id IS NULL THEN
+      SELECT id INTO v_warehouse_id FROM warehouses WHERE is_active = true LIMIT 1;
+    END IF;
+
+    -- Create batch for each PO item with received qty
+    FOR v_item IN
+      SELECT poi.product_id, poi.received_quantity, poi.unit_cost
+      FROM purchase_order_items poi
+      WHERE poi.purchase_order_id = v_grn.purchase_order_id
+        AND poi.received_quantity > 0
+    LOOP
+      INSERT INTO inventory_batches (
+        product_id, variant_id, warehouse_id, batch_number,
+        quantity_received, quantity_remaining, unit_cost,
+        batch_type, reference_type, reference_id, reference_number,
+        notes, created_at
+      ) VALUES (
+        v_item.product_id, NULL, v_warehouse_id, v_grn.grn_number,
+        v_item.received_quantity, v_item.received_quantity, v_item.unit_cost,
+        'purchase', 'grn', v_grn.id, v_grn.grn_number,
+        'Backfilled missing batch (INSERT trigger inactive at GRN creation)',
+        COALESCE(v_grn.received_date, CURRENT_DATE)
+      )
+      ON CONFLICT DO NOTHING;
+    END LOOP;
+
+    RAISE NOTICE 'Backfilled missing batch for GRN %', v_grn.grn_number;
+  END LOOP;
+END $$;
+
+-- ============================================================
+-- Phase 1 (original): Create GRNs for POs received via old Mark-as-Received
+-- ============================================================
 DO $$
 DECLARE
   v_po record;
