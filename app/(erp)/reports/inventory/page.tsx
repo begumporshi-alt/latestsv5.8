@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { getInventoryValue } from '@/lib/inventory-value';
 import { Package, TriangleAlert as AlertTriangle, TrendingDown, ChartBar as BarChart3, Download, RefreshCw, Search } from 'lucide-react';
 import Pagination from '@/components/ui/AppPagination';
 
@@ -55,10 +56,8 @@ export default function InventoryReportPage() {
       setItems(allItems);
       setWarehouses(whRes.data || []);
       setCategories(catRes.data || []);
-      const value = allItems.reduce((s: number, i: any) => {
-        const key = `${i.product_id}|${i.warehouse_id}`;
-        return s + (fMap[key] !== undefined ? fMap[key] : Number(i.quantity_on_hand) * Number(i.product?.cost_price || 0));
-      }, 0);
+      const invResult = await getInventoryValue(supabase);
+      const value = invResult.total;
       const low = allItems.filter((i: any) => i.quantity_on_hand > 0 && i.quantity_on_hand <= (i.product?.min_stock_level || 0)).length;
       const out = allItems.filter((i: any) => i.quantity_on_hand === 0).length;
       setStats({ total: allItems.length, value, lowStock: low, outOfStock: out });
