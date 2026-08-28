@@ -278,15 +278,24 @@ export default function InventoryPage() {
     const activeProds = prods.filter((p: any) => p.is_active);
     const lowStock = activeProds.filter((p: any) => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length;
     const outOfStock = activeProds.filter((p: any) => (p.total_stock || 0) === 0).length;
-    // Fetch FIFO batch data for accurate valuation
-    const { data: batchData } = await supabase
-      .from('inventory_batches')
-      .select('product_id, quantity_remaining, unit_cost')
-      .gt('quantity_remaining', 0);
+    // Fetch FIFO batch data for accurate valuation (paginated to avoid the 1000-row cap)
     const fMap: Record<string, number> = {};
-    (batchData || []).forEach((b: any) => {
-      fMap[b.product_id] = (fMap[b.product_id] || 0) + Number(b.quantity_remaining) * Number(b.unit_cost);
-    });
+    {
+      let pg = 0;
+      while (true) {
+        const { data: batchPage } = await supabase
+          .from('inventory_batches')
+          .select('product_id, quantity_remaining, unit_cost')
+          .gt('quantity_remaining', 0)
+          .range(pg * 1000, (pg + 1) * 1000 - 1);
+        const page = batchPage || [];
+        page.forEach((b: any) => {
+          fMap[b.product_id] = (fMap[b.product_id] || 0) + Number(b.quantity_remaining) * Number(b.unit_cost);
+        });
+        if (page.length < 1000) break;
+        pg++;
+      }
+    }
     setFifoValueMap(fMap);
 
     const invResult = await getInventoryValue(supabase);

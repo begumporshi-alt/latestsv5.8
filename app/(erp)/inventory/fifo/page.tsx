@@ -79,6 +79,43 @@ export default function FifoLedgerPage() {
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }, [batches, selectedProduct]);
 
+  // Grand totals across all batches (read-only ledger summary).
+  const summary = useMemo(() => {
+    let totalValue = 0;
+    let totalRemaining = 0;
+    const productIds = new Set<string>();
+    const byWarehouse = new Map<string, { name: string; value: number; remaining: number }>();
+    const byType = new Map<string, { value: number; remaining: number }>();
+    for (const b of batches) {
+      const remaining = Number(b.quantity_remaining);
+      const value = remaining * Number(b.unit_cost);
+      totalValue += value;
+      totalRemaining += remaining;
+      if (b.product_id) productIds.add(b.product_id as unknown as string);
+      if (b.warehouse_id) {
+        const whKey = b.warehouse_id as unknown as string;
+        const cur = byWarehouse.get(whKey) || { name: b.warehouse?.name || '—', value: 0, remaining: 0 };
+        cur.value += value;
+        cur.remaining += remaining;
+        byWarehouse.set(whKey, cur);
+      }
+      const tKey = b.batch_type || 'other';
+      const tc = byType.get(tKey) || { value: 0, remaining: 0 };
+      tc.value += value;
+      tc.remaining += remaining;
+      byType.set(tKey, tc);
+    }
+    return {
+      totalValue,
+      totalRemaining,
+      productCount: productIds.size,
+      byWarehouse: Array.from(byWarehouse.entries())
+        .filter(([, v]) => v.remaining > 0)
+        .sort((a, b) => b[1].value - a[1].value),
+      byType: Array.from(byType.entries()).sort((a, b) => b[1].value - a[1].value),
+    };
+  }, [batches]);
+
   useEffect(() => {
     if (!selectedProduct && filteredProducts.length > 0) {
       setSelectedProduct(filteredProducts[0][0]);
@@ -104,6 +141,54 @@ export default function FifoLedgerPage() {
           Read-only view of stock batches ordered oldest-first (FIFO).
         </p>
       </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+          <p className="text-xs text-muted-foreground font-medium">Total Inventory Value</p>
+          <p className="text-xl font-bold text-foreground mt-1">{formatCurrency(summary.totalValue)}</p>
+        </div>
+        <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+          <p className="text-xs text-muted-foreground font-medium">Remaining Quantity</p>
+          <p className="text-xl font-bold text-foreground mt-1">{summary.totalRemaining.toLocaleString()}</p>
+        </div>
+        <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+          <p className="text-xs text-muted-foreground font-medium">Products</p>
+          <p className="text-xl font-bold text-foreground mt-1">{summary.productCount.toLocaleString()}</p>
+        </div>
+        <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+          <p className="text-xs text-muted-foreground font-medium">Batches</p>
+          <p className="text-xl font-bold text-foreground mt-1">{batches.length.toLocaleString()}</p>
+        </div>
+      </div>
+
+      {/* Breakdown by warehouse and batch type */}
+      {summary.byWarehouse.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-foreground mb-3">By Warehouse</h3>
+            <div className="space-y-2">
+              {summary.byWarehouse.map(([id, v]) => (
+                <div key={id} className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground truncate">{v.name}</span>
+                  <span className="font-semibold text-foreground">{formatCurrency(v.value)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-semibold text-foreground mb-3">By Batch Type</h3>
+            <div className="space-y-2">
+              {summary.byType.map(([type, v]) => (
+                <div key={type} className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground capitalize">{type}</span>
+                  <span className="font-semibold text-foreground">{formatCurrency(v.value)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-[320px_1fr] gap-6">
         {/* Left: product list */}
