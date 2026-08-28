@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260828T161747963Z-16360-44e26f594d53",
+  "runId": "20260828T161747963Z-16360-44e26f594d53",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": ".",
+        "detail": "baseline capture had enumeration or snapshot errors",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline",
+        "target": ".",
+        "detail": "baseline_partial: baseline capture had enumeration or snapshot errors",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "1df427346cf63cb6fdb8b02a6ccae119a767544f",
+  "diffHash": "2bdc401c3abb4c935c345143c5a9657218a8e3058a1e9d060c19843313f72ea2",
+  "rulesVersion": "unavailable",
+  "sessionHash": "8fa9e5622d0350113e7140c943c7c94994dc80db23ad2d28e9c2b903e4029bde",
+  "reportRef": ".mimosa/reports/task-review-sess_a9997eb5-3299-4892-a4f4-3b2f8d16c3a6-20260828T161747963Z-16360-44e26f594d53.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "app/(erp)/inventory/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/(erp)/reports/inventory/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/(erp)/inventory/fifo/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-08-28T16:17:48.227Z"
+}

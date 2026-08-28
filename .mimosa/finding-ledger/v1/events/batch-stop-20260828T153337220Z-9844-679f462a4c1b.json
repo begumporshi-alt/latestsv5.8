@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260828T153337220Z-9844-679f462a4c1b",
+  "runId": "20260828T153337220Z-9844-679f462a4c1b",
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "2710e517d49db5dbe69f77557518af0d53feb5b2",
+  "diffHash": "62b07e86793769fc2ec00461ec5517097a6e6c69d71e8f0f6bd811f344da0332",
+  "rulesVersion": "unavailable",
+  "sessionHash": "8fa9e5622d0350113e7140c943c7c94994dc80db23ad2d28e9c2b903e4029bde",
+  "reportRef": ".mimosa/reports/task-review-sess_a9997eb5-3299-4892-a4f4-3b2f8d16c3a6-20260828T153337220Z-9844-679f462a4c1b.json",
+  "events": [],
+  "observedFindingIds": [],
+  "verifiedFiles": [
+    {
+      "file": "app/(erp)/dashboard/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/(erp)/reports/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/(erp)/inventory/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/(erp)/reports/inventory/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "app/(erp)/inventory/fifo/page.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    },
+    {
+      "file": "components/layout/Sidebar.tsx",
+      "direct": "complete",
+      "projectContext": "partial"
+    }
+  ],
+  "recordedAt": "2026-08-28T15:33:37.498Z"
+}
