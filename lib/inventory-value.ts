@@ -23,18 +23,33 @@ export async function getInventoryValue(
     let missing: any[] = [];
     let batchKeys = new Set<string>();
     try {
-      const [invRes, batchRes] = await Promise.all([
-        supabase
+      // Paginate both queries to handle >1000 rows (Supabase row cap).
+      let pg = 0;
+      while (true) {
+        const { data: invPage } = await supabase
           .from('inventory_items')
           .select('product_id, warehouse_id, quantity_on_hand, product:products(id, cost_price)')
-          .gt('quantity_on_hand', 0),
-        supabase
+          .gt('quantity_on_hand', 0)
+          .range(pg * 1000, (pg + 1) * 1000 - 1);
+        const page = invPage || [];
+        missing.push(...page);
+        if (page.length < 1000) break;
+        pg++;
+      }
+      pg = 0;
+      while (true) {
+        const { data: batchPage } = await supabase
           .from('inventory_batches')
           .select('product_id, warehouse_id')
-          .gt('quantity_remaining', 0),
-      ]);
-      missing = invRes.data || [];
-      batchKeys = new Set((batchRes.data || []).map((b: any) => `${b.product_id}|${b.warehouse_id}`));
+          .gt('quantity_remaining', 0)
+          .range(pg * 1000, (pg + 1) * 1000 - 1);
+        const page = batchPage || [];
+        for (const b of page) {
+          batchKeys.add(`${b.product_id}|${b.warehouse_id}`);
+        }
+        if (page.length < 1000) break;
+        pg++;
+      }
     } catch {
       missing = [];
     }

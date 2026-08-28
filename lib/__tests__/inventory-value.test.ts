@@ -16,23 +16,30 @@ function mockSupabase(opts: {
     : jest.fn().mockResolvedValue({ data: opts.fifoValue, error: null });
   const from = jest.fn().mockImplementation((table: string) => {
     if (table === 'inventory_items') {
-      return {
-        select: jest.fn().mockReturnThis(),
-        gt: jest.fn().mockResolvedValue({ data: opts.invItems, error: null }),
-        range: jest.fn().mockResolvedValue({ data: opts.invItems, error: null }),
+      const builder: any = {
+        select: jest.fn(),
+        gt: jest.fn(),
+        range: jest.fn(),
       };
+      builder.select.mockReturnValue(builder);
+      builder.gt.mockReturnValue(builder);
+      builder.range.mockResolvedValue({ data: opts.invItems, error: null });
+      return builder;
     }
     if (table === 'inventory_batches') {
-      return {
-        select: jest.fn().mockReturnThis(),
-        gt: jest.fn().mockResolvedValue({
-          data: opts.batchKeys.map((k) => {
-            const [product_id, warehouse_id] = k.split('|');
-            return { product_id, warehouse_id };
-          }),
-          error: null,
-        }),
+      const batchData = opts.batchKeys.map((k) => {
+        const [product_id, warehouse_id] = k.split('|');
+        return { product_id, warehouse_id };
+      });
+      const builder: any = {
+        select: jest.fn(),
+        gt: jest.fn(),
+        range: jest.fn(),
       };
+      builder.select.mockReturnValue(builder);
+      builder.gt.mockReturnValue(builder);
+      builder.range.mockResolvedValue({ data: batchData, error: null });
+      return builder;
     }
     return { select: jest.fn().mockResolvedValue({ data: [], error: null }) };
   });
