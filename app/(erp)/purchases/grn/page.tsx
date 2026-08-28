@@ -449,7 +449,34 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         await supabase.from('purchase_orders').update({ status: newStatus }).eq('id', selectedPO.id);
       }
 
-      toast({ title: 'Success', description: `GRN ${grnNumber} created successfully` });
+      // Fetch updated cost prices (trigger recomputes weighted average on GRN post)
+      const productIds = Array.from(
+        new Set(
+          Array.from(itemsToReceive.values()).map(([, qty], idx) => {
+            const itemId = Array.from(itemsToReceive.keys())[idx];
+            return items.find(i => i.id === itemId)?.product_id;
+          }).filter(Boolean) as string[]
+        )
+      );
+      let costUpdateSummary = '';
+      if (productIds.length > 0) {
+        const { data: updatedProducts } = await supabase
+          .from('products')
+          .select('id, name, cost_price')
+          .in('id', productIds);
+        if (updatedProducts && updatedProducts.length > 0) {
+          const lines = updatedProducts
+            .map(p => `${p.name}: ৳${Number(p.cost_price).toFixed(2)}`)
+            .slice(0, 3);
+          const more = updatedProducts.length > 3 ? ` (+${updatedProducts.length - 3} more)` : '';
+          costUpdateSummary = ` • New avg cost — ${lines.join(', ')}${more}`;
+        }
+      }
+
+      toast({
+        title: 'Success',
+        description: `GRN ${grnNumber} created successfully${costUpdateSummary}`,
+      });
       onSaved();
       onClose();
     } catch (err: any) {
