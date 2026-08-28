@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
@@ -25,6 +26,7 @@ interface PurchaseOrderWithSupplier extends Omit<PurchaseOrder, 'supplier'> {
 }
 
 export default function PurchasesPage() {
+  const router = useRouter();
   const [orders, setOrders] = useState<PurchaseOrderWithSupplier[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -541,6 +543,7 @@ export default function PurchasesPage() {
           onRecordPayment={() => { setViewingOrder(null); openPaymentModal(viewingOrder); }}
           onEdit={() => { const o = viewingOrder; setViewingOrder(null); openEditModal(o); }}
           onCancel={() => { const o = viewingOrder; setViewingOrder(null); setCancellingOrder(o); }}
+          onReceive={() => { setViewingOrder(null); router.push(`/purchases/grn?poId=${viewingOrder!.id}`); }}
         />
       )}
 
@@ -1029,7 +1032,7 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
   );
 }
 
-function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, onEdit, onCancel }: {
+function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, onEdit, onCancel, onReceive }: {
   order: PurchaseOrderWithSupplier;
   items: any[];
   onClose: () => void;
@@ -1037,6 +1040,7 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
   onRecordPayment: () => void;
   onEdit: () => void;
   onCancel: () => void;
+  onReceive: () => void;
 }) {
   const cfg = statusConfig[order.status as PurchaseOrderStatus] || statusConfig.draft;
   const isCancelled = order.status === 'cancelled';
@@ -1219,8 +1223,8 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
 
           {order.status === 'approved' && (
             <div className="no-print flex gap-2">
-              <button onClick={() => onUpdateStatus('received')} className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm font-semibold transition">
-                <Truck className="w-4 h-4" />Mark as Received
+              <button onClick={() => onReceive()} className="flex-1 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg text-sm font-semibold transition">
+                <Truck className="w-4 h-4" />Receive (Open GRN)
               </button>
             </div>
           )}

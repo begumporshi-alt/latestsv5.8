@@ -113,15 +113,16 @@ BEGIN
 
     IF v_total_cost > 0 THEN
       PERFORM post_journal_entry(
-        p_description := 'Goods Received - GRN #' || NEW.grn_number || COALESCE(' / PO #' || v_po_number, ''),
-        p_lines := jsonb_build_array(
-          jsonb_build_object('account_code', '1200', 'debit', v_total_cost, 'description', 'Inventory received'),
-          jsonb_build_object('account_code', '2000', 'credit', v_total_cost, 'description', 'Accounts Payable - goods received')
-        ),
-        p_entry_date := COALESCE(NEW.received_date, CURRENT_DATE),
-        p_reference_type := 'grn',
-        p_reference_id := NEW.id,
-        p_tenant_id := v_tenant_id
+        'Goods Received - GRN #' || NEW.grn_number || COALESCE(' / PO #' || v_po_number, ''),
+        COALESCE(NEW.received_date, CURRENT_DATE),
+        'grn',
+        NEW.id,
+        json_build_array(
+          json_build_object('account_id', (SELECT id FROM accounts WHERE code = '1200' LIMIT 1), 'debit', v_total_cost, 'description', 'Inventory received'),
+          json_build_object('account_id', (SELECT id FROM accounts WHERE code = '2000' LIMIT 1), 'credit', v_total_cost, 'description', 'Accounts Payable - goods received')
+        )::json,
+        NULL,  -- customer_id
+        NULL   -- supplier_id
       );
     END IF;
   END IF;
