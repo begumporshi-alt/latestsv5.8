@@ -234,7 +234,17 @@ export default function FifoLedgerPage() {
                 {selectedBatches[0]?.product?.name || 'Select a product'}
               </h2>
               <p className="text-xs text-muted-foreground">
-                {selectedBatches[0]?.warehouse?.name || '—'} &middot;{' '}
+                {(() => {
+                  const warehouses = new Map<string, string>();
+                  for (const b of selectedBatches) {
+                    if (b.warehouse_id && b.warehouse?.name) {
+                      warehouses.set(b.warehouse_id, b.warehouse.name);
+                    }
+                  }
+                  const names = Array.from(warehouses.values());
+                  return names.length === 0 ? '—' : names.length === 1 ? names[0] : `${names.length} warehouses`;
+                })()}
+                {' · '}
                 {selectedBatches.length} batch{selectedBatches.length === 1 ? '' : 'es'}
               </p>
             </div>
@@ -252,6 +262,7 @@ export default function FifoLedgerPage() {
                   <th className="px-4 py-2 text-left font-medium">#</th>
                   <th className="px-4 py-2 text-left font-medium">Batch</th>
                   <th className="px-4 py-2 text-left font-medium">Type</th>
+                  <th className="px-4 py-2 text-left font-medium">Warehouse</th>
                   <th className="px-4 py-2 text-right font-medium">Received</th>
                   <th className="px-4 py-2 text-right font-medium">Remaining</th>
                   <th className="px-4 py-2 text-right font-medium">Unit Cost</th>
@@ -268,6 +279,7 @@ export default function FifoLedgerPage() {
                       <td className="px-4 py-2 text-muted-foreground">{i + 1}</td>
                       <td className="px-4 py-2 font-mono text-xs">{b.batch_number || '—'}</td>
                       <td className="px-4 py-2 capitalize">{b.batch_type}</td>
+                      <td className="px-4 py-2 text-sm">{b.warehouse?.name || '—'}</td>
                       <td className="px-4 py-2 text-right">{Number(b.quantity_received).toLocaleString()}</td>
                       <td className="px-4 py-2 text-right">{Number(b.quantity_remaining).toLocaleString()}</td>
                       <td className="px-4 py-2 text-right">{formatCurrency(Number(b.unit_cost))}</td>
