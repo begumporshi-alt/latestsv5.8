@@ -470,6 +470,40 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         }
       }
 
+      // Create inventory_batches for FIFO inventory tracking
+      // This is done in the frontend (not a DB trigger) for reliability —
+      // DB triggers have race conditions and pooling timing issues
+      const batchInserts: any[] = [];
+      for (const [itemId, qty] of itemsToReceive) {
+        const item = items.find(i => i.id === itemId);
+        if (!item) continue;
+
+        batchInserts.push({
+          product_id: item.product_id,
+          variant_id: null,
+          warehouse_id: warehouseId,
+          batch_number: `${grnNumber}-${item.id.slice(0, 8)}`,
+          quantity_received: qty,
+          quantity_remaining: qty,
+          unit_cost: item.unit_cost,
+          batch_type: 'purchase',
+          reference_type: 'grn',
+          reference_id: grnId,
+          reference_number: grnNumber,
+          notes: `Goods received via GRN`,
+          created_at: new Date().toISOString(),
+        });
+      }
+
+      if (batchInserts.length > 0) {
+        const { error: batchError } = await supabase.from('inventory_batches').insert(batchInserts);
+        if (batchError) {
+          console.error('Failed to create inventory batches:', batchError);
+          // Don't fail the GRN, but show warning
+          toast({ title: 'Warning', description: `GRN created but batch creation failed: ${batchError.message}`, variant: 'destructive' });
+        }
+      }
+
       // Update PO status
       if (!directMode && selectedPO) {
         const { data: allItems } = await supabase

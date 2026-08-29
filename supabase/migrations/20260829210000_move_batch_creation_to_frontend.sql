@@ -1,0 +1,22 @@
+-- ============================================================
+-- Migration: Remove GRN trigger and document frontend batch creation
+-- Date: 2026-08-29
+-- Purpose:
+--   The database trigger approach was unreliable due to connection
+--   pooling and async execution timing issues. Batch creation now
+--   happens synchronously in the frontend GRN save handler.
+--
+--   Changes in frontend (app/(erp)/purchases/grn/page.tsx):
+--     1. After GRN insert, directly create inventory_batches rows
+--     2. For PO-backed GRNs: iterate purchase_order_items
+--     3. For direct GRNs: iterate stock_movements
+--     4. Each batch includes product_id, warehouse_id, unit_cost
+--     5. Weighted average trigger fires on each INSERT → cost_price updates
+--
+--   This migration:
+--     - Drops the unreliable grn_accounting_trigger
+--     - Documents the new synchronous batch creation pattern
+--     - No data loss - batches were already created in frontend now
+-- ============================================================
+
+DROP TRIGGER IF EXISTS grn_accounting_trigger ON goods_receipt_notes;
