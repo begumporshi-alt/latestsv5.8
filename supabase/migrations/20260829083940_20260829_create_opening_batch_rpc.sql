@@ -34,6 +34,11 @@
 --   p_reference_id     : uuid
 --   p_notes            : text
 --
+-- POST_JOURNAL_ENTRY SIGNATURE (verified from DB)
+--   post_journal_entry(p_description text, p_entry_date date, p_reference_type text,
+--                       p_reference_id uuid, p_lines json, p_customer_id uuid, p_supplier_id uuid)
+--   NOTE: Uses account_id (uuid) in JSON, not account_code. Uses json type, not jsonb.
+--
 -- SAFETY
 --   * SECURITY DEFINER so the journal insert can run with table privileges even
 --     if the calling user has limited access.
@@ -85,22 +90,13 @@ BEGIN
     IF v_account_1200 IS NOT NULL AND v_account_3900 IS NOT NULL THEN
       PERFORM post_journal_entry(
         p_description := COALESCE(p_notes, 'Opening stock entry'),
-        p_lines := jsonb_build_array(
-          jsonb_build_object(
-            'account_code', '1200',
-            'debit', v_amount,
-            'description', 'Inventory received - ' || COALESCE(p_notes, 'Opening stock')
-          ),
-          jsonb_build_object(
-            'account_code', '3900',
-            'credit', v_amount,
-            'description', 'Opening balance equity offset'
-          )
-        ),
         p_entry_date := CURRENT_DATE,
         p_reference_type := p_reference_type,
         p_reference_id := p_reference_id,
-        p_tenant_id := p_tenant_id
+        p_lines := json_build_array(
+          json_build_object('account_id', v_account_1200, 'debit', v_amount, 'description', 'Opening stock: ' || COALESCE(p_notes, 'Inventory received')),
+          json_build_object('account_id', v_account_3900, 'credit', v_amount, 'description', 'Opening balance equity offset')
+        )
       );
     ELSE
       -- Log but don't block: missing accounts shouldn't prevent inventory creation
