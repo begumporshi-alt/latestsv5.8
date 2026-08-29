@@ -981,6 +981,17 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
                   p_reference_id: productId,
                   p_notes: 'Stock increase adjustment',
                 });
+              } else if (diff < 0) {
+                // Stock decrease: post Dr 5900 / Cr 1200 to reduce inventory
+                await supabase.rpc('create_stock_reduction', {
+                  p_product_id: productId,
+                  p_warehouse_id: warehouseId,
+                  p_quantity: Math.abs(diff),
+                  p_unit_cost: Number(form.cost_price) || 0,
+                  p_reference_type: 'stock_adjustment',
+                  p_reference_id: productId,
+                  p_notes: 'Stock decrease adjustment',
+                });
               }
             }
           }
@@ -1708,6 +1719,34 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
                 p_batch_type: 'adjustment',
                 p_reference_type: 'import_update',
                 p_notes: 'Stock updated from import',
+              });
+            } else if (currentStock < existingQty) {
+              // Stock decrease from import: post Dr 5900 / Cr 1200
+              const reduceQty = existingQty - currentStock;
+              await supabase.from('inventory_items')
+                .update({ quantity_on_hand: currentStock })
+                .eq('product_id', productId)
+                .eq('warehouse_id', defaultWarehouse);
+
+              await supabase.from('stock_movements').insert({
+                tenant_id: '00000000-0000-0000-0000-000000000001',
+                product_id: productId,
+                warehouse_id: defaultWarehouse,
+                movement_type: 'adjustment',
+                quantity: -reduceQty,
+                unit_cost: Number(firstRow['Cost Price'] || 0),
+                reference_type: 'import_update',
+                notes: 'Stock decreased from import',
+              });
+
+              await supabase.rpc('create_stock_reduction', {
+                p_product_id: productId,
+                p_warehouse_id: defaultWarehouse,
+                p_quantity: reduceQty,
+                p_unit_cost: Number(firstRow['Cost Price'] || 0),
+                p_reference_type: 'import_update',
+                p_reference_id: productId,
+                p_notes: 'Stock decreased from import',
               });
             }
           } else {
