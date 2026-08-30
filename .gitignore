@@ -34,3 +34,27 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Debug/diagnostic scripts (one-time use)
+scripts/check_*.js
+scripts/investigate_*.js
+scripts/verify_*.js
+scripts/deploy_*.js
+scripts/compare_*.js
+scripts/deep_*.js
+scripts/fix_*.js
+scripts/fast_*.js
+scripts/whats_*.js
+scripts/chunked_*.js
+scripts/backfill_*.js
+scripts/check_*.sql
+
+# Intermediate migration files (superseded)
+supabase/migrations/20260830020000_deploy_fifo_system.sql
+supabase/migrations/20260830030000_fix_fifo_consume_function.sql
+
+# Supabase temp files
+supabase/.temp/
+
+# Backup files
+supabase/migrations/*.backup
