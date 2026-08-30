@@ -1221,6 +1221,12 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
   const [form, setForm] = useState({ amount: receivable.outstanding_balance, bad_debt_amount: 0, payment_date: new Date().toISOString().split('T')[0], payment_method: 'cash', account_id: '', reference_number: '', notes: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+
+  useEffect(() => {
+    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
+      .then(({ data }) => { if (data && data.length > 0) setPaymentMethods(data); });
+  }, []);
 
   const manualReceivableAccount = accounts.find(a => a.code === '1300');
   const badDebtAccount = accounts.find(a => a.code === '5600');
@@ -1370,10 +1376,16 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
             <div>
               <label className="block text-xs font-medium mb-1">Method</label>
               <select value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
-                <option value="cash">Cash</option>
-                <option value="bank_transfer">Bank Transfer</option>
-                <option value="card">Card</option>
-                <option value="cheque">Cheque</option>
+                {paymentMethods.length > 0 ? (
+                  paymentMethods.map(pm => <option key={pm.code} value={pm.code}>{pm.name}</option>)
+                ) : (
+                  <>
+                    <option value="cash">Cash</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                    <option value="card">Card</option>
+                    <option value="cheque">Cheque</option>
+                  </>
+                )}
               </select>
             </div>
             <div>
@@ -1403,6 +1415,12 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
   const [form, setForm] = useState({ amount: payable.outstanding_balance, payment_date: new Date().toISOString().split('T')[0], payment_method: 'cash', account_id: '', reference_number: '', notes: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+
+  useEffect(() => {
+    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
+      .then(({ data }) => { if (data && data.length > 0) setPaymentMethods(data); });
+  }, []);
 
   const apAccount = accounts.find(a => a.code === '2000');
   const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank);
@@ -1491,10 +1509,16 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
             <div>
               <label className="block text-xs font-medium mb-1">Method</label>
               <select value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm">
-                <option value="cash">Cash</option>
-                <option value="bank_transfer">Bank Transfer</option>
-                <option value="card">Card</option>
-                <option value="cheque">Cheque</option>
+                {paymentMethods.length > 0 ? (
+                  paymentMethods.map(pm => <option key={pm.code} value={pm.code}>{pm.name}</option>)
+                ) : (
+                  <>
+                    <option value="cash">Cash</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                    <option value="card">Card</option>
+                    <option value="cheque">Cheque</option>
+                  </>
+                )}
               </select>
             </div>
             <div>

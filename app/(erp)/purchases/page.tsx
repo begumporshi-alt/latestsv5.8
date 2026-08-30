@@ -1252,6 +1252,12 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
     notes: '',
   });
   const [saving, setSaving] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+
+  useEffect(() => {
+    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
+      .then(({ data }) => { if (data && data.length > 0) setPaymentMethods(data); });
+  }, []);
   const [error, setError] = useState('');
 
   async function handleSubmit(e: React.FormEvent) {
@@ -1327,13 +1333,18 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
           <div>
             <label className="block text-xs font-medium mb-1">Payment Method *</label>
             <select required value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value as PaymentMethod })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
-              <option value="bank_transfer">Bank Transfer</option>
-              <option value="cash">Cash</option>
-              <option value="bkash">bKash</option>
-              <option value="nagad">Nagad</option>
-              <option value="rocket">Rocket</option>
-              <option value="card">Card</option>
-              <option value="cheque">Cheque</option>
+              {paymentMethods.length > 0 ? (
+                paymentMethods.map(pm => <option key={pm.code} value={pm.code}>{pm.name}</option>)
+              ) : (
+                <>
+                  <option value="bank_transfer">Bank Transfer</option>
+                  <option value="cash">Cash</option>
+                  <option value="bkash">bKash</option>
+                  <option value="nagad">Nagad</option>
+                  <option value="card">Card</option>
+                  <option value="cheque">Cheque</option>
+                </>
+              )}
             </select>
           </div>
 
