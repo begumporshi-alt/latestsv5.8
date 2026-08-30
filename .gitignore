@@ -58,3 +58,9 @@ supabase/.temp/
 
 # Backup files
 supabase/migrations/*.backup
+
+# Mimosa internal tooling
+.mimosa/
+
+# Any remaining debug scripts
+scripts/fifo_*.js
