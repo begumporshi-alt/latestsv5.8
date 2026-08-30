@@ -197,7 +197,7 @@ export default function JournalPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<JournalEntry | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [showDuplicatesOnly, setShowDuplicatesOnly] = useState(false);
+
 
   useEffect(() => { loadData(); }, [period]);
 
@@ -264,37 +264,7 @@ export default function JournalPage() {
     return true;
   });
 
-  // Detect true duplicates: same reference_type + reference_id + same description category
-  // It's normal for one invoice to have both "Accounts Receivable" and "COGS" entries.
-  // A true duplicate is when the same entry type appears more than once for the same reference.
-  const duplicateKeys = new Set<string>();
-  const entryGroups = new Map<string, number>();
-  entries.forEach(e => {
-    if (e.reference_id && e.reference_type) {
-      // Extract the entry category from the description (e.g., "COGS", "Accounts Receivable", "Payment")
-      const category = e.description?.split(' - ')[0]?.trim() || e.description?.split(' ')[0]?.trim() || 'unknown';
-      const key = `${e.reference_type}:${e.reference_id}:${category}`;
-      entryGroups.set(key, (entryGroups.get(key) || 0) + 1);
-    }
-  });
-  // Only flag entries where the same category appears more than once for the same reference
-  entryGroups.forEach((count, key) => {
-    if (count > 1) duplicateKeys.add(key);
-  });
-  const duplicateCount = entries.filter(e => {
-    if (!e.reference_id || !e.reference_type) return false;
-    const category = e.description?.split(' - ')[0]?.trim() || e.description?.split(' ')[0]?.trim() || 'unknown';
-    return duplicateKeys.has(`${e.reference_type}:${e.reference_id}:${category}`);
-  }).length;
-
-  const displayEntries = showDuplicatesOnly
-    ? filtered.filter(e => {
-        if (!e.reference_id || !e.reference_type) return false;
-        const category = e.description?.split(' - ')[0]?.trim() || e.description?.split(' ')[0]?.trim() || 'unknown';
-        return duplicateKeys.has(`${e.reference_type}:${e.reference_id}:${category}`);
-      })
-    : filtered;
-  const pagedEntries = displayEntries.slice((page - 1) * pageSize, page * pageSize);
+  const pagedEntries = filtered.slice((page - 1) * pageSize, page * pageSize);
 
   const autoCount = entries.filter(e => e.reference_type !== 'manual').length;
   const manualCount = entries.filter(e => e.reference_type === 'manual').length;
@@ -405,15 +375,6 @@ export default function JournalPage() {
             </button>
           ))}
           <span className="ml-auto text-xs text-muted-foreground self-center">{filtered.length} entries</span>
-          {duplicateCount > 0 && (
-            <button
-              onClick={() => { setShowDuplicatesOnly(!showDuplicatesOnly); setPage(1); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${showDuplicatesOnly ? 'bg-red-600 text-white' : 'bg-red-50 text-red-600 hover:bg-red-100'}`}
-            >
-              <AlertTriangle className="w-3 h-3" />
-              {showDuplicatesOnly ? 'Showing Duplicates' : `${duplicateCount} Duplicates`}
-            </button>
-          )}
         </div>
       </div>
 
@@ -450,16 +411,11 @@ export default function JournalPage() {
                   </p>
                 </td>
               </tr>
-            ) : (
-              pagedEntries.map((entry) => (
+            ) : (                pagedEntries.map((entry) => (
                 <JournalEntryRow
                   key={entry.id}
                   entry={entry}
                   accounts={accounts}
-                  isDuplicate={!!(entry.reference_id && entry.reference_type && (() => {
-                    const category = entry.description?.split(' - ')[0]?.trim() || entry.description?.split(' ')[0]?.trim() || 'unknown';
-                    return duplicateKeys.has(`${entry.reference_type}:${entry.reference_id}:${category}`);
-                  })())}
                   isExpanded={expandedId === entry.id}
                   onToggle={() => toggleExpand(entry.id)}
                   onEdit={() => setEditingEntry(entry)}
@@ -472,7 +428,7 @@ export default function JournalPage() {
         <AppPagination
           page={page}
           pageSize={pageSize}
-          total={displayEntries.length}
+          total={filtered.length}
           onPageChange={setPage}
           onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
         />
@@ -506,10 +462,9 @@ export default function JournalPage() {
   );
 }
 
-function JournalEntryRow({ entry, accounts, isDuplicate, isExpanded, onToggle, onEdit, onDelete }: {
+function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDelete }: {
   entry: JournalEntry;
   accounts: Account[];
-  isDuplicate?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   onEdit: () => void;
@@ -541,13 +496,8 @@ function JournalEntryRow({ entry, accounts, isDuplicate, isExpanded, onToggle, o
             {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
           </button>
         </td>
-        <td className="px-4 py-3 text-sm font-mono font-semibold text-blue-600 flex items-center gap-1.5">
+        <td className="px-4 py-3 text-sm font-mono font-semibold text-blue-600">
           {entry.entry_number}
-          {isDuplicate && (
-            <span title="Duplicate entry — same reference has multiple journal entries" className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-red-50 text-red-600 border border-red-200">
-              <AlertTriangle className="w-2.5 h-2.5" />DUP
-            </span>
-          )}
         </td>
         <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.entry_date)}</td>
         <td className="px-4 py-3 text-sm text-foreground max-w-xs truncate">{entry.description}</td>
