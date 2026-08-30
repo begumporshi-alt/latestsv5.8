@@ -1,0 +1,597 @@
+/*
+# Fix: Double stock restoration + missing COGS JE on invoice edit
+
+## Problem 1: Double Stock Restoration
+
+When editing an invoice, BOTH `edit_invoice` STEP 1b AND `trg_restore_stock_on_invoice_item_delete`
+restore stock simultaneously:
+
+- STEP 1b creates return_in movements with notes "Stock restoration - invoice edited"
+- DELETE trigger creates return_in movements with notes "Stock restoration - invoice item deleted"
+
+Result: Stock is restored TWICE, then re-deducted once. Net effect is +1 instead of correct value.
+
+## Problem 2: Missing COGS JE After Edit
+
+The `edit_invoice` function:
+- STEP 3: Deletes old COGS JEs
+- STEP 6: Inserts new items → INSERT triggers consume FIFO
+- STEP 8: Updates status to 'paid' → `invoice_status_cogs_trigger` fires
+
+But the status_cogs_trigger checks `IF FOUND THEN CONTINUE` for FIFO consumption.
+Since INSERT triggers already consumed FIFO, the status_cogs_trigger skips and never posts COGS JE.
+
+## Fixes
+
+1. Add session variable `app.edit_invoice_active` to prevent DELETE trigger from double-restoring
+2. Modify `invoice_status_cogs_trigger` to always post COGS JE on draft→non-draft transition
+3. Post COGS JE explicitly in edit_invoice after STEP 6 for new items
+*/
+
+-- ============================================================
+-- FIX 1: Add session variable check to DELETE trigger
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION restore_stock_on_invoice_item_delete()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_invoice_record RECORD;
+  v_target_wh uuid;
+  v_qty_to_restore numeric;
+  v_inv_id uuid;
+  v_product_cost numeric;
+  v_existing_movement RECORD;
+BEGIN
+  -- Skip if called from within edit_invoice (it handles stock restoration itself)
+  IF current_setting('app.edit_invoice_active', true) = 'true' THEN
+    RETURN OLD;
+  END IF;
+
+  -- Get the invoice record
+  SELECT * INTO v_invoice_record FROM invoices WHERE id = OLD.invoice_id;
+  IF NOT FOUND THEN
+    RETURN OLD;
+  END IF;
+
+  -- Skip if invoice is cancelled
+  IF v_invoice_record.status = 'cancelled' THEN
+    RETURN OLD;
+  END IF;
+
+  -- Find the original sale movement for this specific invoice_item
+  SELECT * INTO v_existing_movement
+  FROM stock_movements
+  WHERE reference_id = OLD.invoice_id
+    AND reference_type = 'invoice'
+    AND product_id = OLD.product_id
+    AND movement_type = 'sale'
+    AND notes LIKE '%invoice_item:' || OLD.id::text || '%'
+  LIMIT 1;
+
+  -- If no sale movement found, nothing to restore
+  IF NOT FOUND THEN
+    RETURN OLD;
+  END IF;
+
+  -- Determine quantity to restore
+  v_qty_to_restore := ABS(v_existing_movement.quantity);
+
+  -- Use the warehouse from the original movement
+  v_target_wh := v_existing_movement.warehouse_id;
+
+  IF v_target_wh IS NULL THEN
+    v_target_wh := OLD.warehouse_id;
+  END IF;
+
+  IF v_target_wh IS NULL THEN
+    SELECT id INTO v_target_wh FROM warehouses WHERE is_default = true AND is_active = true LIMIT 1;
+  END IF;
+
+  IF v_target_wh IS NULL THEN
+    RETURN OLD;
+  END IF;
+
+  -- Get current inventory in the target warehouse
+  SELECT id INTO v_inv_id
+  FROM inventory_items
+  WHERE product_id = OLD.product_id AND warehouse_id = v_target_wh
+  FOR UPDATE;
+
+  IF v_inv_id IS NOT NULL THEN
+    UPDATE inventory_items
+    SET quantity_on_hand = quantity_on_hand + v_qty_to_restore,
+        updated_at = now()
+    WHERE id = v_inv_id;
+  ELSE
+    INSERT INTO inventory_items (product_id, warehouse_id, quantity_on_hand, quantity_reserved, quantity_incoming)
+    VALUES (OLD.product_id, v_target_wh, v_qty_to_restore, 0, 0);
+  END IF;
+
+  -- Get product cost
+  SELECT cost_price INTO v_product_cost FROM products WHERE id = OLD.product_id;
+
+  -- Record the reversal movement
+  INSERT INTO stock_movements (
+    product_id, warehouse_id, movement_type, quantity,
+    unit_cost, reference_type, reference_id, reference_number, notes
+  ) VALUES (
+    OLD.product_id, v_target_wh, 'return_in', v_qty_to_restore,
+    COALESCE(v_product_cost, 0), 'invoice', OLD.invoice_id,
+    v_invoice_record.invoice_number,
+    'Stock restoration - invoice item deleted - invoice_item:' || OLD.id::text
+  );
+
+  -- Delete the original sale movement
+  DELETE FROM stock_movements WHERE id = v_existing_movement.id;
+
+  RETURN OLD;
+END;
+$$;
+
+-- ============================================================
+-- FIX 2: Add session variable SET/RESET in edit_invoice
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION edit_invoice(
+  p_invoice_id uuid,
+  p_new_data json,
+  p_edited_by text DEFAULT NULL,
+  p_reason text DEFAULT NULL
+)
+RETURNS json
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_invoice RECORD;
+  v_ar_account uuid;
+  v_revenue_account uuid;
+  v_cogs_account uuid;
+  v_inventory_account uuid;
+  v_cash_account uuid;
+  v_default_wh uuid;
+  v_item RECORD;
+  v_qty numeric;
+  v_cost numeric;
+  v_payment RECORD;
+  v_je_id uuid;
+  v_new_items json;
+  v_new_item json;
+  v_new_subtotal numeric := 0;
+  v_new_cart_discount_percent numeric := 0;
+  v_new_extra_discount numeric := 0;
+  v_cart_discount_amount numeric := 0;
+  v_new_total numeric := 0;
+  v_new_customer uuid;
+  v_new_date date;
+  v_new_due_date date;
+  v_new_notes text;
+  v_new_reference text;
+  v_new_payment_term text := 'full';
+  v_new_payment_method text := 'cash';
+  v_new_partial_amount numeric := 0;
+  v_has_deliveries boolean;
+  v_has_returns boolean;
+  v_old_snapshot json;
+  v_new_snapshot json;
+  v_i integer := 0;
+  v_old_payments json;
+  v_old_payment_term text;
+  v_new_payment_id uuid;
+  v_delivery RECORD;
+  v_product RECORD;
+  v_cost_per_unit numeric;
+  v_total_cost_added numeric;
+  v_target_wh uuid;
+BEGIN
+  SELECT * INTO v_invoice FROM invoices WHERE id = p_invoice_id;
+  IF NOT FOUND THEN
+    RETURN json_build_object('success', false, 'error', 'Invoice not found');
+  END IF;
+
+  IF v_invoice.status = 'cancelled' THEN
+    RETURN json_build_object('success', false, 'error', 'Cannot edit a cancelled invoice');
+  END IF;
+
+  SELECT EXISTS(SELECT 1 FROM deliveries WHERE invoice_id = p_invoice_id AND status = 'delivered') INTO v_has_deliveries;
+  IF v_has_deliveries THEN
+    RETURN json_build_object('success', false, 'error', 'Cannot edit an invoice that has been delivered. Please process a return instead.');
+  END IF;
+
+  SELECT EXISTS(SELECT 1 FROM sales_returns WHERE invoice_id = p_invoice_id AND status = 'completed') INTO v_has_returns;
+  IF v_has_returns THEN
+    RETURN json_build_object('success', false, 'error', 'Cannot edit an invoice with completed sales returns. Please process additional returns instead.');
+  END IF;
+
+  v_new_customer := (p_new_data->>'customer_id')::uuid;
+  v_new_date := COALESCE((p_new_data->>'invoice_date')::date, CURRENT_DATE);
+  v_new_due_date := CASE WHEN p_new_data->>'due_date' IS NULL OR p_new_data->>'due_date' = '' THEN NULL ELSE (p_new_data->>'due_date')::date END;
+  v_new_notes := p_new_data->>'notes';
+  v_new_reference := p_new_data->>'reference';
+  v_new_items := p_new_data->'items';
+  v_new_cart_discount_percent := COALESCE((p_new_data->>'cart_discount_percent')::numeric, 0);
+  v_new_extra_discount := COALESCE((p_new_data->>'extra_discount')::numeric, 0);
+  v_new_payment_term := COALESCE(p_new_data->>'payment_term', 'full');
+  v_new_payment_method := COALESCE(p_new_data->>'payment_method', 'cash');
+  v_new_partial_amount := COALESCE((p_new_data->>'partial_amount')::numeric, 0);
+
+  FOR v_i IN SELECT generate_series(0, json_array_length(v_new_items) - 1) LOOP
+    v_new_item := v_new_items->v_i;
+    v_new_subtotal := v_new_subtotal + (v_new_item->>'quantity')::numeric * (v_new_item->>'unit_price')::numeric * (1 - COALESCE((v_new_item->>'discount_percent')::numeric, 0) / 100);
+  END LOOP;
+
+  v_cart_discount_amount := (v_new_subtotal * v_new_cart_discount_percent) / 100;
+  v_new_total := GREATEST(0, v_new_subtotal - v_cart_discount_amount - v_new_extra_discount);
+
+  IF v_invoice.amount_paid >= v_invoice.total_amount AND v_invoice.total_amount > 0 THEN
+    v_old_payment_term := 'full';
+  ELSIF v_invoice.amount_paid > 0 THEN
+    v_old_payment_term := 'partial';
+  ELSE
+    v_old_payment_term := 'credit';
+  END IF;
+
+  SELECT id INTO v_ar_account FROM accounts WHERE code = '1100' LIMIT 1;
+  SELECT id INTO v_revenue_account FROM accounts WHERE code = '4000' LIMIT 1;
+  SELECT id INTO v_cogs_account FROM accounts WHERE code = '5000' LIMIT 1;
+  SELECT id INTO v_inventory_account FROM accounts WHERE code = '1200' LIMIT 1;
+  SELECT id INTO v_cash_account FROM accounts WHERE code = '1000' LIMIT 1;
+
+  SELECT id INTO v_default_wh FROM warehouses WHERE is_default = true AND is_active = true LIMIT 1;
+  IF v_default_wh IS NULL THEN
+    SELECT id INTO v_default_wh FROM warehouses WHERE is_active = true LIMIT 1;
+  END IF;
+
+  SELECT COALESCE(json_agg(json_build_object('id', p.id, 'payment_method', p.payment_method, 'amount', p.amount, 'payment_type', p.payment_type, 'payment_date', p.payment_date)), '[]'::json)
+  INTO v_old_payments
+  FROM payments p WHERE p.reference_type = 'invoice' AND p.reference_id = p_invoice_id;
+
+  SELECT json_build_object(
+    'customer_id', v_invoice.customer_id, 'invoice_date', v_invoice.invoice_date, 'due_date', v_invoice.due_date,
+    'notes', v_invoice.notes, 'subtotal', v_invoice.subtotal,
+    'cart_discount_percent', COALESCE(v_invoice.cart_discount_percent, 0),
+    'extra_discount', COALESCE(v_invoice.extra_discount, 0),
+    'total_amount', v_invoice.total_amount, 'amount_paid', v_invoice.amount_paid, 'status', v_invoice.status,
+    'payment_term', v_old_payment_term, 'payments', v_old_payments,
+    'items', (SELECT json_agg(json_build_object('product_id', ii.product_id, 'quantity', ii.quantity, 'unit_price', ii.unit_price, 'discount_percent', ii.discount_percent, 'subtotal', ii.subtotal, 'unit_name', ii.unit_name, 'base_quantity', ii.base_quantity, 'warehouse_id', ii.warehouse_id)) FROM invoice_items ii WHERE ii.invoice_id = p_invoice_id)
+  ) INTO v_old_snapshot;
+
+  -- STEP 1: FIFO - Restore batch quantities for old items FIRST
+  FOR v_item IN SELECT * FROM invoice_items WHERE invoice_id = p_invoice_id LOOP
+    PERFORM restore_fifo(v_item.id);
+  END LOOP;
+
+  -- STEP 1b: Restore stock for old items
+  FOR v_item IN SELECT * FROM invoice_items WHERE invoice_id = p_invoice_id LOOP
+    v_qty := COALESCE(v_item.base_quantity, v_item.quantity);
+    v_target_wh := COALESCE(v_item.warehouse_id, v_default_wh);
+    IF v_target_wh IS NOT NULL THEN
+      UPDATE inventory_items SET quantity_on_hand = quantity_on_hand + v_qty, updated_at = now()
+      WHERE product_id = v_item.product_id AND warehouse_id = v_target_wh;
+      IF NOT FOUND THEN
+        INSERT INTO inventory_items (product_id, warehouse_id, quantity_on_hand, quantity_reserved, quantity_incoming)
+        VALUES (v_item.product_id, v_target_wh, v_qty, 0, 0);
+      END IF;
+      INSERT INTO stock_movements (product_id, warehouse_id, movement_type, quantity, unit_cost, reference_type, reference_id, reference_number, notes)
+      VALUES (v_item.product_id, v_target_wh, 'return_in', v_qty, COALESCE(v_item.cost_price, 0), 'invoice_edit', p_invoice_id, v_invoice.invoice_number, 'Stock restoration - invoice edited');
+      -- Also clean up old sale movements for this product/invoice
+      DELETE FROM stock_movements
+      WHERE reference_type = 'invoice'
+        AND reference_id = p_invoice_id
+        AND product_id = v_item.product_id
+        AND movement_type = 'sale';
+    END IF;
+  END LOOP;
+
+  -- STEP 2: Reverse AR + Revenue journal entry
+  IF v_ar_account IS NOT NULL AND v_revenue_account IS NOT NULL AND v_invoice.total_amount > 0 THEN
+    PERFORM post_journal_entry(
+      'REVERSAL - AR - Invoice ' || v_invoice.invoice_number || ' EDIT', COALESCE(v_invoice.invoice_date, CURRENT_DATE), 'invoice_edit', p_invoice_id,
+      json_build_array(
+        json_build_object('account_id', v_ar_account, 'debit', 0, 'credit', v_invoice.total_amount, 'description', 'Reverse AR for edited invoice ' || v_invoice.invoice_number),
+        json_build_object('account_id', v_revenue_account, 'debit', v_invoice.total_amount, 'credit', 0, 'description', 'Reverse revenue for edited invoice ' || v_invoice.invoice_number)
+      )::json, v_invoice.customer_id
+    );
+  END IF;
+
+  -- STEP 3: Delete original COGS journal entries and roll back account balances
+  FOR v_je_id IN
+    SELECT je.id FROM journal_entries je
+    WHERE je.reference_type = 'invoice'
+      AND je.reference_id = p_invoice_id
+      AND je.description LIKE 'COGS%'
+  LOOP
+    UPDATE accounts a SET balance = balance - (
+      CASE WHEN a.account_type IN ('asset', 'expense') THEN COALESCE(jl.debit, 0) - COALESCE(jl.credit, 0)
+      ELSE COALESCE(jl.credit, 0) - COALESCE(jl.debit, 0) END
+    )
+    FROM journal_lines jl WHERE jl.journal_entry_id = v_je_id AND a.id = jl.account_id;
+    DELETE FROM journal_lines WHERE journal_entry_id = v_je_id;
+    DELETE FROM journal_entries WHERE id = v_je_id;
+  END LOOP;
+
+  -- STEP 4: Reverse original payments AND mark them as reversed
+  FOR v_payment IN SELECT * FROM payments WHERE reference_type = 'invoice' AND reference_id = p_invoice_id AND is_reversed = false LOOP
+    INSERT INTO payments (payment_number, payment_type, payment_method, amount, payment_date, reference_type, reference_id, reference_number, notes, payment_for)
+    VALUES ('REV-' || COALESCE(v_payment.payment_number, 'PAY'), CASE WHEN v_payment.payment_type = 'received' THEN 'refund' ELSE 'payment' END, v_payment.payment_method, v_payment.amount, CURRENT_DATE, 'invoice_edit', p_invoice_id, v_invoice.invoice_number, 'Reversal payment for edited invoice ' || v_invoice.invoice_number, 'reversal_payment');
+    UPDATE payments SET is_reversed = true WHERE id = v_payment.id;
+  END LOOP;
+
+  -- Delete original payment journal entries and roll back account balances
+  FOR v_je_id IN
+    SELECT je.id FROM journal_entries je
+    WHERE je.reference_type = 'payment'
+      AND je.reference_id IN (SELECT id FROM payments WHERE reference_type = 'invoice' AND reference_id = p_invoice_id)
+  LOOP
+    UPDATE accounts a SET balance = balance - (
+      CASE WHEN a.account_type IN ('asset', 'expense') THEN COALESCE(jl.debit, 0) - COALESCE(jl.credit, 0)
+      ELSE COALESCE(jl.credit, 0) - COALESCE(jl.debit, 0) END
+    )
+    FROM journal_lines jl WHERE jl.journal_entry_id = v_je_id AND a.id = jl.account_id;
+    DELETE FROM journal_lines WHERE journal_entry_id = v_je_id;
+    DELETE FROM journal_entries WHERE id = v_je_id;
+  END LOOP;
+
+  -- STEP 5: Update invoice header
+  UPDATE invoices
+  SET customer_id = v_new_customer, invoice_date = v_new_date, due_date = v_new_due_date, notes = v_new_notes,
+      reference = v_new_reference,
+      subtotal = v_new_subtotal, cart_discount_percent = v_new_cart_discount_percent, extra_discount = v_new_extra_discount,
+      discount_amount = v_cart_discount_amount, total_amount = v_new_total, amount_paid = 0,
+      status = 'draft', edit_count = COALESCE(edit_count, 0) + 1, updated_at = now()
+  WHERE id = p_invoice_id;
+
+  -- STEP 5b: Set session flag to prevent DELETE trigger from double-restoring stock
+  PERFORM set_config('app.edit_invoice_active', 'true', true);
+
+  -- STEP 6: Re-insert items
+  DELETE FROM invoice_items WHERE invoice_id = p_invoice_id;
+  FOR v_i IN SELECT generate_series(0, json_array_length(v_new_items) - 1) LOOP
+    v_new_item := v_new_items->v_i;
+    INSERT INTO invoice_items (invoice_id, product_id, quantity, unit_price, cost_price, discount_percent, tax_rate, subtotal, unit_name, unit_conversion_factor, base_quantity, warehouse_id, sort_order)
+    VALUES (
+      p_invoice_id,
+      (v_new_item->>'product_id')::uuid,
+      (v_new_item->>'quantity')::numeric,
+      (v_new_item->>'unit_price')::numeric,
+      COALESCE((v_new_item->>'cost_price')::numeric, 0),
+      COALESCE((v_new_item->>'discount_percent')::numeric, 0),
+      0,
+      (v_new_item->>'quantity')::numeric * (v_new_item->>'unit_price')::numeric * (1 - COALESCE((v_new_item->>'discount_percent')::numeric, 0) / 100),
+      NULLIF(v_new_item->>'unit_name', ''),
+      NULLIF(v_new_item->>'unit_conversion_factor', '')::numeric,
+      COALESCE((v_new_item->>'base_quantity')::numeric, (v_new_item->>'quantity')::numeric),
+      NULLIF(v_new_item->>'warehouse_id', '')::uuid,
+      v_i
+    );
+  END LOOP;
+
+  -- Reset session flag
+  PERFORM set_config('app.edit_invoice_active', 'false', true);
+
+  -- STEP 6a: Re-record cost price history
+  DELETE FROM cost_price_history WHERE invoice_id = p_invoice_id;
+  FOR v_i IN SELECT generate_series(0, json_array_length(v_new_items) - 1) LOOP
+    v_new_item := v_new_items->v_i;
+    SELECT name, sku INTO v_product FROM products WHERE id = (v_new_item->>'product_id')::uuid;
+    v_cost_per_unit := COALESCE((v_new_item->>'cost_price')::numeric, 0);
+    v_qty := (v_new_item->>'quantity')::numeric;
+    v_total_cost_added := v_cost_per_unit * v_qty;
+    INSERT INTO cost_price_history (
+      product_id, product_name, product_sku, invoice_id, unit, quantity,
+      unit_price, cost_price_per_qty, cost_price_for_added_qty,
+      total_cost_price_single, total_cost_price_added
+    ) VALUES (
+      (v_new_item->>'product_id')::uuid,
+      COALESCE(v_product.name, 'Unknown'),
+      COALESCE(v_product.sku, ''),
+      p_invoice_id,
+      COALESCE(NULLIF(v_new_item->>'unit_name', ''), 'pcs'),
+      v_qty,
+      (v_new_item->>'unit_price')::numeric,
+      v_cost_per_unit,
+      v_total_cost_added,
+      v_cost_per_unit,
+      v_total_cost_added
+    );
+  END LOOP;
+
+  -- STEP 6b: Sync delivery_items
+  FOR v_delivery IN SELECT id FROM deliveries WHERE invoice_id = p_invoice_id AND status != 'delivered' LOOP
+    DELETE FROM delivery_items WHERE delivery_id = v_delivery.id;
+    FOR v_i IN SELECT generate_series(0, json_array_length(v_new_items) - 1) LOOP
+      v_new_item := v_new_items->v_i;
+      INSERT INTO delivery_items (delivery_id, product_id, quantity, delivered_quantity, unit_name, base_quantity)
+      VALUES (
+        v_delivery.id,
+        (v_new_item->>'product_id')::uuid,
+        (v_new_item->>'quantity')::numeric,
+        0,
+        NULLIF(v_new_item->>'unit_name', ''),
+        COALESCE((v_new_item->>'base_quantity')::numeric, (v_new_item->>'quantity')::numeric)
+      );
+    END LOOP;
+  END LOOP;
+
+  -- STEP 7: Re-post AR + Revenue for new total
+  IF v_ar_account IS NOT NULL AND v_revenue_account IS NOT NULL AND v_new_total > 0 THEN
+    PERFORM post_journal_entry(
+      'AR - Invoice ' || v_invoice.invoice_number || ' EDITED', v_new_date, 'invoice', p_invoice_id,
+      json_build_array(
+        json_build_object('account_id', v_ar_account, 'debit', v_new_total, 'credit', 0, 'description', 'AR for edited invoice ' || v_invoice.invoice_number),
+        json_build_object('account_id', v_revenue_account, 'debit', 0, 'credit', v_new_total, 'description', 'Revenue for edited invoice ' || v_invoice.invoice_number)
+      )::json, v_new_customer
+    );
+  END IF;
+
+  -- STEP 7b: Post COGS journal entry for new items
+  -- (The status_cogs_trigger may skip if FIFO was already consumed by INSERT triggers)
+  IF v_cogs_account IS NOT NULL AND v_inventory_account IS NOT NULL THEN
+    FOR v_item IN SELECT ii.*, p.name as product_name, p.sku FROM invoice_items ii JOIN products p ON ii.product_id = p.id WHERE ii.invoice_id = p_invoice_id ORDER BY ii.sort_order LOOP
+      v_qty := v_item.quantity;
+      IF v_qty <= 0 THEN CONTINUE; END IF;
+
+      -- Check if COGS JE already exists for this item (posted by status_cogs_trigger)
+      PERFORM 1 FROM journal_entries
+      WHERE reference_type = 'invoice' AND reference_id = p_invoice_id
+        AND description LIKE 'COGS%'
+        AND created_at > (now() - interval '5 seconds');
+      IF FOUND THEN CONTINUE; END IF;
+
+      -- Get FIFO cost from consumption records
+      v_cost := 0;
+      SELECT COALESCE(SUM(cogs_amount), 0) INTO v_cost
+      FROM invoice_item_batch_consumption WHERE invoice_item_id = v_item.id;
+
+      IF v_cost > 0 THEN
+        PERFORM post_journal_entry(
+          'COGS - ' || v_invoice.invoice_number,
+          COALESCE(v_new_date, CURRENT_DATE),
+          'invoice', p_invoice_id,
+          json_build_array(
+            json_build_object('account_id', v_cogs_account, 'debit', v_cost, 'credit', 0,
+              'description', 'COGS (FIFO): ' || v_item.product_name || ' x ' || v_qty),
+            json_build_object('account_id', v_inventory_account, 'debit', 0, 'credit', v_cost,
+              'description', 'Inventory released (FIFO): ' || v_item.product_name)
+          )::json, v_new_customer
+        );
+        -- Only post once for all items (aggregate)
+        EXIT;
+      END IF;
+    END LOOP;
+  END IF;
+
+  -- STEP 8: Apply new payment term
+  IF v_new_payment_term = 'credit' THEN
+    UPDATE invoices SET status = 'sent', amount_paid = 0 WHERE id = p_invoice_id;
+  ELSIF v_new_payment_term = 'partial' THEN
+    v_new_partial_amount := LEAST(v_new_partial_amount, v_new_total);
+    IF v_new_partial_amount > 0 THEN
+      INSERT INTO payments (payment_number, payment_type, payment_method, amount, payment_date, reference_type, reference_id, reference_number, notes, payment_for)
+      VALUES ('EDIT-' || v_invoice.invoice_number, 'received', v_new_payment_method, v_new_partial_amount, v_new_date, 'invoice', p_invoice_id, v_invoice.invoice_number, 'Partial payment for edited invoice ' || v_invoice.invoice_number, 'paid_invoice_pay')
+      RETURNING id INTO v_new_payment_id;
+      IF v_cash_account IS NOT NULL AND v_ar_account IS NOT NULL THEN
+        PERFORM post_journal_entry(
+          'Payment - Invoice ' || v_invoice.invoice_number || ' EDITED', v_new_date, 'payment', v_new_payment_id,
+          json_build_array(
+            json_build_object('account_id', v_cash_account, 'debit', v_new_partial_amount, 'credit', 0, 'description', 'Partial payment received for ' || v_invoice.invoice_number),
+            json_build_object('account_id', v_ar_account, 'debit', 0, 'credit', v_new_partial_amount, 'description', 'AR cleared for ' || v_invoice.invoice_number)
+          )::json, v_new_customer
+        );
+      END IF;
+      UPDATE invoices SET status = 'partially_paid', amount_paid = v_new_partial_amount WHERE id = p_invoice_id;
+    ELSE
+      UPDATE invoices SET status = 'sent', amount_paid = 0 WHERE id = p_invoice_id;
+    END IF;
+  ELSE
+    IF v_new_total > 0 THEN
+      INSERT INTO payments (payment_number, payment_type, payment_method, amount, payment_date, reference_type, reference_id, reference_number, notes, payment_for)
+      VALUES ('EDIT-' || v_invoice.invoice_number, 'received', v_new_payment_method, v_new_total, v_new_date, 'invoice', p_invoice_id, v_invoice.invoice_number, 'Payment for edited invoice ' || v_invoice.invoice_number, 'paid_invoice_pay')
+      RETURNING id INTO v_new_payment_id;
+      IF v_cash_account IS NOT NULL AND v_ar_account IS NOT NULL THEN
+        PERFORM post_journal_entry(
+          'Payment - Invoice ' || v_invoice.invoice_number || ' EDITED', v_new_date, 'payment', v_new_payment_id,
+          json_build_array(
+            json_build_object('account_id', v_cash_account, 'debit', v_new_total, 'credit', 0, 'description', 'Payment received for ' || v_invoice.invoice_number),
+            json_build_object('account_id', v_ar_account, 'debit', 0, 'credit', v_new_total, 'description', 'AR cleared for ' || v_invoice.invoice_number)
+          )::json, v_new_customer
+        );
+      END IF;
+      UPDATE invoices SET status = 'paid', amount_paid = v_new_total WHERE id = p_invoice_id;
+    ELSE
+      UPDATE invoices SET status = 'paid', amount_paid = 0 WHERE id = p_invoice_id;
+    END IF;
+  END IF;
+
+  -- STEP 9: Record edit history
+  SELECT json_build_object('customer_id', v_new_customer, 'invoice_date', v_new_date, 'due_date', v_new_due_date, 'notes', v_new_notes, 'reference', v_new_reference, 'subtotal', v_new_subtotal, 'cart_discount_percent', v_new_cart_discount_percent, 'extra_discount', v_new_extra_discount, 'total_amount', v_new_total, 'payment_term', v_new_payment_term, 'payment_method', v_new_payment_method, 'items', v_new_items) INTO v_new_snapshot;
+
+  INSERT INTO invoice_edit_history (invoice_id, invoice_number, edited_by_name, change_type, reason, snapshot_before, snapshot_after, old_value, new_value)
+  VALUES (p_invoice_id, v_invoice.invoice_number, p_edited_by, 'full_edit', p_reason, v_old_snapshot, v_new_snapshot, v_old_snapshot, v_new_snapshot);
+
+  -- STEP 10: Update customer outstanding_balance
+  IF v_invoice.customer_id IS NOT NULL THEN
+    UPDATE customers SET outstanding_balance = (SELECT COALESCE(SUM(balance_due), 0) FROM invoices WHERE customer_id = v_invoice.customer_id AND status IN ('sent', 'partially_paid', 'unpaid', 'overdue')), updated_at = now() WHERE id = v_invoice.customer_id;
+  END IF;
+  IF v_new_customer IS NOT NULL AND v_new_customer <> v_invoice.customer_id THEN
+    UPDATE customers SET outstanding_balance = (SELECT COALESCE(SUM(balance_due), 0) FROM invoices WHERE customer_id = v_new_customer AND status IN ('sent', 'partially_paid', 'unpaid', 'overdue')), updated_at = now() WHERE id = v_new_customer;
+  END IF;
+
+  RETURN json_build_object('success', true, 'invoice_id', p_invoice_id, 'old_total', v_invoice.total_amount, 'new_total', v_new_total);
+END;
+$$;
+
+-- ============================================================
+-- FIX 3: Update status_cogs_trigger to also post COGS JE
+-- even if FIFO was already consumed (for edit_invoice case)
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION invoice_status_cogs_trigger()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_cogs uuid;
+  v_inv uuid;
+  v_item RECORD;
+  v_wh uuid;
+  v_qty numeric;
+  v_amt decimal(15,2);
+  v_total_cogs decimal(15,2) := 0;
+  v_cogs_desc text;
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD.status = 'draft' AND NEW.status IN ('sent', 'partially_paid', 'paid') THEN
+    SELECT id INTO v_cogs FROM accounts WHERE code = '5000' LIMIT 1;
+    SELECT id INTO v_inv FROM accounts WHERE code = '1200' LIMIT 1;
+    IF v_cogs IS NULL OR v_inv IS NULL THEN RETURN NEW; END IF;
+
+    v_wh := COALESCE(NEW.warehouse_id, (SELECT id FROM warehouses WHERE is_default = true AND is_active = true LIMIT 1));
+
+    FOR v_item IN SELECT * FROM invoice_items WHERE invoice_id = NEW.id ORDER BY sort_order LOOP
+      v_qty := v_item.quantity;
+      IF v_qty <= 0 THEN CONTINUE; END IF;
+
+      -- Check if FIFO was already consumed (by INSERT triggers during edit_invoice)
+      PERFORM 1 FROM invoice_item_batch_consumption WHERE invoice_item_id = v_item.id;
+      IF FOUND THEN
+        -- FIFO already consumed, just get the cost
+        SELECT COALESCE(SUM(cogs_amount), 0) INTO v_amt
+        FROM invoice_item_batch_consumption WHERE invoice_item_id = v_item.id;
+        IF v_amt > 0 THEN
+          v_total_cogs := v_total_cogs + v_amt;
+        END IF;
+        CONTINUE;
+      END IF;
+
+      -- FIFO not consumed yet, consume it now
+      v_amt := consume_fifo(v_item.product_id, COALESCE(v_item.warehouse_id, v_wh), v_qty, v_item.id);
+      IF v_amt > 0 THEN
+        UPDATE invoice_items SET cost_price = v_amt / v_qty WHERE id = v_item.id;
+        v_total_cogs := v_total_cogs + v_amt;
+      END IF;
+    END LOOP;
+
+    -- Post COGS JE if any cost was calculated
+    IF v_total_cogs > 0 THEN
+      v_cogs_desc := 'COGS - ' || NEW.invoice_number || ' (' ||
+        (SELECT count(*) FROM invoice_items WHERE invoice_id = NEW.id) || ' items, total: ' || v_total_cogs || ')';
+
+      -- Check if COGS JE already exists (from edit_invoice STEP 7b or insert_cogs trigger)
+      PERFORM 1 FROM journal_entries
+      WHERE reference_type = 'invoice' AND reference_id = NEW.id AND description LIKE 'COGS%';
+      IF NOT FOUND THEN
+        PERFORM post_journal_entry(v_cogs_desc, COALESCE(NEW.invoice_date, CURRENT_DATE), 'invoice', NEW.id,
+          json_build_array(
+            json_build_object('account_id', v_cogs, 'debit', v_total_cogs, 'credit', 0, 'description', 'COGS (FIFO)'),
+            json_build_object('account_id', v_inv, 'debit', 0, 'credit', v_total_cogs, 'description', 'Inventory released (FIFO)')
+          )::json, NEW.customer_id);
+      END IF;
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
