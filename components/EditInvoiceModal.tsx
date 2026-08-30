@@ -30,6 +30,7 @@ interface EditItem {
   product_unit?: string;
   product_base_unit?: string;
   stock_qty: number | null;
+  warehouse_id?: string | null;
   quantity: number;
   unit_price: number;
   cost_price: number;
@@ -129,6 +130,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
         product_unit: product?.unit,
         product_base_unit: product?.base_unit,
         stock_qty: stock,
+        warehouse_id: item.warehouse_id || null,
         quantity: Number(item.quantity),
         unit_price: Number(item.unit_price),
         cost_price: Number(item.cost_price) || 0,
@@ -188,6 +190,12 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
       return;
     }
 
+    // Find best warehouse for this product (highest stock)
+    const invItems: any[] = product.inventory_items || [];
+    const bestWh = invItems
+      .filter((i: any) => Number(i.quantity_on_hand) > 0)
+      .sort((a: any, b: any) => Number(b.quantity_on_hand) - Number(a.quantity_on_hand))[0];
+
     setItems(prev => [...prev, {
       product_id: product.id,
       product_name: product.name,
@@ -195,6 +203,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
       product_unit: product.unit,
       product_base_unit: product.base_unit,
       stock_qty: stock,
+      warehouse_id: bestWh?.warehouse_id || null,
       quantity: 1,
       unit_price: unitPrice,
       cost_price: defaultUnit ? (defaultUnit.cost_price || (product.cost_price || 0) * (defaultUnit.conversion_factor || 1)) : (product.cost_price || 0),
@@ -269,6 +278,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
         unit_name: item.selected_unit?.unit_name || null,
         unit_conversion_factor: item.selected_unit?.conversion_factor?.toString() || null,
         base_quantity: item.base_quantity,
+        warehouse_id: item.warehouse_id || null,
         sort_order: idx,
       }));
 
