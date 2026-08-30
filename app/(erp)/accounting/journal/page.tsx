@@ -46,6 +46,7 @@ const refIcons: Record<string, React.ElementType> = {
   manual: FileText,
   opening_balance: Building2,
   receivable: User,
+  invoice_edit: RotateCcw,
 };
 
 const refLabels: Record<string, string> = {
@@ -59,6 +60,7 @@ const refLabels: Record<string, string> = {
   manual: 'Manual Entry',
   opening_balance: 'Opening Balance',
   receivable: 'Receivable',
+  invoice_edit: 'Invoice Edit Reversal',
 };
 
 const refColors: Record<string, string> = {
@@ -72,6 +74,7 @@ const refColors: Record<string, string> = {
   manual: 'bg-gray-50 text-gray-600',
   opening_balance: 'bg-purple-50 text-purple-600',
   receivable: 'bg-indigo-50 text-indigo-600',
+  invoice_edit: 'bg-rose-50 text-rose-600',
 };
 
 // Plain-English templates for non-accountants
@@ -365,6 +368,7 @@ export default function JournalPage() {
             { value: 'purchase_cancellation', label: 'PO Cancellation' },
             { value: 'manual', label: 'Manual' },
             { value: 'opening_balance', label: 'Opening' },
+            { value: 'invoice_edit', label: 'Invoice Edits' },
           ].map(f => (
             <button
               key={f.value}
@@ -475,18 +479,38 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
   const Icon = refIcons[refType] || FileText;
   const colorClass = refColors[refType] || 'bg-gray-50 text-gray-600';
   const isAuto = entry.reference_type !== 'manual' && entry.reference_type !== null;
+  const isReversal = entry.description?.toLowerCase().includes('reverse') || entry.reference_type === 'invoice_edit';
+  const [pairedEntry, setPairedEntry] = useState<JournalEntry | null>(null);
+  const [impactPreview, setImpactPreview] = useState<{ account: string; current: number; proposed: number; change: number }[]>([]);
 
   useEffect(() => {
-    if (isExpanded && !lines && entry.lines) setLines(entry.lines);
-    else if (isExpanded && !lines) {
-      supabase
-        .from('journal_lines')
-        .select('id, account_id, description, debit, credit, account:accounts(code, name, account_type)')
-        .eq('journal_entry_id', entry.id)
-        .order('sort_order')
-        .then(({ data }) => setLines(data || []));
+    if (isExpanded) {
+      if (!lines && entry.lines) setLines(entry.lines);
+      else if (!lines) {
+        supabase
+          .from('journal_lines')
+          .select('id, account_id, description, debit, credit, account:accounts(code, name, account_type)')
+          .eq('journal_entry_id', entry.id)
+          .order('sort_order')
+          .then(({ data }) => setLines(data || []));
+      }
+
+      // Find paired entry if this is part of an invoice edit
+      if (!pairedEntry && entry.reference_type === 'invoice_edit' && entry.reference_id) {
+        supabase
+          .from('journal_entries')
+          .select('*')
+          .eq('reference_id', entry.reference_id)
+          .eq('reference_type', 'invoice')
+          .eq('entry_date', entry.entry_date)
+          .neq('id', entry.id)
+          .maybeSingle()
+          .then(({ data }) => {
+            if (data) setPairedEntry(data as JournalEntry);
+          });
+      }
     }
-  }, [isExpanded, entry.id, entry.lines, lines]);
+  }, [isExpanded, entry.id, entry.lines, lines, entry.reference_type, entry.reference_id, entry.entry_date, pairedEntry]);
 
   return (
     <>
@@ -500,13 +524,23 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
           {entry.entry_number}
         </td>
         <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.entry_date)}</td>
-        <td className="px-4 py-3 text-sm text-foreground max-w-xs truncate">{entry.description}</td>
-        <td className="px-4 py-3">
-          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ${colorClass}`}>
-            <Icon className="w-3 h-3" />
-            {refLabels[refType] || refType}
-          </span>
-        </td>
+          <td className="px-4 py-3 text-sm text-foreground max-w-xs truncate">
+            {isReversal && (
+              <span className="inline-flex items-center gap-0.5 px-1 py-0.5 bg-red-100 text-red-600 text-[9px] font-medium rounded mr-1">
+                ↶
+              </span>
+            )}
+            {entry.description}
+          </td>
+          <td className="px-4 py-3">
+            <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ${colorClass}`}>
+              <Icon className="w-3 h-3" />
+              {refLabels[refType] || refType}
+              {isReversal && (
+                <span className="text-[8px] opacity-70">↶</span>
+              )}
+            </span>
+          </td>
         <td className="px-4 py-3 text-sm font-semibold text-foreground text-right">{formatCurrency(entry.total_debit)}</td>
         <td className="px-4 py-3">
           <span className={`badge-status ${entry.is_posted ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-500'}`}>
@@ -564,6 +598,46 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
                     </tr>
                   </tfoot>
                 </table>
+                {pairedEntry && (
+                  <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-blue-800">Reversal + New Entry Pair</span>
+                      <span className="text-sm text-blue-600">(Invoice Edit)</span>
+                    </div>
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-muted/40">
+                          <th className="text-left py-1 font-medium w-48">Account</th>
+                          <th className="text-left py-1 font-medium">Description</th>
+                          <th className="text-right py-1 font-medium w-32">Debit</th>
+                          <th className="text-right py-1 font-medium w-32">Credit</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pairedEntry.lines && pairedEntry.lines.length > 0 ? (
+                          pairedEntry.lines.map((line, idx) => {
+                            const acc = Array.isArray(line.account) ? line.account[0] : line.account;
+                            return (
+                              <tr key={line.id || idx} className="border-b border-border/30">
+                                <td className="py-1.5">
+                                  <span className="font-mono text-muted-foreground mr-2 text-[10px]">{acc?.code}</span>
+                                  <span className="font-medium text-foreground">{acc?.name}</span>
+                                </td>
+                                <td className="py-1.5 text-muted-foreground">{line.description || '—'}</td>
+                                <td className="py-1.5 text-right font-semibold text-green-700">{Number(line.debit) > 0 ? formatCurrency(line.debit) : '—'}</td>
+                                <td className="py-1.5 text-right font-semibold text-red-600">{Number(line.credit) > 0 ? formatCurrency(line.credit) : '—'}</td>
+                              </tr>
+                            );
+                          })
+                        ) : (
+                          <tr>
+                            <td colSpan={4} className="px-4 py-2 text-center text-muted-foreground">No lines found</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               )}
             </div>
           </td>
@@ -958,6 +1032,7 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
   const [error, setError] = useState('');
   const [linkedRecords, setLinkedRecords] = useState<{ type: string; label: string; detail: string }[]>([]);
   const isAuto = entry.reference_type !== 'manual' && entry.reference_type !== null;
+  const isInvoiceEdit = entry.reference_type === 'invoice_edit';
 
   useEffect(() => {
     async function loadLines() {
@@ -1146,6 +1221,71 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
               <div>
                 <p className="font-medium">Editing this entry will recalculate affected account balances.</p>
                 <p className="mt-1">Original amounts will be reversed and new amounts applied.</p>
+              </div>
+            </div>
+          )}
+
+          {/* Invoice edit impact preview - show before/after balance changes */}
+          {isInvoiceEdit && (
+            <div className="p-3 bg-orange-50 border border-orange-200 rounded-lg space-y-2">
+              <div className="flex gap-2">
+                <Info className="w-4 h-4 text-orange-500 shrink-0 mt-0.5" />
+                <div className="text-sm text-orange-700 flex-1">
+                  <p className="font-semibold">Invoice Edit Impact Preview</p>
+                  <p className="text-xs mt-1 text-orange-600">
+                    This entry is a reversal from an invoice edit. The line items below show the impact on account balances.
+                  </p>
+                </div>
+              </div>
+              <div className="mt-2 grid grid-cols-1 gap-1 text-xs">
+                {lines.map((l, i) => {
+                  const acc = accounts.find(a => a.id === l.accountId);
+                  if (!acc) return null;
+                  const debit = parseFloat(l.debit) || 0;
+                  const credit = parseFloat(l.credit) || 0;
+                  const normalDelta = (acc.account_type === 'asset' || acc.account_type === 'expense')
+                    ? debit - credit
+                    : credit - debit;
+                  if (normalDelta === 0) return null;
+                  return (
+                    <div key={i} className="flex items-center justify-between bg-orange-100/60 rounded px-2 py-1.5">
+                      <span className="font-medium text-orange-800">{acc.code} – {acc.name}</span>
+                      <span className={`font-semibold ${normalDelta > 0 ? 'text-green-700' : 'text-red-600'}`}>
+                        {normalDelta > 0 ? '+' : ''}{formatCurrency(Math.abs(normalDelta))} {normalDelta > 0 ? 'increase' : 'decrease'}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Account balance changes preview (always shown for non-manual edits) */}
+          {isAuto && !isInvoiceEdit && (
+            <div className="bg-muted/40 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Info className="w-4 h-4 text-muted-foreground" />
+                <p className="text-xs font-semibold text-muted-foreground">Account Balance Changes Preview</p>
+              </div>
+              <div className="space-y-1 text-xs">
+                {lines.map((l, i) => {
+                  const acc = accounts.find(a => a.id === l.accountId);
+                  if (!acc) return null;
+                  const debit = parseFloat(l.debit) || 0;
+                  const credit = parseFloat(l.credit) || 0;
+                  const normalDelta = (acc.account_type === 'asset' || acc.account_type === 'expense')
+                    ? debit - credit
+                    : credit - debit;
+                  if (normalDelta === 0) return null;
+                  return (
+                    <div key={i} className="flex items-center justify-between bg-background/60 rounded px-2 py-1">
+                      <span className="text-foreground">{acc.code} – {acc.name}</span>
+                      <span className={`font-semibold ${normalDelta > 0 ? 'text-green-700' : 'text-red-600'}`}>
+                        {normalDelta > 0 ? '+' : ''}{formatCurrency(Math.abs(normalDelta))}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

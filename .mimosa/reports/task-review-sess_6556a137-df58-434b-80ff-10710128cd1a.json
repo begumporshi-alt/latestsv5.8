@@ -1,6 +1,6 @@
 {
   "schema_version": "mimosa-task-review/v2",
-  "run_id": "20260828T202613710Z-45664-24d353e7de4e",
+  "run_id": "20260829T012037707Z-82524-17d18f2e547a",
   "run_status": "completed",
   "errors": [],
   "coverage": {
@@ -49,12 +49,12 @@
     "reasons": [],
     "reasons_truncated": false
   },
-  "generated_at": "2026-08-28T20:26:13.710Z",
+  "generated_at": "2026-08-29T01:20:37.707Z",
   "session_id": "sess_6556a137-df58-434b-80ff-10710128cd1a",
   "target": ".",
-  "revision": "769748c4af843dd82da95ee0f53015ff70497cdf",
+  "revision": "e8491d6fd9a0b9088470c1b913b3df8d72796955",
   "rules_version": "unavailable",
-  "diff_hash": "5a5fb630633d8cea6328ab6f311b22d3646ee0d5d09923ddac8c3be7a9acf882",
+  "diff_hash": "9f84989ed62039477566020712b7198dbe7c5fa469f082cdbb34a08662bb387b",
   "diff": {
     "algorithm": "sha256",
     "changed_file_count": 1,
@@ -63,19 +63,19 @@
         "file": "app/(erp)/purchases/grn/page.tsx",
         "ranges": [
           {
-            "start": 452,
-            "end": 479
+            "start": 473,
+            "end": 506
           }
         ],
-        "before_hash": "dfc2cbb750d5dd8073a3a7e4dc7a4bbca04298aa37c70d08678752fb7c6eacbd",
-        "after_hash": "587c9ce32c3c000f6f5f5284e00eb1b58284f5e94492d6fe8724fdc953430080"
+        "before_hash": "5d44b3ad073d325c16aad1e41e797741d7d3f4a90233f9e64a4105c5ca70e86b",
+        "after_hash": "6eecf44e710452c0f3fa7427986345e0d8187361fdcf4848643cd608e28b02b5"
       }
     ]
   },
   "timing": {
-    "started_at": "2026-08-28T20:26:12.957Z",
-    "completed_at": "2026-08-28T20:26:13.710Z",
-    "duration_ms": 753,
+    "started_at": "2026-08-29T01:20:37.023Z",
+    "completed_at": "2026-08-29T01:20:37.707Z",
+    "duration_ms": 684,
     "measurement": "hook_wall_clock"
   },
   "tokens": {
@@ -90,8 +90,8 @@
     "profile": "gate",
     "operation": "Stop",
     "outcome": "complete",
-    "latencyMs": 753,
-    "peakMemoryBytes": 216924160,
+    "latencyMs": 684,
+    "peakMemoryBytes": 219987968,
     "memoryMeasurement": "max-observed-process-rss",
     "scannedFiles": 1,
     "cache": {
@@ -118,8 +118,8 @@
   "finding_events": [],
   "findings": [],
   "artifacts": {
-    "immutable_report": ".mimosa/reports/task-review-sess_6556a137-df58-434b-80ff-10710128cd1a-20260828T202613710Z-45664-24d353e7de4e.json",
+    "immutable_report": ".mimosa/reports/task-review-sess_6556a137-df58-434b-80ff-10710128cd1a-20260829T012037707Z-82524-17d18f2e547a.json",
     "latest_report": ".mimosa/reports/task-review-sess_6556a137-df58-434b-80ff-10710128cd1a.json",
-    "history_summary": ".mimosa/history/run-20260828T202613710Z-45664-24d353e7de4e.json"
+    "history_summary": ".mimosa/history/run-20260829T012037707Z-82524-17d18f2e547a.json"
   }
 }
