@@ -598,46 +598,46 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
                     </tr>
                   </tfoot>
                 </table>
-                {pairedEntry && (
-                  <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-blue-800">Reversal + New Entry Pair</span>
-                      <span className="text-sm text-blue-600">(Invoice Edit)</span>
-                    </div>
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="bg-muted/40">
-                          <th className="text-left py-1 font-medium w-48">Account</th>
-                          <th className="text-left py-1 font-medium">Description</th>
-                          <th className="text-right py-1 font-medium w-32">Debit</th>
-                          <th className="text-right py-1 font-medium w-32">Credit</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pairedEntry.lines && pairedEntry.lines.length > 0 ? (
-                          pairedEntry.lines.map((line, idx) => {
-                            const acc = Array.isArray(line.account) ? line.account[0] : line.account;
-                            return (
-                              <tr key={line.id || idx} className="border-b border-border/30">
-                                <td className="py-1.5">
-                                  <span className="font-mono text-muted-foreground mr-2 text-[10px]">{acc?.code}</span>
-                                  <span className="font-medium text-foreground">{acc?.name}</span>
-                                </td>
-                                <td className="py-1.5 text-muted-foreground">{line.description || '—'}</td>
-                                <td className="py-1.5 text-right font-semibold text-green-700">{Number(line.debit) > 0 ? formatCurrency(line.debit) : '—'}</td>
-                                <td className="py-1.5 text-right font-semibold text-red-600">{Number(line.credit) > 0 ? formatCurrency(line.credit) : '—'}</td>
-                              </tr>
-                            );
-                          })
-                        ) : (
-                          <tr>
-                            <td colSpan={4} className="px-4 py-2 text-center text-muted-foreground">No lines found</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
+              )}
+              {pairedEntry && (
+                <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-blue-800">Reversal + New Entry Pair</span>
+                    <span className="text-sm text-blue-600">(Invoice Edit)</span>
                   </div>
-                )}
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-muted/40">
+                        <th className="text-left py-1 font-medium w-48">Account</th>
+                        <th className="text-left py-1 font-medium">Description</th>
+                        <th className="text-right py-1 font-medium w-32">Debit</th>
+                        <th className="text-right py-1 font-medium w-32">Credit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pairedEntry.lines && pairedEntry.lines.length > 0 ? (
+                        pairedEntry.lines.map((line, idx) => {
+                          const acc = Array.isArray(line.account) ? line.account[0] : line.account;
+                          return (
+                            <tr key={line.id || idx} className="border-b border-border/30">
+                              <td className="py-1.5">
+                                <span className="font-mono text-muted-foreground mr-2 text-[10px]">{acc?.code}</span>
+                                <span className="font-medium text-foreground">{acc?.name}</span>
+                              </td>
+                              <td className="py-1.5 text-muted-foreground">{line.description || '—'}</td>
+                              <td className="py-1.5 text-right font-semibold text-green-700">{Number(line.debit) > 0 ? formatCurrency(line.debit) : '—'}</td>
+                              <td className="py-1.5 text-right font-semibold text-red-600">{Number(line.credit) > 0 ? formatCurrency(line.credit) : '—'}</td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={4} className="px-4 py-2 text-center text-muted-foreground">No lines found</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </td>
