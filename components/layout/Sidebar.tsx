@@ -97,6 +97,7 @@ const navItems: NavItem[] = [
       { title: 'P&L Statement', href: '/reports/pl' },
       { title: 'Edit History', href: '/reports/edit-history' },
       { title: 'Recent Activity', href: '/reports/activity' },
+      { title: 'COGS Audit', href: '/reports/cogs-audit' },
     ],
   },
   {
