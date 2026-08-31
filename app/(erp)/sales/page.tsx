@@ -316,6 +316,76 @@ export default function SalesPage() {
     const printRef = useRef<HTMLDivElement>(null);
     const [hideDiscountPercent, setHideDiscountPercent] = useState(false);
     const [hideRate, setHideRate] = useState(false);
+    const [customerOutstanding, setCustomerOutstanding] = useState<{
+      total: number;
+      invoiceDues: number;
+      manualDues: number;
+      storeCredit: number;
+      advanceBalance: number;
+    } | null>(null);
+
+    useEffect(() => {
+      async function fetchCustomerOutstanding() {
+        if (!invoice.customer_id) return;
+        // Fetch unpaid invoices
+        const { data: unpaidInvoices } = await supabase
+          .from('invoices')
+          .select('balance_due')
+          .eq('customer_id', invoice.customer_id)
+          .not('status', 'in', '("cancelled","refunded","paid")')
+          .gt('balance_due', 0);
+        const invoiceDues = (unpaidInvoices || []).reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0);
+
+        // Fetch manual receivables (journal entries with reference_type='receivable')
+        const { data: manualEntries } = await supabase
+          .from('journal_entries')
+          .select('id, total_debit')
+          .eq('customer_id', invoice.customer_id)
+          .eq('reference_type', 'receivable')
+          .eq('is_posted', true);
+        
+        let manualDues = 0;
+        if (manualEntries && manualEntries.length > 0) {
+          for (const entry of manualEntries) {
+            const { data: entryPayments } = await supabase
+              .from('payments')
+              .select('amount')
+              .eq('reference_type', 'receivable')
+              .eq('reference_id', entry.id)
+              .eq('is_reversed', false);
+            const paid = (entryPayments || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+            const outstanding = Number(entry.total_debit) - paid;
+            if (outstanding > 0) manualDues += outstanding;
+          }
+        }
+
+        // Fetch store credit and advances
+        const { data: credits } = await supabase
+          .from('payments')
+          .select('amount')
+          .eq('customer_id', invoice.customer_id)
+          .eq('payment_for', 'store_credit')
+          .eq('is_reversed', false);
+        const storeCredit = (credits || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+
+        const { data: advances } = await supabase
+          .from('payments')
+          .select('amount')
+          .eq('customer_id', invoice.customer_id)
+          .eq('payment_for', 'customer_advance')
+          .eq('is_reversed', false);
+        const advanceBalance = (advances || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+
+        setCustomerOutstanding({
+          total: invoiceDues + manualDues,
+          invoiceDues,
+          manualDues,
+          storeCredit,
+          advanceBalance,
+        });
+      }
+      fetchCustomerOutstanding();
+    }, [invoice.customer_id]);
 
     async function copyProductList() {
       const copiedItems = items.map((item: any) => ({
@@ -410,6 +480,29 @@ export default function SalesPage() {
           {/* Print body — only visible on details tab */}
           {viewTab === 'details' ? (
           <div className="p-8" ref={printRef}>
+            {/* Customer Account Summary Bar */}
+            {customerOutstanding && customerOutstanding.total > 0 && (
+              <div className="no-print mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-xs font-bold text-red-700">Customer Account Summary</span>
+                </div>
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <span className="font-semibold text-red-600">Total Due: {formatCurrency(customerOutstanding.total)}</span>
+                  {customerOutstanding.invoiceDues > 0 && (
+                    <span className="text-red-500">Invoice Dues: {formatCurrency(customerOutstanding.invoiceDues)}</span>
+                  )}
+                  {customerOutstanding.manualDues > 0 && (
+                    <span className="text-amber-600">Manual Dues: {formatCurrency(customerOutstanding.manualDues)}</span>
+                  )}
+                  {customerOutstanding.storeCredit > 0 && (
+                    <span className="text-green-600">Store Credit: {formatCurrency(customerOutstanding.storeCredit)}</span>
+                  )}
+                  {customerOutstanding.advanceBalance > 0 && (
+                    <span className="text-blue-600">Advance: {formatCurrency(customerOutstanding.advanceBalance)}</span>
+                  )}
+                </div>
+              </div>
+            )}
             <PrintTemplate
               docType="INVOICE"
               docNumber={invoice.invoice_number}
@@ -428,6 +521,9 @@ export default function SalesPage() {
                 code: invoice.customer?.code,
                 phone: invoice.customer?.phone,
                 address: invoice.customer?.address,
+                total_outstanding: customerOutstanding?.total,
+                invoice_outstanding: customerOutstanding?.invoiceDues,
+                manual_outstanding: customerOutstanding?.manualDues,
               }}
               items={items.map((item: any) => ({
                 product_name: item.product?.name || '—',

@@ -44,6 +44,9 @@ export interface PrintTemplateProps {
     code?: string;
     phone?: string;
     address?: string;
+    total_outstanding?: number;
+    invoice_outstanding?: number;
+    manual_outstanding?: number;
   };
   items: PrintItem[];
   subtotal: number;
@@ -381,6 +384,20 @@ export default function PrintTemplate({
                     <td style={{ color: '#666', paddingBottom: '2px', paddingRight: '6px', verticalAlign: 'top' }}>Address</td>
                     <td style={{ color: '#666', paddingBottom: '2px', paddingRight: '4px', verticalAlign: 'top' }}>:</td>
                     <td style={{ fontWeight: '700', paddingBottom: '2px' }}>{customer.address}</td>
+                  </tr>
+                )}
+                {(customer.total_outstanding !== undefined && customer.total_outstanding > 0) && (
+                  <tr>
+                    <td style={{ color: '#666', paddingBottom: '2px', paddingRight: '6px' }}>Total Due</td>
+                    <td style={{ color: '#666', paddingBottom: '2px', paddingRight: '4px' }}>:</td>
+                    <td style={{ fontWeight: '700', paddingBottom: '2px', color: '#dc2626' }}>
+                      {fmt(customer.total_outstanding)}
+                      {(customer.invoice_outstanding !== undefined || customer.manual_outstanding !== undefined) && (
+                        <span style={{ fontWeight: '400', fontSize: '9px', color: '#888', marginLeft: '4px' }}>
+                          (Inv: {fmt(customer.invoice_outstanding || 0)} | Manual: {fmt(customer.manual_outstanding || 0)})
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 )}
               </tbody>
