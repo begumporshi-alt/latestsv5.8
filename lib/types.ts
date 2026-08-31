@@ -470,3 +470,20 @@ export interface Payment {
   notes?: string;
   created_at: string;
 }
+
+export interface PurchaseReminder {
+  id: string;
+  tenant_id: string;
+  product_id: string;
+  quotation_id?: string;
+  quantity_needed: number;
+  current_stock: number;
+  status: 'pending' | 'fulfilled' | 'cancelled';
+  notes?: string;
+  fulfilled_at?: string;
+  fulfilled_by_grn_id?: string;
+  created_at: string;
+  updated_at: string;
+  product?: Product;
+  quotation?: Quotation;
+}

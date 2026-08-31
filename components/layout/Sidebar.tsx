@@ -1,9 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, Users, Truck, Calculator, Store, UserRound, ChartBar as BarChart3, Settings, Building2, ChevronDown, ChevronRight, FileText, Receipt, TrendingUp, Boxes, Shield, ArrowRightLeft, BookOpen, Wallet, RotateCcw, BookOpen as GuideIcon, QrCode } from 'lucide-react';
 
 interface NavItem {
@@ -48,6 +49,7 @@ const navItems: NavItem[] = [
     icon: ShoppingBag,
     children: [
       { title: 'Purchase Orders', href: '/purchases' },
+      { title: 'Purchase Reminders', href: '/purchases/reminders' },
       { title: 'Suppliers', href: '/suppliers' },
       { title: 'GRN', href: '/purchases/grn' },
       { title: 'Returns', href: '/purchases/returns' },
@@ -110,6 +112,20 @@ const navItems: NavItem[] = [
 export default function Sidebar({ collapsed }: SidebarProps) {
   const pathname = usePathname();
   const [openMenus, setOpenMenus] = useState<string[]>(['Inventory', 'Sales', 'Purchases', 'CRM', 'Accounting', 'HR Management']);
+  const [reminderCount, setReminderCount] = useState(0);
+
+  useEffect(() => {
+    async function fetchReminderCount() {
+      const { count } = await supabase
+        .from('purchase_reminders')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'pending');
+      setReminderCount(count || 0);
+    }
+    fetchReminderCount();
+    const interval = setInterval(fetchReminderCount, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   function toggleMenu(title: string) {
     setOpenMenus((prev) =>
@@ -181,7 +197,14 @@ export default function Sidebar({ collapsed }: SidebarProps) {
                             : 'text-slate-400 hover:text-white hover:bg-white/5'
                         )}
                       >
-                        {child.title}
+                        <span className="flex items-center justify-between">
+                          <span>{child.title}</span>
+                          {child.href === '/purchases' && reminderCount > 0 && (
+                            <span className="bg-amber-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full min-w-[16px] text-center">
+                              {reminderCount}
+                            </span>
+                          )}
+                        </span>
                       </Link>
                     ))}
                   </div>

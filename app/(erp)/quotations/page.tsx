@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban } from 'lucide-react';
-import type { Quotation, QuotationStatus, Customer, Product, ProductUnit } from '@/lib/types';
+import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell } from 'lucide-react';
+import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
@@ -515,6 +515,46 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   const [error, setError] = useState('');
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [formTab, setFormTab] = useState<'items' | 'cost'>('items');
+  const [markedForPurchase, setMarkedForPurchase] = useState<Set<string>>(new Set());
+
+  async function toggleMarkForPurchase(productId: string, productName: string, productSku: string, stockQty: number | null, quantityNeeded: number, quotationId?: string) {
+    const isCurrentlyMarked = markedForPurchase.has(productId);
+    
+    if (isCurrentlyMarked) {
+      // Remove from DB
+      await supabase.from("purchase_reminders")
+        .update({ status: "cancelled", updated_at: new Date().toISOString() })
+        .eq("product_id", productId)
+        .eq("quotation_id", quotationId || null)
+        .eq("status", "pending");
+      setMarkedForPurchase(prev => {
+        const next = new Set(prev);
+        next.delete(productId);
+        return next;
+      });
+      toast({ title: "Removed", description: `${productName} removed from purchase reminders` });
+    } else {
+      // Insert into DB immediately
+      const { error } = await supabase.from("purchase_reminders").insert({
+        product_id: productId,
+        quotation_id: quotationId || null,
+        quantity_needed: quantityNeeded,
+        current_stock: stockQty ?? 0,
+        status: "pending",
+        notes: `Marked for purchase from quotation`,
+      });
+      if (error) {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+        return;
+      }
+      setMarkedForPurchase(prev => {
+        const next = new Set(prev);
+        next.add(productId);
+        return next;
+      });
+      toast({ title: "Marked for purchase", description: `${productName} added to purchase reminders` });
+    }
+  }
 
   function addProductToItems(product: any) {
     const multiUnit = product.enable_multi_unit && product.units && product.units.filter((u: any) => u.is_active).length > 0;
@@ -686,6 +726,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
     });
     if (costHistoryRecords.length > 0) {
       await supabase.from('cost_price_history').insert(costHistoryRecords);
+
     }
 
     toast({ title: 'Success', description: 'Quotation created successfully' });
@@ -757,6 +798,12 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                 placeholder="Search and add products..."
                 className="mb-3"
               />
+              {markedForPurchase.size > 0 && (
+                <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
+                  <Bell className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span className="text-xs text-amber-700 font-medium">{markedForPurchase.size} product{markedForPurchase.size !== 1 ? "s" : ""} marked for purchase</span>
+                </div>
+              )}
               {items.length > 0 && (
               <div className="border border-border rounded-lg overflow-hidden">
                 <table className="w-full">
@@ -768,6 +815,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Net Rate</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                      <th className="text-center text-xs font-semibold text-muted-foreground px-2 py-2 w-16">Purchase</th>
                       <th className="w-8"></th>
                     </tr>
                   </thead>
@@ -837,6 +885,14 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                           <td className="px-3 py-2 text-right text-sm font-semibold">
                             <p className="text-[10px] text-muted-foreground font-normal">{formatCurrency(item.unit_price)} / unit</p>
                             {formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                              <button
+                                type="button"
+                                onClick={() => toggleMarkForPurchase(item.product_id, item.product_name, item.product_sku, item.stock_qty, item.base_quantity || item.quantity, undefined)}
+                                className={`w-7 h-7 flex items-center justify-center rounded-lg transition ${markedForPurchase.has(item.product_id) ? "bg-amber-100 text-amber-600 border border-amber-300" : "text-muted-foreground hover:bg-amber-50 hover:text-amber-600 border border-transparent"}`}>
+                                <Bell className="w-3.5 h-3.5" />
+                              </button>
                           </td>
                           <td className="px-2 py-2">
                             <button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
@@ -1005,6 +1061,44 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [markedForPurchase, setMarkedForPurchase] = useState<Set<string>>(new Set());
+
+  async function toggleMarkForPurchase(productId: string, productName: string, productSku: string, stockQty: number | null, quantityNeeded: number, quotationId?: string) {
+    const isCurrentlyMarked = markedForPurchase.has(productId);
+
+    if (isCurrentlyMarked) {
+      await supabase.from("purchase_reminders")
+        .update({ status: "cancelled", updated_at: new Date().toISOString() })
+        .eq("product_id", productId)
+        .eq("quotation_id", quotationId || null)
+        .eq("status", "pending");
+      setMarkedForPurchase(prev => {
+        const next = new Set(prev);
+        next.delete(productId);
+        return next;
+      });
+      toast({ title: "Removed", description: `${productName} removed from purchase reminders` });
+    } else {
+      const { error } = await supabase.from("purchase_reminders").insert({
+        product_id: productId,
+        quotation_id: quotationId || null,
+        quantity_needed: quantityNeeded,
+        current_stock: stockQty ?? 0,
+        status: "pending",
+        notes: `Marked for purchase from quotation edit`,
+      });
+      if (error) {
+        toast({ title: "Error", description: error.message, variant: "destructive" });
+        return;
+      }
+      setMarkedForPurchase(prev => {
+        const next = new Set(prev);
+        next.add(productId);
+        return next;
+      });
+      toast({ title: "Marked for purchase", description: `${productName} added to purchase reminders` });
+    }
+  }
 
   useEffect(() => {
     (async () => {
@@ -1034,6 +1128,16 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
           warehouse_id: it.warehouse_id || undefined,
         };
       }));
+
+      // Load existing purchase reminders for this quotation
+      const { data: reminders } = await supabase
+        .from("purchase_reminders")
+        .select("product_id")
+        .eq("quotation_id", quotation.id)
+        .eq("status", "pending");
+      if (reminders && reminders.length > 0) {
+        setMarkedForPurchase(new Set(reminders.map((r: any) => r.product_id)));
+      }
       setLoading(false);
     })();
   }, [quotation.id]);
@@ -1158,6 +1262,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     const { error: itemsError } = await supabase.from('quotation_items').insert(quoteItems);
     if (itemsError) { setError(itemsError.message); setSaving(false); return; }
 
+
     toast({ title: 'Success', description: 'Quotation updated successfully' });
     onSaved();
     onClose();
@@ -1217,6 +1322,12 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               placeholder="Search and add products..."
               className="mb-3"
             />
+            {markedForPurchase.size > 0 && (
+              <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
+                <Bell className="w-4 h-4 text-amber-600 shrink-0" />
+                <span className="text-xs text-amber-700 font-medium">{markedForPurchase.size} product{markedForPurchase.size !== 1 ? "s" : ""} marked for purchase</span>
+              </div>
+            )}
             {items.length > 0 && (
               <div className="border border-border rounded-lg overflow-hidden">
                 <table className="w-full">
@@ -1253,6 +1364,14 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
+                        <td className="px-2 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => toggleMarkForPurchase(item.product_id, item.product_name, item.product_sku, item.stock_qty, item.base_quantity || item.quantity, quotation.id)}
+                              className={`w-7 h-7 flex items-center justify-center rounded-lg transition ${markedForPurchase.has(item.product_id) ? "bg-amber-100 text-amber-600 border border-amber-300" : "text-muted-foreground hover:bg-amber-50 hover:text-amber-600 border border-transparent"}`}>
+                              <Bell className="w-3.5 h-3.5" />
+                            </button>
+                        </td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
                       </tr>
                     ))}

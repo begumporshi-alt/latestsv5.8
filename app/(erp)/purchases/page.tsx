@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban, Undo2, ChevronLeft, ChevronRight, Calendar } from 'lucide-react';
-import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit } from '@/lib/types';
+import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban, Undo2, ChevronLeft, ChevronRight, Calendar, Bell, Package, ShoppingBag } from 'lucide-react';
+import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
@@ -50,6 +51,9 @@ export default function PurchasesPage() {
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
+  const [purchaseReminders, setPurchaseReminders] = useState<(PurchaseReminder & { product?: any; quotation?: any })[]>([]);
+  const [loadingReminders, setLoadingReminders] = useState(true);
+  const [selectedReminders, setSelectedReminders] = useState<Set<string>>(new Set());
   const pageSize = 10;
 
   useEffect(() => { loadData(); }, []);
@@ -86,10 +90,55 @@ export default function PurchasesPage() {
       returnAmount: (returnsRes.data || []).filter((r: any) => r.status === 'completed').reduce((s: number, r: any) => s + Number(r.total_amount), 0),
       totalValue: all.filter((o: any) => o.status !== 'cancelled').reduce((s: number, o: any) => s + Number(o.total_amount), 0),
     });
+
+    // Load purchase reminders
+    setLoadingReminders(true);
+    const { data: reminders } = await supabase
+      .from("purchase_reminders")
+      .select("*, product:products(id, name, sku, unit, cost_price, min_stock_level, image_url), quotation:quotations(quote_number, customer:customers(name))")
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+    setPurchaseReminders((reminders || []) as any);
+    setLoadingReminders(false);
     setLoading(false);
   }
 
   // Date filtering helper
+  async function dismissReminder(reminderId: string) {
+    await supabase.from("purchase_reminders").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", reminderId);
+    setPurchaseReminders(prev => prev.filter(r => r.id !== reminderId));
+    setSelectedReminders(prev => { const next = new Set(prev); next.delete(reminderId); return next; });
+    toast({ title: "Dismissed", description: "Purchase reminder dismissed" });
+  }
+
+  function toggleReminderSelection(reminderId: string) {
+    setSelectedReminders(prev => {
+      const next = new Set(prev);
+      if (next.has(reminderId)) next.delete(reminderId); else next.add(reminderId);
+      return next;
+    });
+  }
+
+  function selectAllReminders() {
+    if (selectedReminders.size === purchaseReminders.length) {
+      setSelectedReminders(new Set());
+    } else {
+      setSelectedReminders(new Set(purchaseReminders.map(r => r.id)));
+    }
+  }
+
+  function createBulkPO() {
+    if (selectedReminders.size === 0) return;
+    const productIds = purchaseReminders
+      .filter(r => selectedReminders.has(r.id))
+      .map(r => r.product_id)
+      .filter(Boolean);
+    if (productIds.length === 0) return;
+    // Store selected product IDs in sessionStorage so CreatePOModal can pick them up
+    sessionStorage.setItem('bulkReminderProducts', JSON.stringify(productIds));
+    sessionStorage.setItem('bulkReminderIds', JSON.stringify(Array.from(selectedReminders)));
+    setShowCreateModal(true);
+  }
   function getDateRange() {
     if (dateFilter === 'all') return null;
     const now = new Date();
@@ -436,6 +485,104 @@ export default function PurchasesPage() {
         )}
       </div>
 
+      {/* Purchase Reminders Section */}
+      {purchaseReminders.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 shadow-sm">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Bell className="w-5 h-5 text-amber-600" />
+              <h3 className="text-sm font-bold text-amber-800">Purchase Reminders</h3>
+              <span className="bg-amber-200 text-amber-800 text-xs font-bold px-2 py-0.5 rounded-full">{purchaseReminders.length}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {selectedReminders.size > 0 && (
+                <button
+                  onClick={createBulkPO}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition"
+                >
+                  <ShoppingBag className="w-3.5 h-3.5" />
+                  Create PO ({selectedReminders.size})
+                </button>
+              )}
+              <button
+                onClick={selectAllReminders}
+                className="text-xs px-2 py-1 rounded border border-amber-300 text-amber-700 hover:bg-amber-100 transition"
+              >
+                {selectedReminders.size === purchaseReminders.length ? 'Deselect All' : 'Select All'}
+              </button>
+              <Link
+                href="/purchases/reminders"
+                className="text-xs text-amber-700 hover:text-amber-900 underline font-medium"
+              >
+                View All →
+              </Link>
+            </div>
+          </div>
+          <p className="text-xs text-amber-700 mb-3">Products marked for purchase from quotation low stock. Select items and create a purchase order, or dismiss individual reminders.</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {purchaseReminders.map((reminder) => {
+              const prod = reminder.product;
+              const quot = reminder.quotation;
+              const isSelected = selectedReminders.has(reminder.id);
+              return (
+                <div key={reminder.id} className={`bg-white border rounded-lg p-3 flex gap-3 transition ${isSelected ? 'border-blue-400 ring-1 ring-blue-200' : 'border-amber-200'}`}>
+                  <div className="flex flex-col items-center gap-1 shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleReminderSelection(reminder.id)}
+                      className="rounded border-amber-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <div className="w-10 h-10 bg-amber-100 rounded-lg overflow-hidden flex items-center justify-center">
+                      {prod?.image_url ? (
+                        <img src={prod.image_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <Package className="w-5 h-5 text-amber-600" />
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-foreground truncate">{prod?.name || 'Unknown Product'}</p>
+                    <p className="text-[10px] text-muted-foreground">{prod?.sku || ''}</p>
+                    <div className="flex items-center gap-2 mt-1 text-[10px]">
+                      <span className="text-amber-600 font-medium">Stock: {reminder.current_stock}</span>
+                      <span className="text-muted-foreground">|</span>
+                      <span className="text-blue-600 font-medium">Need: {reminder.quantity_needed}</span>
+                    </div>
+                    {quot && (
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        From: {quot.quote_number} {quot.customer?.name ? `(${quot.customer.name})` : ''}
+                      </p>
+                    )}
+                    {prod?.cost_price ? (
+                      <p className="text-[10px] text-green-600 mt-0.5">Est. cost: {formatCurrency(prod.cost_price * reminder.quantity_needed)}</p>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <button
+                      onClick={() => {
+                        sessionStorage.setItem('bulkReminderProducts', JSON.stringify([reminder.product_id]));
+                        sessionStorage.setItem('bulkReminderIds', JSON.stringify([reminder.id]));
+                        setShowCreateModal(true);
+                      }}
+                      className="text-[10px] px-2 py-1 bg-blue-100 text-blue-700 rounded font-medium hover:bg-blue-200 transition"
+                    >
+                      Create PO
+                    </button>
+                    <button
+                      onClick={() => dismissReminder(reminder.id)}
+                      className="text-[10px] px-2 py-1 bg-gray-100 text-gray-600 rounded font-medium hover:bg-gray-200 transition"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="table-wrapper">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -608,6 +755,58 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
       .then(({ data }) => { if (data) setPaymentMethods(data); });
     supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('name')
       .then(({ data }) => { if (data) setWarehouses(data as any); });
+
+    // Load bulk reminder products from sessionStorage
+    const bulkProductsRaw = sessionStorage.getItem('bulkReminderProducts');
+    const bulkReminderIdsRaw = sessionStorage.getItem('bulkReminderIds');
+    if (bulkProductsRaw) {
+      sessionStorage.removeItem('bulkReminderProducts');
+      sessionStorage.removeItem('bulkReminderIds');
+      (async () => {
+      try {
+        const productIds: string[] = JSON.parse(bulkProductsRaw);
+        const reminderIds: string[] = bulkReminderIdsRaw ? JSON.parse(bulkReminderIdsRaw) : [];
+        if (productIds.length > 0) {
+          // Fetch product details and auto-add to items
+          const { data: prods } = await supabase
+            .from('products')
+            .select('*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)')
+            .in('id', productIds);
+          if (prods) {
+            const newItems = prods.map((p: any) => {
+              const units = (p.units || []).filter((u: any) => u.is_active);
+              const multi = isMultiUnitEnabled(p);
+              const defaultUnit = multi ? getDefaultSaleUnit(units) : null;
+              const unitPrice = defaultUnit ? defaultUnit.cost_price : (p.cost_price || 0);
+              const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
+              const defaultWarehouseId = warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '';
+              return {
+                product_id: p.id,
+                product_name: p.name,
+                product_sku: p.sku,
+                product_unit: p.unit,
+                product_base_unit: p.base_unit,
+                quantity: 1,
+                unit_price: unitPrice,
+                discount_percent: 0,
+                selected_unit: defaultUnit,
+                available_units: units,
+                base_quantity: baseQty,
+                cost_price: unitPrice,
+                warehouse_id: defaultWarehouseId,
+              };
+            });
+            setItems(newItems);
+            if (reminderIds.length > 0) {
+              setForm(f => ({ ...f, notes: `Bulk PO from ${reminderIds.length} purchase reminder(s)` }));
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Failed to parse bulk reminder products:', e);
+      }
+      })();
+    }
   }, []);
 
   async function handleAddSupplier(newSupplierId: string) {

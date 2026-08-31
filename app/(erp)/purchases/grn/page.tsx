@@ -538,6 +538,24 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         }
       }
 
+
+      // Auto-fulfill purchase reminders for received products
+      const reminderProductIds = items
+        .filter(i => Number(receiveItems[i.id] || 0) > 0)
+        .map(i => i.product_id);
+      const uniqueReminderProductIds = Array.from(new Set(reminderProductIds));
+      if (uniqueReminderProductIds.length > 0) {
+        await supabase
+          .from("purchase_reminders")
+          .update({
+            status: "fulfilled",
+            fulfilled_at: new Date().toISOString(),
+            fulfilled_by_grn_id: grnId,
+            updated_at: new Date().toISOString(),
+          })
+          .in("product_id", uniqueReminderProductIds)
+          .eq("status", "pending");
+      }
       toast({
         title: 'Success',
         description: `GRN ${grnNumber} created successfully${costUpdateSummary}`,
