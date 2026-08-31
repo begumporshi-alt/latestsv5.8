@@ -131,7 +131,11 @@ export default function COGSAuditPage() {
     try {
       const { data, error } = await supabase.rpc('get_cogs_audit');
       if (error) throw error;
-      setRows((data as AuditRow[]) || []);
+      // The RPC's first column is aud_invoice_id; map it to the invoice_id
+      // key the page uses for selection, expansion, and row keys.
+      setRows(
+        ((data as any[]) || []).map(d => ({ ...d, invoice_id: d.aud_invoice_id })) as AuditRow[]
+      );
     } catch (e: any) {
       console.error('Failed to load COGS audit:', e);
       alert('Failed to load COGS audit: ' + e.message);
