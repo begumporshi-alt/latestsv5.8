@@ -17,6 +17,7 @@ interface COGSJournalEntry {
   description: string;
   total_debit: number;
   is_per_item: boolean;
+  is_reversal?: boolean;
   diff_from_expected: number;
 }
 
@@ -78,13 +79,14 @@ interface AuditRow {
   root_cause: string;
 }
 
-type Filter = 'all' | 'duplicate' | 'mismatch' | 'missing' | 'consistent';
+type Filter = 'all' | 'duplicate' | 'mismatch' | 'missing' | 'consistent' | 'cancelled';
 
 const STATUS_COLORS: Record<string, string> = {
   CONSISTENT: '#10b981',
   DUPLICATE_COGS: '#ef4444',
   MISMATCH: '#f59e0b',
   MISSING: '#a855f7',
+  CANCELLED_ORPHAN: '#0891b2',
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -92,6 +94,7 @@ const STATUS_LABELS: Record<string, string> = {
   DUPLICATE_COGS: 'Duplicate COGS',
   MISMATCH: 'Mismatch',
   MISSING: 'Missing',
+  CANCELLED_ORPHAN: 'Cancelled Orphan',
 };
 
 const FIX_COLORS: Record<string, string> = {
@@ -99,6 +102,7 @@ const FIX_COLORS: Record<string, string> = {
   DELETE_DUPLICATES: '#ef4444',
   REVIEW_MANUALLY: '#f59e0b',
   CREATE_JE: '#a855f7',
+  DELETE_ALL_COGS: '#0891b2',
 };
 
 export default function COGSAuditPage() {
@@ -143,13 +147,18 @@ export default function COGSAuditPage() {
     const mismatches = rows.filter(r => r.audit_status === 'MISMATCH');
     const missing = rows.filter(r => r.audit_status === 'MISSING');
     const consistent = rows.filter(r => r.audit_status === 'CONSISTENT');
+    const cancelledOrphans = rows.filter(r => r.audit_status === 'CANCELLED_ORPHAN');
     const totalOverstatement = duplicates.reduce((s, r) => s + r.balance_impact, 0);
+    // Signed net GL 5000 impact of cancelled-invoice orphans (can be negative
+    // for stray reversals that over-credit COGS).
+    const orphanNetImpact = cancelledOrphans.reduce((s, r) => s + r.balance_impact, 0);
     const doubleTriggerCount = rows.filter(r => r.root_cause === 'DOUBLE_TRIGGER').length;
-    const autoFixableCount = duplicates.length;
+    const autoFixableCount = duplicates.length + cancelledOrphans.length;
     return {
       total, duplicates: duplicates.length, mismatches: mismatches.length,
       missing: missing.length, consistent: consistent.length,
-      totalOverstatement, doubleTriggerCount, autoFixableCount,
+      cancelledOrphans: cancelledOrphans.length,
+      totalOverstatement, orphanNetImpact, doubleTriggerCount, autoFixableCount,
       duplicateInvoiceIds: new Set(duplicates.map(d => d.invoice_id)),
     };
   }, [rows]);
@@ -162,6 +171,7 @@ export default function COGSAuditPage() {
       if (filter === 'mismatch' && r.audit_status !== 'MISMATCH') return false;
       if (filter === 'missing' && r.audit_status !== 'MISSING') return false;
       if (filter === 'consistent' && r.audit_status !== 'CONSISTENT') return false;
+      if (filter === 'cancelled' && r.audit_status !== 'CANCELLED_ORPHAN') return false;
       if (dateRange.start && r.invoice_date < dateRange.start) return false;
       if (dateRange.end && r.invoice_date > dateRange.end) return false;
       if (!term) return true;
@@ -196,7 +206,9 @@ export default function COGSAuditPage() {
   }
   function deselectAll() { setSelected(new Set()); }
   function selectAllFiltered() {
-    const ids = filtered.filter(r => r.audit_status === 'DUPLICATE_COGS').map(r => r.invoice_id);
+    const ids = filtered
+      .filter(r => r.audit_status === 'DUPLICATE_COGS' || r.audit_status === 'CANCELLED_ORPHAN')
+      .map(r => r.invoice_id);
     setSelected(new Set(ids));
   }
 
@@ -315,7 +327,8 @@ export default function COGSAuditPage() {
     { name: 'Duplicate COGS', value: stats.duplicates, color: STATUS_COLORS.DUPLICATE_COGS },
     { name: 'Mismatch', value: stats.mismatches, color: STATUS_COLORS.MISMATCH },
     { name: 'Missing', value: stats.missing, color: STATUS_COLORS.MISSING },
-  ], [stats]);
+    { name: 'Cancelled Orphan', value: stats.cancelledOrphans, color: STATUS_COLORS.CANCELLED_ORPHAN },
+  ].filter(d => d.value > 0), [stats]);
 
   const rootCauseData = useMemo(() => {
     const m = new Map<string, number>();
@@ -361,18 +374,36 @@ export default function COGSAuditPage() {
       </div>
 
       {/* ── Stats cards ────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
         <StatCard label="Total Invoices" value={stats.total} color="#6b7280" />
         <StatCard label="Consistent" value={stats.consistent} color={STATUS_COLORS.CONSISTENT} />
         <StatCard label="Duplicate COGS" value={stats.duplicates} color={STATUS_COLORS.DUPLICATE_COGS} />
         <StatCard label="Mismatch" value={stats.mismatches} color={STATUS_COLORS.MISMATCH} />
         <StatCard label="Missing" value={stats.missing} color={STATUS_COLORS.MISSING} />
+        <StatCard label="Cancelled Orphans" value={stats.cancelledOrphans} color={STATUS_COLORS.CANCELLED_ORPHAN} />
         <StatCard
           label="Total Overstatement"
-          value={formatCurrency(stats.totalOverstatement)}
+          value={formatCurrency(stats.totalOverstatement + Math.max(0, stats.orphanNetImpact))}
           color="#ef4444"
         />
       </div>
+
+      {/* ── Cancelled orphan alert ─────────────────────── */}
+      {stats.cancelledOrphans > 0 && (
+        <div className="bg-cyan-50 border border-cyan-200 rounded p-4 flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-cyan-700 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="font-semibold text-cyan-900">Cancelled Invoices With Orphan COGS</h3>
+            <p className="text-sm text-cyan-800 mt-1">
+              {stats.cancelledOrphans} cancelled invoices still carry COGS journal entries that were not
+              fully reversed (net GL 5000 impact:{' '}
+              <span className="font-semibold">{formatCurrency(stats.orphanNetImpact)}</span>).
+              Bulk fix removes ALL of their COGS postings and cancel reversals together — GL-neutral
+              except for the orphan amount itself.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* ── Double trigger alert ───────────────────────── */}
       {stats.doubleTriggerCount > 0 && (
@@ -426,7 +457,7 @@ export default function COGSAuditPage() {
       {/* ── Filters ────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
-          {(['all', 'duplicate', 'mismatch', 'missing', 'consistent'] as Filter[]).map(f => (
+          {(['all', 'duplicate', 'cancelled', 'mismatch', 'missing', 'consistent'] as Filter[]).map(f => (
             <button
               key={f}
               onClick={() => { setFilter(f); setPage(1); }}
@@ -440,6 +471,7 @@ export default function COGSAuditPage() {
               {f === 'mismatch' && ` (${stats.mismatches})`}
               {f === 'missing' && ` (${stats.missing})`}
               {f === 'consistent' && ` (${stats.consistent})`}
+              {f === 'cancelled' && ` (${stats.cancelledOrphans})`}
             </button>
           ))}
         </div>
@@ -495,18 +527,18 @@ export default function COGSAuditPage() {
             onClick={selectAllFiltered}
             className="flex items-center gap-1 px-2 py-1.5 text-sm text-blue-700 hover:bg-blue-100 rounded"
           >
-            Select all {filter !== 'duplicate' ? 'duplicates' : 'filtered'}
+            Select all {(filter === 'duplicate' || filter === 'cancelled') ? 'filtered' : 'fixable'}
           </button>
         </div>
       )}
 
-      {filter === 'duplicate' && selected.size === 0 && stats.autoFixableCount > 0 && (
+      {(filter === 'duplicate' || filter === 'cancelled') && selected.size === 0 && stats.autoFixableCount > 0 && (
         <div className="text-right">
           <button
             onClick={selectAllFiltered}
             className="text-sm text-blue-600 hover:underline"
           >
-            Select all {stats.autoFixableCount} duplicates
+            Select all {stats.autoFixableCount} fixable invoices
           </button>
         </div>
       )}
@@ -617,8 +649,9 @@ export default function COGSAuditPage() {
           <div className="bg-white rounded-lg p-6 w-full max-w-lg space-y-4">
             <h2 className="text-lg font-bold">Bulk fix {selected.size} invoices</h2>
             <p className="text-sm text-gray-600">
-              This will delete the duplicate COGS journal entries from the selected invoices,
-              keeping only the auto-detected keeper JE. Total overstatement removed:
+              Duplicate invoices: deletes the duplicate COGS journal entries, keeping only the
+              auto-detected keeper JE. Cancelled invoices: deletes ALL COGS postings and their cancel
+              reversals together (GL-neutral except the orphan amount). Net GL 5000 impact of this fix:
               <span className="font-semibold text-red-600 ml-1">
                 {formatCurrency(
                   Array.from(selected).reduce((s, id) => {
@@ -663,8 +696,8 @@ export default function COGSAuditPage() {
           <div className="bg-white rounded-lg p-6 w-full max-w-lg space-y-4">
             <h2 className="text-lg font-bold">Delete COGS journal entry</h2>
             <p className="text-sm text-gray-600">
-              A safety check will run on the server: only COGS entries that are not reversals
-              and not linked to payments will be deleted.
+              A safety check will run on the server: only COGS entries can be deleted — reversals
+              only when their invoice is cancelled.
             </p>
             <div>
               <label className="text-sm font-medium">Reason (required, audit log)</label>
@@ -759,7 +792,11 @@ function AuditTableRow({
         <td className="p-2 text-right font-mono text-xs">
           {row.balance_impact > 0 ? (
             <span className="text-red-600 font-semibold">+{formatCurrency(row.balance_impact)}</span>
-          ) : '—'}
+          ) : row.balance_impact < 0 ? (
+            <span className="text-amber-600 font-semibold">−{formatCurrency(Math.abs(row.balance_impact))}</span>
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
         </td>
         <td className="p-2">
           <span
@@ -815,7 +852,9 @@ function AuditTableRow({
                         <div
                           key={je.id}
                           className={`p-2 rounded border ${
-                            isKeeper ? 'border-green-300 bg-green-50' : 'border-red-200 bg-red-50'
+                            isKeeper ? 'border-green-300 bg-green-50'
+                              : je.is_reversal ? 'border-cyan-300 bg-cyan-50'
+                              : 'border-red-200 bg-red-50'
                           }`}
                         >
                           <div className="flex items-center justify-between">
@@ -826,6 +865,8 @@ function AuditTableRow({
                               {formatCurrency(je.total_debit)}
                               {isKeeper ? (
                                 <span className="ml-2 text-green-700">★ KEEPER</span>
+                              ) : je.is_reversal ? (
+                                <span className="ml-2 text-cyan-700">REVERSAL</span>
                               ) : (
                                 <span className="ml-2 text-red-700">
                                   Δ {formatCurrency(je.diff_from_expected)}
@@ -837,14 +878,14 @@ function AuditTableRow({
                             {je.description}
                           </div>
                           <div className="text-xs text-gray-500 mt-0.5">
-                            {je.entry_date} • {je.is_per_item ? 'per-item' : 'lump'}
+                            {je.entry_date} • {je.is_reversal ? 'cancel reversal' : je.is_per_item ? 'per-item' : 'lump'}
                           </div>
                           {!isKeeper && (
                             <button
                               onClick={() => onDeleteJE(je.id)}
                               className="mt-1 text-xs text-red-600 hover:underline"
                             >
-                              Delete this duplicate
+                              Delete this entry
                             </button>
                           )}
                         </div>
