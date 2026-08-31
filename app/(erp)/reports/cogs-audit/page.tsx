@@ -81,6 +81,14 @@ interface AuditRow {
 
 type Filter = 'all' | 'duplicate' | 'mismatch' | 'missing' | 'consistent' | 'cancelled';
 
+const FILTER_LABELS: Record<Exclude<Filter, 'all'>, string> = {
+  duplicate: 'Duplicate COGS',
+  mismatch: 'Mismatch',
+  missing: 'Missing',
+  consistent: 'Consistent',
+  cancelled: 'Cancelled Orphan',
+};
+
 const STATUS_COLORS: Record<string, string> = {
   CONSISTENT: '#10b981',
   DUPLICATE_COGS: '#ef4444',
@@ -105,9 +113,102 @@ const FIX_COLORS: Record<string, string> = {
   DELETE_ALL_COGS: '#0891b2',
 };
 
+// ── Timeline presets ─────────────────────────────────────
+type DatePreset =
+  | 'all' | 'today' | 'yesterday' | 'thisWeek' | 'thisMonth'
+  | 'lastMonth' | 'last7' | 'last30' | 'thisYear' | 'custom';
+
+const PRESET_LABELS: Record<DatePreset, string> = {
+  all: 'All Time',
+  today: 'Today',
+  yesterday: 'Yesterday',
+  thisWeek: 'This Week',
+  thisMonth: 'This Month',
+  lastMonth: 'Last Month',
+  last7: 'Last 7 Days',
+  last30: 'Last 30 Days',
+  thisYear: 'This Year',
+  custom: 'Custom Range',
+};
+
+const toISODate = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+function presetToRange(p: DatePreset): { start: string; end: string } {
+  const today = new Date();
+  const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+  switch (p) {
+    case 'all': return { start: '', end: '' };
+    case 'today': return { start: toISODate(today), end: toISODate(today) };
+    case 'yesterday': { const y = addDays(today, -1); return { start: toISODate(y), end: toISODate(y) }; }
+    case 'thisWeek': {
+      // Monday as first day of week
+      const monday = addDays(today, -((today.getDay() + 6) % 7));
+      return { start: toISODate(monday), end: toISODate(today) };
+    }
+    case 'thisMonth':
+      return {
+        start: toISODate(new Date(today.getFullYear(), today.getMonth(), 1)),
+        end: toISODate(new Date(today.getFullYear(), today.getMonth() + 1, 0)),
+      };
+    case 'lastMonth':
+      return {
+        start: toISODate(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+        end: toISODate(new Date(today.getFullYear(), today.getMonth(), 0)),
+      };
+    case 'last7': return { start: toISODate(addDays(today, -6)), end: toISODate(today) };
+    case 'last30': return { start: toISODate(addDays(today, -29)), end: toISODate(today) };
+    case 'thisYear':
+      return { start: `${today.getFullYear()}-01-01`, end: `${today.getFullYear()}-12-31` };
+    case 'custom': return { start: '', end: '' };
+  }
+}
+
+function fmtDateLabel(s: string): string {
+  if (!s) return '';
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// ── Column totals over a set of rows ─────────────────────
+interface AuditTotals {
+  count: number;
+  items: number;
+  expectedA: number;
+  expectedB: number;
+  journalC: number;
+  fifoD: number;
+  jeCount: number;
+  impact: number;
+}
+
+function computeTotals(list: AuditRow[]): AuditTotals {
+  const t: AuditTotals = {
+    count: list.length, items: 0, expectedA: 0, expectedB: 0,
+    journalC: 0, fifoD: 0, jeCount: 0, impact: 0,
+  };
+  for (const r of list) {
+    t.items += r.item_count || 0;
+    t.expectedA += r.expected_cogs_a || 0;
+    t.expectedB += r.expected_cogs_b || 0;
+    t.journalC += r.journal_cogs_c || 0;
+    t.fifoD += r.fifo_cogs_d || 0;
+    t.jeCount += r.journal_je_count || 0;
+    t.impact += r.balance_impact || 0;
+  }
+  return t;
+}
+
+function SignedAmount({ value }: { value: number }) {
+  if (value > 0) return <span className="text-red-600 font-semibold">+{formatCurrency(value)}</span>;
+  if (value < 0) return <span className="text-amber-600 font-semibold">−{formatCurrency(Math.abs(value))}</span>;
+  return <span className="text-gray-400">{formatCurrency(0)}</span>;
+}
+
 export default function COGSAuditPage() {
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [preset, setPreset] = useState<DatePreset>('all');
   const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [filter, setFilter] = useState<Filter>('duplicate');
   const [search, setSearch] = useState('');
@@ -144,19 +245,30 @@ export default function COGSAuditPage() {
     }
   }
 
+  // ── Date-filtered rows (timeline) ─────────────────────
+  // Everything downstream — stat cards, tab counts, charts, table — derives
+  // from this set, so all tabs stay in sync with the timeline filter.
+  const dateFiltered = useMemo(() => {
+    return rows.filter(r => {
+      if (dateRange.start && r.invoice_date < dateRange.start) return false;
+      if (dateRange.end && r.invoice_date > dateRange.end) return false;
+      return true;
+    });
+  }, [rows, dateRange]);
+
   // ── Stats ─────────────────────────────────────────────
   const stats = useMemo(() => {
-    const total = rows.length;
-    const duplicates = rows.filter(r => r.audit_status === 'DUPLICATE_COGS');
-    const mismatches = rows.filter(r => r.audit_status === 'MISMATCH');
-    const missing = rows.filter(r => r.audit_status === 'MISSING');
-    const consistent = rows.filter(r => r.audit_status === 'CONSISTENT');
-    const cancelledOrphans = rows.filter(r => r.audit_status === 'CANCELLED_ORPHAN');
+    const total = dateFiltered.length;
+    const duplicates = dateFiltered.filter(r => r.audit_status === 'DUPLICATE_COGS');
+    const mismatches = dateFiltered.filter(r => r.audit_status === 'MISMATCH');
+    const missing = dateFiltered.filter(r => r.audit_status === 'MISSING');
+    const consistent = dateFiltered.filter(r => r.audit_status === 'CONSISTENT');
+    const cancelledOrphans = dateFiltered.filter(r => r.audit_status === 'CANCELLED_ORPHAN');
     const totalOverstatement = duplicates.reduce((s, r) => s + r.balance_impact, 0);
     // Signed net GL 5000 impact of cancelled-invoice orphans (can be negative
     // for stray reversals that over-credit COGS).
     const orphanNetImpact = cancelledOrphans.reduce((s, r) => s + r.balance_impact, 0);
-    const doubleTriggerCount = rows.filter(r => r.root_cause === 'DOUBLE_TRIGGER').length;
+    const doubleTriggerCount = dateFiltered.filter(r => r.root_cause === 'DOUBLE_TRIGGER').length;
     const autoFixableCount = duplicates.length + cancelledOrphans.length;
     return {
       total, duplicates: duplicates.length, mismatches: mismatches.length,
@@ -165,19 +277,17 @@ export default function COGSAuditPage() {
       totalOverstatement, orphanNetImpact, doubleTriggerCount, autoFixableCount,
       duplicateInvoiceIds: new Set(duplicates.map(d => d.invoice_id)),
     };
-  }, [rows]);
+  }, [dateFiltered]);
 
-  // ── Filtered rows ─────────────────────────────────────
+  // ── Filtered rows (status tab + search) ───────────────
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return rows.filter(r => {
+    return dateFiltered.filter(r => {
       if (filter === 'duplicate' && r.audit_status !== 'DUPLICATE_COGS') return false;
       if (filter === 'mismatch' && r.audit_status !== 'MISMATCH') return false;
       if (filter === 'missing' && r.audit_status !== 'MISSING') return false;
       if (filter === 'consistent' && r.audit_status !== 'CONSISTENT') return false;
       if (filter === 'cancelled' && r.audit_status !== 'CANCELLED_ORPHAN') return false;
-      if (dateRange.start && r.invoice_date < dateRange.start) return false;
-      if (dateRange.end && r.invoice_date > dateRange.end) return false;
       if (!term) return true;
       return (
         r.invoice_number.toLowerCase().includes(term) ||
@@ -186,12 +296,20 @@ export default function COGSAuditPage() {
         (r.root_cause || '').toLowerCase().includes(term)
       );
     });
-  }, [rows, filter, search]);
+  }, [dateFiltered, filter, search]);
 
   const paginated = useMemo(() => {
     const start = (page - 1) * pageSize;
     return filtered.slice(start, start + pageSize);
   }, [filtered, page, pageSize]);
+
+  // ── Column totals (whole view / current page / selection) ──
+  const filteredTotals = useMemo(() => computeTotals(filtered), [filtered]);
+  const pageTotals = useMemo(() => computeTotals(paginated), [paginated]);
+  const selectedTotals = useMemo(
+    () => computeTotals(rows.filter(r => selected.has(r.invoice_id))),
+    [rows, selected]
+  );
 
   // ── Selection helpers ─────────────────────────────────
   function toggleSelected(id: string) {
@@ -308,7 +426,8 @@ export default function COGSAuditPage() {
       'JE Count', 'Keeper Total', 'Balance Impact', 'Issue Type', 'Fix Action', 'Root Cause',
     ];
     const lines = [header.join(',')];
-    rows.forEach(r => {
+    // Export exactly what the current view shows (timeline + tab + search).
+    filtered.forEach(r => {
       lines.push([
         r.invoice_number, r.invoice_date, r.audit_status,
         `"${r.customer_name || ''}"`, r.item_count,
@@ -336,12 +455,12 @@ export default function COGSAuditPage() {
 
   const rootCauseData = useMemo(() => {
     const m = new Map<string, number>();
-    rows.forEach(r => {
+    dateFiltered.forEach(r => {
       const k = r.root_cause || 'NONE';
       m.set(k, (m.get(k) || 0) + 1);
     });
     return Array.from(m.entries()).map(([name, value]) => ({ name, value }));
-  }, [rows]);
+  }, [dateFiltered]);
 
   if (loading) {
     return (
@@ -469,7 +588,7 @@ export default function COGSAuditPage() {
                 filter === f ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 hover:bg-gray-50'
               }`}
             >
-              {f === 'all' ? 'All' : STATUS_LABELS[f.toUpperCase()] || f}
+              {f === 'all' ? 'All' : FILTER_LABELS[f]}
               {f === 'all' && ` (${stats.total})`}
               {f === 'duplicate' && ` (${stats.duplicates})`}
               {f === 'mismatch' && ` (${stats.mismatches})`}
@@ -479,21 +598,53 @@ export default function COGSAuditPage() {
             </button>
           ))}
         </div>
+        {/* ── Timeline filter ──────────────────────────── */}
         <div className="flex items-center gap-2">
           <CalendarDays className="h-4 w-4 text-gray-500" />
-          <input
-            type="date"
-            value={dateRange.start}
-            onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-            className="text-sm p-1.5 border rounded"
-          />
-          <span className="text-gray-500">-</span>
-          <input
-            type="date"
-            value={dateRange.end}
-            onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-            className="text-sm p-1.5 border rounded"
-          />
+          <select
+            value={preset}
+            onChange={e => {
+              const p = e.target.value as DatePreset;
+              setPreset(p);
+              if (p !== 'custom') setDateRange(presetToRange(p));
+              setPage(1);
+            }}
+            className="text-sm p-1.5 pr-8 border rounded bg-white"
+          >
+            {(Object.keys(PRESET_LABELS) as DatePreset[]).map(p => (
+              <option key={p} value={p}>{PRESET_LABELS[p]}</option>
+            ))}
+          </select>
+          {preset === 'custom' ? (
+            <>
+              <input
+                type="date"
+                value={dateRange.start}
+                onChange={e => { setDateRange(prev => ({ ...prev, start: e.target.value })); setPage(1); }}
+                className="text-sm p-1.5 border rounded"
+              />
+              <span className="text-gray-400">–</span>
+              <input
+                type="date"
+                value={dateRange.end}
+                onChange={e => { setDateRange(prev => ({ ...prev, end: e.target.value })); setPage(1); }}
+                className="text-sm p-1.5 border rounded"
+              />
+            </>
+          ) : (dateRange.start || dateRange.end) ? (
+            <span className="text-xs text-gray-600 bg-gray-100 rounded px-2 py-1 whitespace-nowrap">
+              {dateRange.start ? fmtDateLabel(dateRange.start) : '…'} – {dateRange.end ? fmtDateLabel(dateRange.end) : '…'}
+            </span>
+          ) : null}
+          {(preset !== 'all' || dateRange.start || dateRange.end) && (
+            <button
+              onClick={() => { setPreset('all'); setDateRange({ start: '', end: '' }); setPage(1); }}
+              className="p-1 text-gray-400 hover:text-gray-700 rounded"
+              title="Clear timeline filter"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
@@ -507,11 +658,49 @@ export default function COGSAuditPage() {
         </div>
       </div>
 
+      {/* ── View totals strip ─────────────────────────── */}
+      <div className="bg-white border rounded px-4 py-2.5 flex flex-wrap items-center gap-x-6 gap-y-1.5 text-sm">
+        <span className="font-semibold text-gray-800">
+          {filteredTotals.count.toLocaleString()} invoice{filteredTotals.count === 1 ? '' : 's'} in view
+        </span>
+        <span className="text-gray-500">
+          Items: <span className="font-mono font-semibold text-gray-800">{filteredTotals.items.toLocaleString()}</span>
+        </span>
+        <span className="text-gray-500">
+          Expected (A): <span className="font-mono font-semibold text-gray-800">{formatCurrency(filteredTotals.expectedA)}</span>
+        </span>
+        {filteredTotals.expectedB > 0 && (
+          <span className="text-gray-500">
+            History (B): <span className="font-mono font-semibold text-gray-800">{formatCurrency(filteredTotals.expectedB)}</span>
+          </span>
+        )}
+        <span className="text-gray-500">
+          Journal (C): <span className="font-mono font-semibold text-gray-800">{formatCurrency(filteredTotals.journalC)}</span>
+        </span>
+        {filteredTotals.fifoD > 0 && (
+          <span className="text-gray-500">
+            FIFO (D): <span className="font-mono font-semibold text-gray-800">{formatCurrency(filteredTotals.fifoD)}</span>
+          </span>
+        )}
+        <span className="text-gray-500">
+          JEs: <span className="font-mono font-semibold text-gray-800">{filteredTotals.jeCount.toLocaleString()}</span>
+        </span>
+        <span className="text-gray-500">
+          Net impact: <SignedAmount value={filteredTotals.impact} />
+        </span>
+      </div>
+
       {/* ── Bulk action bar ────────────────────────────── */}
       {selected.size > 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded p-3 flex items-center gap-3">
           <span className="text-sm font-medium text-blue-900">
             {selected.size} invoice{selected.size > 1 ? 's' : ''} selected
+          </span>
+          <span className="text-xs text-blue-800">
+            Expected (A): <b>{formatCurrency(selectedTotals.expectedA)}</b>
+            {' · '}Journal (C): <b>{formatCurrency(selectedTotals.journalC)}</b>
+            {' · '}FIFO (D): <b>{formatCurrency(selectedTotals.fifoD)}</b>
+            {' · '}Net impact: <SignedAmount value={selectedTotals.impact} />
           </span>
           <button
             onClick={() => setShowBulkModal(true)}
@@ -636,6 +825,25 @@ export default function COGSAuditPage() {
               />
             ))}
           </tbody>
+          <tfoot className="bg-gray-50 border-t-2 border-gray-200 text-xs font-semibold">
+            <tr>
+              <td colSpan={4} className="p-2 text-left text-gray-600">
+                Page totals — {pageTotals.count} invoice{pageTotals.count === 1 ? '' : 's'} on this page
+              </td>
+              <td className="p-2 text-right">{pageTotals.items.toLocaleString()}</td>
+              <td className="p-2 text-right font-mono">{formatCurrency(pageTotals.expectedA)}</td>
+              <td className="p-2 text-right font-mono">
+                {pageTotals.expectedB > 0 ? formatCurrency(pageTotals.expectedB) : '—'}
+              </td>
+              <td className="p-2 text-right font-mono">{formatCurrency(pageTotals.journalC)}</td>
+              <td className="p-2 text-right font-mono">
+                {pageTotals.fifoD > 0 ? formatCurrency(pageTotals.fifoD) : '—'}
+              </td>
+              <td className="p-2 text-center">{pageTotals.jeCount.toLocaleString()}</td>
+              <td className="p-2 text-right font-mono"><SignedAmount value={pageTotals.impact} /></td>
+              <td colSpan={3}></td>
+            </tr>
+          </tfoot>
         </table>
       </div>
 
