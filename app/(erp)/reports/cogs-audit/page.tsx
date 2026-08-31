@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Download, FileText,
+  AlertTriangle, Calendar, CalendarDays, ChevronDown, ChevronRight, Download, FileText,
   Loader2, RefreshCw, Search, Trash2, X, XCircle,
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
@@ -104,6 +104,7 @@ const FIX_COLORS: Record<string, string> = {
 export default function COGSAuditPage() {
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dateRange, setDateRange] = useState({ start: '', end: '' });
   const [filter, setFilter] = useState<Filter>('duplicate');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -161,6 +162,8 @@ export default function COGSAuditPage() {
       if (filter === 'mismatch' && r.audit_status !== 'MISMATCH') return false;
       if (filter === 'missing' && r.audit_status !== 'MISSING') return false;
       if (filter === 'consistent' && r.audit_status !== 'CONSISTENT') return false;
+      if (dateRange.start && r.invoice_date < dateRange.start) return false;
+      if (dateRange.end && r.invoice_date > dateRange.end) return false;
       if (!term) return true;
       return (
         r.invoice_number.toLowerCase().includes(term) ||
@@ -440,13 +443,29 @@ export default function COGSAuditPage() {
             </button>
           ))}
         </div>
-        <div className="relative flex-1 max-w-md">
+        <div className="flex items-center gap-2">
+          <CalendarDays className="h-4 w-4 text-gray-500" />
+          <input
+            type="date"
+            value={dateRange.start}
+            onChange={e => setDateRange(prev => ({ ...prev, start: e.target.value }))}
+            className="text-sm p-1.5 border rounded"
+          />
+          <span className="text-gray-500">-</span>
+          <input
+            type="date"
+            value={dateRange.end}
+            onChange={e => setDateRange(prev => ({ ...prev, end: e.target.value }))}
+            className="text-sm p-1.5 border rounded"
+          />
+        </div>
+        <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
           <input
             type="text"
             value={search}
             onChange={e => { setSearch(e.target.value); setPage(1); }}
-            placeholder="Search invoice, customer, root cause..."
+            placeholder="Search..."
             className="w-full pl-9 pr-3 py-2 text-sm border rounded"
           />
         </div>
