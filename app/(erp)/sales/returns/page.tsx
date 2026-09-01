@@ -467,18 +467,6 @@ function ReturnModal({ invoices, onClose, onSaved }: {
     setError('');
 
     try {
-      // Generate return number
-      const { data: returnNumberData } = await supabase.rpc('generate_sales_return_number');
-      const returnNumber = returnNumberData || `SR-${Date.now().toString().slice(-6)}`;
-
-      // Get default warehouse
-      const { data: warehouse } = await supabase
-        .from('warehouses')
-        .select('id')
-        .eq('is_default', true)
-        .maybeSingle();
-      const warehouseId = warehouse?.id || '11000000-0000-0000-0000-000000000001';
-
       // Get current user (if authenticated and exists in profiles)
       let createdBy: string | null = null;
       try {
@@ -498,323 +486,41 @@ function ReturnModal({ invoices, onClose, onSaved }: {
         // Auth not available, continue without created_by
       }
 
-      // Get selected payment method details
-      const selectedMethod = paymentMethods.find(m => m.id === selectedPaymentMethod);
-      const isStoreCredit = selectedPaymentMethod === 'store_credit';
-
-      // Get required accounts
-      const accountCodes = ['4050', '1100', '1200', '5000'];
-      if (!isStoreCredit && selectedMethod?.account_id) {
-        // We'll use the payment method's account for cash/bank refunds
-      } else if (isStoreCredit) {
-        accountCodes.push('2200'); // Customer Refund Payable
-      }
-
-      const { data: accounts } = await supabase
-        .from('accounts')
-        .select('id, code')
-        .in('code', accountCodes);
-
-      const getAccountId = (code: string) => accounts?.find(a => a.code === code)?.id;
-
-      const salesReturnsAccountId = getAccountId('4050');
-      const accountsReceivableId = getAccountId('1100');
-      const customerRefundPayableId = getAccountId('2200');
-      const inventoryAccountId = getAccountId('1200');
-      const cogsAccountId = getAccountId('5000');
-
-      if (!salesReturnsAccountId || !accountsReceivableId || !inventoryAccountId || !cogsAccountId) {
-        setError('Required accounts not found. Please check chart of accounts.');
-        setSaving(false);
-        return;
-      }
-
-      // Validate refund amount against paid amount
+      // Client-side guard for a friendly message; the RPC enforces the same cap.
       if (totalRefundAmount > maxRefundable) {
         setError(`Refund amount (${formatCurrency(totalRefundAmount)}) exceeds the customer's paid amount (${formatCurrency(maxRefundable)}). ${isOnCredit ? 'This is an on-credit sale with no payment received yet.' : 'Previous refunds have already been processed.'}`);
         setSaving(false);
         return;
       }
 
-      if (totalRefundAmount === 0) {
-        setError('Please select at least one item to return.');
-        setSaving(false);
-        return;
-      }
+      const selectedMethod = paymentMethods.find(m => m.id === selectedPaymentMethod);
+      const isStoreCredit = selectedPaymentMethod === 'store_credit';
 
-      // Determine credit account based on refund method
-      let creditAccountId: string;
-      if (isStoreCredit) {
-        creditAccountId = customerRefundPayableId || accountsReceivableId;
-      } else if (selectedMethod?.account_id) {
-        creditAccountId = selectedMethod.account_id;
-      } else {
-        creditAccountId = accountsReceivableId;
-      }
+      // One atomic server-side RPC: return + items + batch-accurate FIFO restore +
+      // movements + counters + journal entry (Dr 4050 / Cr refund account, and
+      // Dr 1200 / Cr 5000 for the COGS reversal at original layer cost) + refund
+      // payment + invoice state + store credit. Prices, discounts, base-unit
+      // conversion, and FIFO cost are derived from server data — the books are
+      // posted by post_journal_entry, never from this page.
+      const payload = itemsToReturn.map(([itemId, { qty, reason }]) => ({
+        invoice_item_id: itemId,
+        quantity: qty,
+        reason: reason || '',
+      }));
 
-      // Create journal entry
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-      const journalEntryNumber = jeNum || `JE-${Date.now().toString().slice(-6)}`;
-      const journalLines: any[] = [];
-
-      // Line 1: Debit Sales Returns & Allowances (Revenue Reversal)
-      journalLines.push({
-        account_id: salesReturnsAccountId,
-        description: `Sales Return - ${returnNumber}`,
-        debit: cappedRefundAmount,
-        credit: 0,
-        sort_order: 1
+      const { data, error: rpcError } = await supabase.rpc('record_sales_return', {
+        p_invoice_id: selectedInvoice.id,
+        p_refund_method: isStoreCredit ? 'store_credit' : (selectedMethod?.code || 'cash'),
+        p_refund_account_id: (!isStoreCredit && selectedMethod?.account_id) || null,
+        p_items: payload,
+        p_created_by: createdBy,
       });
+      if (rpcError) throw new Error(rpcError.message);
 
-      // Line 2: Credit Accounts Receivable or Cash/Bank/Refund Payable
-      journalLines.push({
-        account_id: creditAccountId,
-        description: isStoreCredit ? 'Customer Store Credit' : `Refund via ${selectedMethod?.name || 'Payment'}`,
-        debit: 0,
-        credit: cappedRefundAmount,
-        sort_order: 2
-      });
-
-      // Line 3: Debit Inventory (COGS Reversal) - if we have cost prices
-      if (totalCOGS > 0) {
-        journalLines.push({
-          account_id: inventoryAccountId,
-          description: 'Inventory restored from return',
-          debit: totalCOGS,
-          credit: 0,
-          sort_order: 3
-        });
-
-        // Line 4: Credit COGS
-        journalLines.push({
-          account_id: cogsAccountId,
-          description: 'COGS reversal for returned items',
-          debit: 0,
-          credit: totalCOGS,
-          sort_order: 4
-        });
-      }
-
-      // Insert journal entry (without created_by if no user)
-      const journalEntryData: any = {
-        entry_number: journalEntryNumber,
-        entry_date: new Date().toISOString().split('T')[0],
-        description: `Sales Return ${returnNumber} - Invoice ${selectedInvoice.invoice_number}`,
-        reference_type: 'sales_return',
-        total_debit: cappedRefundAmount + totalCOGS,
-        total_credit: cappedRefundAmount + totalCOGS,
-        is_posted: true
-      };
-      if (createdBy) {
-        journalEntryData.created_by = createdBy;
-      }
-
-      const { data: journalEntry, error: journalError } = await supabase
-        .from('journal_entries')
-        .insert(journalEntryData)
-        .select('id')
-        .single();
-
-      if (journalError) throw journalError;
-
-      // Insert journal lines
-      await supabase.from('journal_lines').insert(
-        journalLines.map(line => ({
-          ...line,
-          journal_entry_id: journalEntry.id
-        }))
-      );
-
-      // Update account balances for all affected accounts
-      const affectedAccountIds = [...new Set(journalLines.map(l => l.account_id))];
-      for (const accountId of affectedAccountIds) {
-        const accountLines = journalLines.filter(l => l.account_id === accountId);
-        const totalDebit = accountLines.reduce((sum, l) => sum + Number(l.debit || 0), 0);
-        const totalCredit = accountLines.reduce((sum, l) => sum + Number(l.credit || 0), 0);
-
-        // Get current balance
-        const { data: currentAccount } = await supabase
-          .from('accounts')
-          .select('balance, account_type')
-          .eq('id', accountId)
-          .single();
-
-        if (currentAccount) {
-          const isDebitAccount = ['asset', 'expense'].includes(currentAccount.account_type);
-          const netChange = isDebitAccount
-            ? totalDebit - totalCredit
-            : totalCredit - totalDebit;
-
-          const { error: balanceError } = await supabase
-            .from('accounts')
-            .update({
-              balance: (currentAccount.balance || 0) + netChange,
-            })
-            .eq('id', accountId);
-
-          if (balanceError) {
-            console.error('Failed to update account balance:', balanceError);
-          }
-        }
-      }
-
-      // Create payment record for the refund (only for non-store-credit refunds)
-      let paymentId = null;
-      if (!isStoreCredit) {
-        const { data: refPayNum } = await supabase.rpc('generate_payment_number');
-        const paymentNumber = refPayNum || `PAY-${Date.now().toString().slice(-6)}`;
-        const { data: payment, error: paymentError } = await supabase
-          .from('payments')
-          .insert({
-            payment_number: paymentNumber,
-            payment_type: 'refund',
-            reference_type: 'sales_return',
-            reference_id: journalEntry.id,
-            customer_id: selectedInvoice.customer_id,
-            amount: cappedRefundAmount,
-            payment_method: selectedMethod?.code || 'cash',
-            payment_date: new Date().toISOString().split('T')[0],
-            notes: `Refund for sales return ${returnNumber}`
-          })
-          .select('id')
-          .maybeSingle();
-
-        if (!paymentError && payment) {
-          paymentId = payment.id;
-        }
-      }
-
-      // Create sales_return record
-      const salesReturnData: any = {
-        return_number: returnNumber,
-        invoice_id: selectedInvoice.id,
-        customer_id: selectedInvoice.customer_id,
-        return_date: new Date().toISOString().split('T')[0],
-        total_refund_amount: cappedRefundAmount,
-        refund_method: selectedMethod?.code || 'store_credit',
-        status: 'completed',
-        journal_entry_id: journalEntry.id,
-        payment_id: paymentId
-      };
-      if (createdBy) {
-        salesReturnData.created_by = createdBy;
-      }
-
-      const { data: salesReturn, error: returnError } = await supabase
-        .from('sales_returns')
-        .insert(salesReturnData)
-        .select('id')
-        .single();
-
-      if (returnError) throw returnError;
-
-      // Create sales_return_items
-      for (const [itemId, { qty, reason }] of itemsToReturn) {
-        const item = items.find(i => i.id === itemId);
-        if (!item) continue;
-
-        const conversion = baseUnitsPerSaleUnit(item);
-        const baseQtyToReturn = qty * conversion;
-        const fifoCostPerBase = fifoCostMap[itemId];
-        const costPerBase = fifoCostPerBase !== undefined ? fifoCostPerBase : (item.cost_price || 0) / conversion;
-        const costPerSaleUnit = costPerBase * conversion;
-
-        const discountMultiplier = 1 - (item.discount_percent || 0) / 100;
-        await supabase.from('sales_return_items').insert({
-          sales_return_id: salesReturn.id,
-          invoice_item_id: itemId,
-          product_id: item.product_id,
-          quantity_returned: qty,
-          base_quantity_returned: baseQtyToReturn,
-          unit_price: item.unit_price,
-          discount_percent: item.discount_percent || 0,
-          cost_price: costPerSaleUnit,
-          subtotal: qty * item.unit_price * discountMultiplier,
-          reason: reason || 'Not specified'
-        });
-
-        // Restore FIFO batches — ALWAYS in base units
-        await supabase.rpc('restore_fifo_on_return', {
-          p_invoice_item_id: itemId,
-          p_product_id: item.product_id,
-          p_warehouse_id: warehouseId,
-          p_quantity: baseQtyToReturn,
-          p_unit_cost: costPerBase,
-          p_reference_id: salesReturn.id,
-          p_reference_number: returnNumber,
-        });
-
-        // Create stock movement for return — in base units
-        await supabase.from('stock_movements').insert({
-          tenant_id: '00000000-0000-0000-0000-000000000001',
-          product_id: item.product_id,
-          warehouse_id: warehouseId,
-          movement_type: 'return_in',
-          quantity: baseQtyToReturn,
-          unit_cost: costPerBase,
-          reference_type: 'sales_return',
-          reference_id: salesReturn.id,
-          reference_number: returnNumber,
-          notes: reason || `Return from invoice ${selectedInvoice.invoice_number}`,
-        });
-
-        // Update inventory — in base units
-        const { data: invItem } = await supabase
-          .from('inventory_items')
-          .select('id, quantity_on_hand')
-          .eq('product_id', item.product_id)
-          .eq('warehouse_id', warehouseId)
-          .maybeSingle();
-
-        if (invItem) {
-          await supabase.from('inventory_items').update({
-            quantity_on_hand: invItem.quantity_on_hand + baseQtyToReturn,
-            updated_at: new Date().toISOString(),
-          }).eq('id', invItem.id);
-        } else {
-          await supabase.from('inventory_items').insert({
-            tenant_id: '00000000-0000-0000-0000-000000000001',
-            product_id: item.product_id,
-            warehouse_id: warehouseId,
-            quantity_on_hand: baseQtyToReturn,
-          });
-        }
-      }
-
-      // Update invoice amount_paid
-      const newAmountPaid = Math.max(0, selectedInvoice.amount_paid - cappedRefundAmount);
-      const newBalanceDue = selectedInvoice.total_amount - newAmountPaid;
-      const isFullyRefunded = cappedRefundAmount >= selectedInvoice.total_amount;
-      const newStatus = isFullyRefunded ? 'refunded' :
-                        newBalanceDue <= 0 ? 'paid' :
-                        newAmountPaid > 0 ? 'partially_paid' : 'sent';
-
-      await supabase.from('invoices').update({
-        amount_paid: newAmountPaid,
-        balance_due: newBalanceDue,
-        status: newStatus,
-        updated_at: new Date().toISOString(),
-      }).eq('id', selectedInvoice.id);
-
-      // Create store credit record if refund method is store credit
-      if (isStoreCredit && selectedInvoice.customer_id && salesReturn) {
-        const { data: creditNumberData } = await supabase.rpc('generate_credit_number');
-        const creditNumber = creditNumberData || `SC-${Date.now().toString().slice(-6)}`;
-
-        await supabase.from('customer_store_credits').insert({
-          customer_id: selectedInvoice.customer_id,
-          sales_return_id: salesReturn.id,
-          credit_number: creditNumber,
-          amount: cappedRefundAmount,
-          balance: cappedRefundAmount,
-          status: 'active',
-          notes: `Store credit from return ${returnNumber} (Invoice ${selectedInvoice.invoice_number})`,
-        });
-      }
-
+      const result = (data || {}) as { return_number?: string; refund_amount?: number };
       toast({
         title: 'Return Processed Successfully',
-        description: `Return ${returnNumber} created. Refund: ${formatCurrency(cappedRefundAmount)}`
+        description: `Return ${result.return_number} created. Refund: ${formatCurrency(Number(result.refund_amount || 0))}`
       });
 
       // Show success state briefly before closing
