@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, TriangleAlert as AlertTriangle } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { useGlobalCart } from '@/hooks/use-global-cart';
@@ -86,6 +86,30 @@ export default function POSPage() {
   const { items: globalCartItems, clearCart: clearGlobalCart } = useGlobalCart();
   const globalCartConsumed = useRef(false);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
+  // Batch-ledger stock (FIFO truth) per product+warehouse, for the oversell gate.
+  const [ledgerStockByPair, setLedgerStockByPair] = useState<Record<string, number>>({});
+  const [ledgerStockByProduct, setLedgerStockByProduct] = useState<Record<string, number>>({});
+  const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
+  const [pendingShortfalls, setPendingShortfalls] = useState<{ name: string; sku: string; baseQty: number; ledgerQty: number; shortfall: number; costValue: number; bothEmpty: boolean }[]>([]);
+  const shortfallConfirmedRef = useRef(false);
+
+  async function loadLedgerStock() {
+    const { data } = await supabase.rpc('get_batch_stock_by_product_warehouse');
+    const pairs: Record<string, number> = {};
+    const byProduct: Record<string, number> = {};
+    (data || []).forEach((r: any) => {
+      pairs[`${r.product_id}|${r.warehouse_id}`] = Number(r.qty);
+      byProduct[r.product_id] = (byProduct[r.product_id] || 0) + Number(r.qty);
+    });
+    setLedgerStockByPair(pairs);
+    setLedgerStockByProduct(byProduct);
+  }
+
+  // FIFO ledger quantity available for a cart item (its warehouse, or all warehouses).
+  function getLedgerQty(item: CartItem): number {
+    if (item.warehouse_id) return ledgerStockByPair[`${item.id}|${item.warehouse_id}`] ?? 0;
+    return ledgerStockByProduct[item.id] ?? 0;
+  }
 
   // Consume global cart items on mount (from header scanner)
   useEffect(() => {
@@ -150,6 +174,7 @@ export default function POSPage() {
       .then(({ data }) => setCategories(data || []));
     supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name')
       .then(({ data }) => { if (data) setWarehouses(data); });
+    loadLedgerStock();
     supabase.from('app_settings').select('setting_value').eq('setting_key', 'product_defaults').maybeSingle()
       .then(({ data }) => {
         if (data?.setting_value?.default_image_url) setDefaultProductImage(data.setting_value.default_image_url);
@@ -182,6 +207,9 @@ export default function POSPage() {
         if (total === 0) setApplyStoreCredit(false);
       });
   }, [selectedCustomer]);
+
+  // Any cart change invalidates a prior "Sell anyway" confirmation.
+  useEffect(() => { shortfallConfirmedRef.current = false; }, [cart]);
 
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -365,6 +393,54 @@ export default function POSPage() {
   async function processOrder() {
     if (cart.length === 0) { toast({ title: 'Cart is empty', variant: 'destructive' }); return; }
     if (!selectedCustomer) { toast({ title: 'Please select a customer first', variant: 'destructive' }); return; }
+
+    // Oversell gate (warn-and-confirm): compare the cart against the FIFO batch
+    // ledger. A shortfall is sellable ONLY after explicit confirmation — the
+    // negative layer it creates is a conscious decision, not an accident. When
+    // both the ledger AND the counter show no stock, treat it as a data error
+    // (wrong SKU / 10x quantity typo) and block outright.
+    if (!shortfallConfirmedRef.current) {
+      // Aggregate cart quantities per product+warehouse (a product can appear
+      // in multiple rows with different sale units).
+      const agg: Record<string, { baseQty: number; ledgerQty: number; name: string; sku: string; costPrice: number; stockAvailable: number }> = {};
+      cart.forEach(item => {
+        const key = item.warehouse_id ? `${item.id}|${item.warehouse_id}` : item.id;
+        agg[key] = agg[key] || {
+          baseQty: 0, ledgerQty: getLedgerQty(item), name: item.name,
+          sku: item.sku || '', costPrice: item.cost_price || 0, stockAvailable: item.stock_available ?? 0,
+        };
+        agg[key].baseQty += item.base_quantity;
+      });
+      const shortfalls = Object.values(agg)
+        .map(a => {
+          if (a.ledgerQty >= a.baseQty) return null;
+          const shortfall = a.baseQty - Math.max(a.ledgerQty, 0);
+          const bothEmpty = a.ledgerQty <= 0 && a.stockAvailable <= 0;
+          return {
+            name: a.name, sku: a.sku, baseQty: a.baseQty, ledgerQty: a.ledgerQty,
+            shortfall,
+            costValue: shortfall * a.costPrice,
+            bothEmpty,
+          };
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null);
+
+      if (shortfalls.length > 0) {
+        const blocked = shortfalls.filter(s => s.bothEmpty);
+        if (blocked.length > 0) {
+          toast({
+            title: 'Cannot sell — no stock record at all',
+            description: `${blocked.map(s => s.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`,
+            variant: 'destructive',
+          });
+          return;
+        }
+        setPendingShortfalls(shortfalls);
+        setShortfallConfirmOpen(true);
+        return;
+      }
+    }
+
     setProcessing(true);
 
     try {
@@ -425,20 +501,27 @@ export default function POSPage() {
       if (invError) throw invError;
       if (!invoice) throw new Error('Invoice not created');
 
-      const invoiceItems = cart.map(item => ({
-        invoice_id: invoice.id,
-        product_id: item.id,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        cost_price: item.cost_price || 0,
-        discount_percent: item.discount_percent || 0,
-        tax_rate: 0,
-        subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
-        unit_name: item.selected_unit?.unit_name,
-        unit_conversion_factor: item.selected_unit?.conversion_factor,
-        base_quantity: item.base_quantity,
-        warehouse_id: item.warehouse_id || null,
-      }));
+      const invoiceItems = cart.map(item => {
+        const ledgerQty = getLedgerQty(item);
+        const shortfall = item.base_quantity - Math.max(ledgerQty, 0);
+        return {
+          invoice_id: invoice.id,
+          product_id: item.id,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          cost_price: item.cost_price || 0,
+          discount_percent: item.discount_percent || 0,
+          tax_rate: 0,
+          subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
+          unit_name: item.selected_unit?.unit_name,
+          unit_conversion_factor: item.selected_unit?.conversion_factor,
+          base_quantity: item.base_quantity,
+          warehouse_id: item.warehouse_id || null,
+          description: shortfall > 0
+            ? `Ledger shortfall: sold ${item.base_quantity} against ${ledgerQty} in FIFO batches (short ${shortfall} base units) — confirmed at POS`
+            : null,
+        };
+      });
 
       const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems);
       if (itemsError) throw itemsError;
@@ -554,11 +637,14 @@ export default function POSPage() {
       setCartTab('items');
       setInvoiceDate(new Date().toISOString().split('T')[0]);
       setReference('');
+      shortfallConfirmedRef.current = false;
       setOrderComplete(true);
       toast({ title: 'Success', description: `Order ${invoiceNumber} completed successfully` });
       loadProducts(search);
+      loadLedgerStock();
     } catch (error: any) {
       console.error('POS error:', error);
+      shortfallConfirmedRef.current = false;
       toast({ title: 'Error', description: error.message || 'Failed to process order', variant: 'destructive' });
     }
 
@@ -1084,6 +1170,14 @@ export default function POSPage() {
                   />
                 </div>
               </div>
+              {item.base_quantity - Math.max(getLedgerQty(item), 0) > 0 && (
+                <div className="mt-1.5 pl-6 flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                    Ledger stock {getLedgerQty(item)} of {item.base_quantity} — short {item.base_quantity - Math.max(getLedgerQty(item), 0)} units, needs confirmation
+                  </span>
+                </div>
+              )}
               {item.available_warehouses && item.available_warehouses.length > 0 && (
                 <div className="flex items-center gap-1.5 mt-1.5 pl-6">
                   <span className="text-[10px] font-medium text-muted-foreground shrink-0">WH</span>
@@ -1285,6 +1379,55 @@ export default function POSPage() {
           partialAmount={partialAmount}
           setPartialAmount={setPartialAmount}
         />
+      )}
+
+      {shortfallConfirmOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+          <div className="bg-white rounded-xl w-full max-w-md shadow-2xl">
+            <div className="flex items-start gap-3 px-5 py-4 border-b border-border">
+              <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-amber-500" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-foreground">Sell beyond ledger stock?</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  The FIFO batch ledger holds less than this sale. Continuing creates a negative inventory layer (an IOU) that must be covered by receiving stock later.
+                </p>
+              </div>
+            </div>
+            <div className="px-5 py-4 max-h-[45vh] overflow-y-auto space-y-2">
+              {pendingShortfalls.map((s, i) => (
+                <div key={i} className="flex items-center justify-between text-sm border border-amber-200 bg-amber-50/50 rounded-lg px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="font-medium text-foreground truncate">{s.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      Ledger: {s.ledgerQty} of {s.baseQty} — short <b className="text-amber-700">{s.shortfall}</b> units
+                    </p>
+                  </div>
+                  <span className="text-xs text-amber-700 font-semibold whitespace-nowrap ml-3">~{formatCurrency(s.costValue)}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2 px-5 py-4 border-t border-border">
+              <button
+                onClick={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+                className="flex-1 py-2.5 px-4 rounded-lg border border-border text-sm font-medium text-foreground hover:bg-muted transition"
+              >
+                Go back
+              </button>
+              <button
+                onClick={() => {
+                  shortfallConfirmedRef.current = true;
+                  setShortfallConfirmOpen(false);
+                  processOrder();
+                }}
+                className="flex-1 py-2.5 px-4 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold transition"
+              >
+                Sell anyway
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showScanner && (
