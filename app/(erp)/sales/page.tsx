@@ -1177,10 +1177,15 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           }
           if (quantity < originalQty) cappedCount++;
         }
+        // Cost must be on the SALE-unit scale (same scale as unit_price) --
+        // invoice_items.check_invoice_item_cost_scale rejects base-unit costs
+        // for multi-unit products (e.g. cable sold per coil, cost per meter).
+        const saleUnitCost = selectedUnit?.cost_price
+          || (selectedUnit ? (product.cost_price || 0) * (selectedUnit.conversion_factor || 1) : (product.cost_price || 0));
         return {
           product_id: product.id, product_name: product.name, product_sku: product.sku,
           product_unit: product.unit, product_base_unit: product.base_unit, stock_qty: warehouse ? warehouse.stock : (product.inventory_items?.length ? 0 : null),
-          quantity, unit_price: Number(row.unit_price) || (selectedUnit?.price || product.sale_price || 0), cost_price: selectedUnit?.cost_price || product.cost_price || 0,
+          quantity, unit_price: Number(row.unit_price) || (selectedUnit?.price || product.sale_price || 0), cost_price: saleUnitCost,
           discount_percent: Math.min(100, Math.max(0, Number(row.discount_percent) || 0)), selected_unit: selectedUnit,
           available_units: availableUnits.length ? availableUnits : undefined, base_quantity: baseQuantity,
           warehouse_id: warehouse?.warehouse_id, inventory_item_id: warehouse?.inventory_item_id, available_warehouses: availableWhs,
@@ -1406,7 +1411,17 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     }));
 
     const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems);
-    if (itemsError) { setError(itemsError.message); setSaving(false); return; }
+    if (itemsError) {
+      // Don't leave an item-less invoice husk behind: the row was just
+      // created above and nothing references it yet (draft = no AR journal
+      // entry). Non-draft invoices keep an AR journal entry, so they stay.
+      if (invoice.status === 'draft') {
+        await supabase.from('invoices').delete().eq('id', invoice.id);
+      }
+      setError(itemsError.message);
+      setSaving(false);
+      return;
+    }
 
     // Record cost price history snapshot for each item at time of sale
     const costHistoryRecords = items.map(item => {
@@ -1429,7 +1444,8 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       };
     });
     if (costHistoryRecords.length > 0) {
-      await supabase.from('cost_price_history').insert(costHistoryRecords);
+      const { error: costHistoryError } = await supabase.from('cost_price_history').insert(costHistoryRecords);
+      if (costHistoryError) { setError(costHistoryError.message); setSaving(false); return; }
     }
 
     // Record payment if full or partial
