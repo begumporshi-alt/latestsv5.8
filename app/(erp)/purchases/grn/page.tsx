@@ -470,6 +470,22 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         }
       }
 
+      // Snapshot cost prices before the batch inserts — the DB trigger
+      // (update_weighted_average_cost) raises products.cost_price only when
+      // a received unit cost is higher than the current cost
+      const receivedProductIds = items
+        .filter(i => Number(receiveItems[i.id] || 0) > 0)
+        .map(i => i.product_id);
+      const uniqueProductIds = Array.from(new Set(receivedProductIds));
+      const beforeCosts: Record<string, number> = {};
+      if (uniqueProductIds.length > 0) {
+        const { data: beforeProducts } = await supabase
+          .from('products')
+          .select('id, cost_price')
+          .in('id', uniqueProductIds);
+        (beforeProducts || []).forEach((p: any) => { beforeCosts[p.id] = Number(p.cost_price) || 0; });
+      }
+
       // Create inventory_batches for FIFO inventory tracking
       // This is done in the frontend (not a DB trigger) for reliability —
       // DB triggers have race conditions and pooling timing issues
@@ -518,23 +534,22 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         await supabase.from('purchase_orders').update({ status: newStatus }).eq('id', selectedPO.id);
       }
 
-      // Fetch updated cost prices (trigger recomputes weighted average on GRN post)
-      const receivedProductIds = items
-        .filter(i => Number(receiveItems[i.id] || 0) > 0)
-        .map(i => i.product_id);
-      const uniqueProductIds = Array.from(new Set(receivedProductIds));
+      // Cost prices can only rise here: the trigger sets products.cost_price to
+      // the received unit cost only when it is higher than the current cost.
+      // Report only the products whose cost actually changed.
       let costUpdateSummary = '';
       if (uniqueProductIds.length > 0) {
         const { data: updatedProducts } = await supabase
           .from('products')
           .select('id, name, cost_price')
           .in('id', uniqueProductIds);
-        if (updatedProducts && updatedProducts.length > 0) {
-          const lines = updatedProducts
-            .map(p => `${p.name}: ৳${Number(p.cost_price).toFixed(2)}`)
+        const changed = (updatedProducts || []).filter(p => Number(p.cost_price) > (beforeCosts[p.id] ?? 0));
+        if (changed.length > 0) {
+          const lines = changed
+            .map(p => `${p.name}: ৳${(beforeCosts[p.id] ?? 0).toFixed(2)} → ৳${Number(p.cost_price).toFixed(2)}`)
             .slice(0, 3);
-          const more = updatedProducts.length > 3 ? ` (+${updatedProducts.length - 3} more)` : '';
-          costUpdateSummary = ` • New avg cost — ${lines.join(', ')}${more}`;
+          const more = changed.length > 3 ? ` (+${changed.length - 3} more)` : '';
+          costUpdateSummary = ` • Cost updated — ${lines.join(', ')}${more}`;
         }
       }
 

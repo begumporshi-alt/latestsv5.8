@@ -1085,6 +1085,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
               <div>
                 <label className="block text-xs font-medium mb-1">Cost Price *</label>
                 <input type="number" required min="0" step="0.01" value={form.cost_price} onChange={e => setForm({ ...form, cost_price: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Auto-updates only when a purchase price is higher than this; cheaper purchases keep the current cost.</p>
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1">Sale Price *</label>
