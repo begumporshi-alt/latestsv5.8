@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inventory Audit — SI Building Solutions</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f5f5f5; --paper-2:#ececec; --ink:#2d3142; --muted:#4f5d75; --soft:#7a8399;
+    --rule:rgba(45,49,66,0.12); --accent:#eb6c36; --accent-tint:rgba(235,108,54,0.08);
+    --link:#2e5aa8; --mustard:#b8915a;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--paper);color:var(--ink);font-family:'Geist',sans-serif;font-size:14px;line-height:1.6;}
+  .page{max-width:1064px;margin:0 auto;padding:56px 32px 64px;}
+  .eyebrow{font-family:'Geist Mono',monospace;font-size:11px;font-weight:500;letter-spacing:0.18em;text-transform:uppercase;color:var(--soft);}
+  h1{font-family:'Instrument Serif',serif;font-weight:400;font-size:1.75rem;line-height:1.25;margin:12px 0 8px;}
+  .subtitle{color:var(--muted);font-size:15px;max-width:640px;}
+  .meta{font-family:'Geist Mono',monospace;font-size:10px;color:var(--soft);letter-spacing:0.04em;margin-top:16px;padding-top:14px;border-top:1px solid var(--rule);}
+  nav.toc{display:flex;flex-wrap:wrap;gap:8px 20px;margin:28px 0 8px;font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:0.06em;}
+  nav.toc a{color:var(--muted);text-decoration:none;border-bottom:1px solid transparent;}
+  nav.toc a:hover{color:var(--ink);border-bottom-color:var(--rule);}
+  section{margin-top:64px;}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:6px;}
+  .sec-num{font-family:'Geist Mono',monospace;font-size:11px;color:var(--accent);letter-spacing:0.1em;}
+  h2{font-family:'Instrument Serif',serif;font-weight:400;font-size:1.4rem;}
+  .lede{color:var(--muted);max-width:720px;margin-bottom:24px;}
+  p.prose{max-width:760px;margin:14px 0;color:var(--ink);}
+  p.prose b{font-weight:600;}
+  .cards{display:grid;grid-template-columns:1.15fr 1fr 0.95fr;gap:16px;margin:24px 0 16px;}
+  .card{background:#ffffff;border:1px solid var(--rule);border-radius:6px;padding:20px;}
+  .card .eyebrow{font-size:9px;}
+  .card-header{display:flex;align-items:center;gap:8px;margin:10px 0 4px;}
+  .card-dot{width:7px;height:7px;border-radius:50%;flex:none;}
+  .dot-coral{background:var(--accent);} .dot-ink{background:var(--ink);} .dot-muted{background:var(--muted);}
+  .card h3{font-size:13px;font-weight:600;}
+  .card .big{font-family:'Geist Mono',monospace;font-size:22px;font-weight:600;margin:6px 0 2px;letter-spacing:-0.01em;}
+  .card .small{font-family:'Geist Mono',monospace;font-size:10px;color:var(--soft);}
+  .card.wide{grid-column:1 / -1;display:flex;flex-wrap:wrap;gap:6px 28px;align-items:baseline;padding:16px 20px;}
+  .card.wide .big{font-size:16px;margin:0;}
+  .figure{background:#ffffff;border:1px solid var(--rule);border-radius:8px;padding:24px;margin:24px 0;overflow-x:auto;}
+  .figure svg{display:block;width:100%;height:auto;}
+  figure figcaption{padding:14px 4px 0;color:var(--muted);font-size:13px;max-width:780px;border-top:1px solid var(--rule);margin-top:18px;}
+  figure figcaption b{color:var(--ink);font-weight:600;}
+  /* svg text classes */
+  .t-name{font-family:'Geist',sans-serif;font-size:12px;font-weight:600;fill:var(--ink);}
+  .t-sub{font-family:'Geist Mono',monospace;font-size:9px;fill:var(--muted);}
+  .t-tag{font-family:'Geist Mono',monospace;font-size:7px;letter-spacing:0.08em;fill:var(--muted);}
+  .t-arrow{font-family:'Geist Mono',monospace;font-size:8px;letter-spacing:0.06em;fill:var(--soft);}
+  .t-eyebrow{font-family:'Geist Mono',monospace;font-size:7px;letter-spacing:0.14em;fill:rgba(45,49,66,0.40);}
+  .t-value{font-family:'Geist Mono',monospace;font-size:10px;font-weight:600;fill:var(--ink);}
+  .t-value.coral{fill:var(--accent);}
+  .t-cardinal{font-family:'Geist Mono',monospace;font-size:8px;fill:var(--muted);}
+  .t-legend{font-family:'Geist Mono',monospace;font-size:8px;fill:var(--muted);}
+  .t-aside{font-family:'Instrument Serif',serif;font-style:italic;font-size:14px;fill:rgba(45,49,66,0.65);}
+  .t-guard{font-family:'Geist Mono',monospace;font-size:8px;fill:var(--muted);}
+  /* tables */
+  .tbl-wrap{background:#ffffff;border:1px solid var(--rule);border-radius:6px;overflow:hidden;margin:20px 0;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{font-family:'Geist Mono',monospace;font-size:9.5px;text-transform:uppercase;letter-spacing:0.08em;color:var(--soft);text-align:left;padding:11px 14px;border-bottom:1px solid var(--rule);background:rgba(45,49,66,0.02);font-weight:500;}
+  td{padding:10px 14px;border-bottom:1px solid rgba(45,49,66,0.08);vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  td.num,th.num{font-family:'Geist Mono',monospace;text-align:right;white-space:nowrap;font-size:12px;}
+  td.code{font-family:'Geist Mono',monospace;font-size:11px;white-space:nowrap;}
+  tr.total td{font-weight:600;border-top:1px solid var(--rule-solid);background:rgba(45,49,66,0.02);}
+  tr.pos td.num{color:#5d7a52;} tr.neg td.num{color:#b0432f;}
+  .chip{display:inline-block;font-family:'Geist Mono',monospace;font-size:9px;letter-spacing:0.08em;padding:3px 8px;border-radius:3px;border:1px solid;}
+  .chip.high{color:var(--accent);border-color:var(--accent);background:var(--accent-tint);}
+  .chip.med{color:var(--ink);border-color:rgba(45,49,66,0.35);background:rgba(45,49,66,0.04);}
+  .chip.low{color:var(--soft);border-color:rgba(45,49,66,0.18);}
+  .ok{color:#5d7a52;font-weight:600;} .bad{color:#b0432f;font-weight:600;} .warn{color:var(--mustard);font-weight:600;}
+  ol.fixes{max-width:780px;padding-left:22px;}
+  ol.fixes li{margin:14px 0;}
+  ol.fixes b{font-weight:600;}
+  .footer{margin-top:72px;padding-top:18px;border-top:1px solid var(--rule);font-family:'Geist Mono',monospace;font-size:9.5px;color:var(--soft);letter-spacing:0.04em;line-height:1.8;}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <p class="eyebrow">Inventory System Audit — SI Building Solutions ERP</p>
+  <h1>How Inventory Really Works</h1>
+  <p class="subtitle">The mechanics, the connections, and the three numbers that disagree — mapped from the live code and queried from production data so you can see exactly where stock value lives and where it leaks.</p>
+  <p class="meta">LIVE FIGURES: production Supabase (aws-1-ap-southeast-2) · queried 2026-09-01 · updated same day after booking the cutover baseline (JE-964716) · branch customer-search-improvements · all money in ৳ (Taka)</p>
+  <nav class="toc">
+    <a href="#verdict">01 VERDICT</a><a href="#engine">02 ENGINE</a><a href="#lifecycle">03 BATCH LIFECYCLE</a>
+    <a href="#sale">04 ANATOMY OF A SALE</a><a href="#ledgers">05 THREE LEDGERS</a><a href="#model">06 DATA MODEL</a>
+    <a href="#ground">07 STOCK ON THE GROUND</a><a href="#health">08 HEALTH CHECK</a><a href="#findings">09 FINDINGS</a><a href="#fixes">10 FIXES</a>
+  </nav>
+</header>
+
+<!-- ============ 01 VERDICT ============ -->
+<section id="verdict">
+  <div class="sec-head"><span class="sec-num">01</span><h2>The verdict</h2></div>
+  <p class="lede">Your inventory is recorded three times, by three different mechanisms, and nothing reconciles them. Each record is internally coherent — they simply measure different things, and nobody is watching the gaps.</p>
+
+  <div class="cards">
+    <div class="card">
+      <p class="eyebrow">FIFO BATCH LEDGER · THE TRUTH</p>
+      <div class="card-header"><span class="card-dot dot-coral"></span><h3>inventory_batches</h3></div>
+      <p class="big">৳18,591,136</p>
+      <p class="small">1,876 layers · Σ qty_remaining × unit_cost</p>
+      <p class="small">what the warehouse is actually worth, layer by layer</p>
+    </div>
+    <div class="card">
+      <p class="eyebrow">GENERAL LEDGER · THE BOOKS</p>
+      <div class="card-header"><span class="card-dot dot-ink"></span><h3>Account 1200 — Inventory</h3></div>
+      <p class="big">৳18,591,136</p>
+      <p class="small">journal lines ≡ accounts.balance ✓</p>
+      <p class="small">what the balance sheet says — now ties to the batch ledger exactly</p>
+    </div>
+    <div class="card">
+      <p class="eyebrow">ON-HAND COUNTER · WHAT POS SEES</p>
+      <div class="card-header"><span class="card-dot dot-muted"></span><h3>inventory_items</h3></div>
+      <p class="big">৳18,169,565</p>
+      <p class="small">qty_on_hand × cost_price — indicative only</p>
+      <p class="small">rebuilt from batch truth 2026-09-01 — drift = 0</p>
+    </div>
+  </div>
+
+  <div class="card wide">
+    <span class="eyebrow">THE GAPS</span>
+    <span class="big">cutover baseline booked (JE-964716) = <b>৳7,890,782</b></span>
+    <span class="big">counters rebuilt from batches — drift <b>0</b>, hidden stock <b>৳0</b></span>
+    <span class="big">negative layers = <b>64 · −৳425,717</b></span>
+    <span class="big">flagged: <b>1 pair · 2 units</b> with no batch history</span>
+  </div>
+
+  <p class="prose">The headline: <b>the FIFO batch ledger is your real inventory</b>. It is the subsidiary ledger behind account 1200, it is what COGS is computed from, and it is the only record that knows what you paid for each unit. Both big repairs landed on 2026-09-01: the long-standing cutover divergence — GL 1200 sitting ৳7,890,782 above the ledger ever since the 2026-08-08 FIFO cutover — was booked as a one-time adjustment (JE-964716, Dr 3900 / Cr 1200, dated 2026-08-08, audit-logged), and the POS availability counter was rebuilt from batch truth (666 pairs corrected, ৳3.26M of hidden stock unlocked, 518 bogus negative counters cleared). The three records now agree. What remains is small: the historical oversell IOUs (62 negative layers, −৳425,215, honestly mirrored by the counters). New overselling now requires explicit confirmation at the POS, and a one-time audited purge of the historical layers remains available whenever physical counts confirm them.</p>
+  <p class="prose">Mechanically, the system is in far better shape than it was two weeks ago: the September repair migrations eliminated the duplicate-COGS era, made GRN journaling idempotent, recomputed every account balance from journal lines, closed the cutover baseline, rebuilt the counters, shipped a live reconciliation check on the Dashboard, and moved the last two flows that kept books from the browser (GRN receive, sales returns) into atomic database RPCs. What remains is the negative-layer policy decision and a housekeeping batch of dormant bugs and missing migrations — section 09.</p>
+</section>
+
+<!-- ============ 02 ENGINE ============ -->
+<section id="engine">
+  <div class="sec-head"><span class="sec-num">02</span><h2>The engine — who writes what</h2></div>
+  <p class="lede">Every stock change is a frontend flow calling database logic that writes two things in parallel: the FIFO layers, and a journal entry. This is the whole system in one picture.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1120 544" role="img" aria-labelledby="inv-engine-title inv-engine-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="inv-engine-title">The inventory engine</title>
+    <desc id="inv-engine-desc">Diagram showing four user flows (GRN receive, stock adjust, POS sale, sales return) calling three database engine parts (batch RPCs, journal poster, FIFO engine), which write the inventory_batches table and post to GL accounts.</desc>
+    <defs>
+      <marker id="d1-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+      <marker id="d1-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- zones -->
+    <rect x="40" y="64" width="248" height="352" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="100" y="68" width="128" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="164" y="77" text-anchor="middle" class="t-eyebrow">USER FLOWS</text>
+    <rect x="340" y="64" width="280" height="352" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="400" y="68" width="160" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="480" y="77" text-anchor="middle" class="t-eyebrow">ENGINE — RPCs &amp; TRIGGERS</text>
+    <rect x="744" y="64" width="336" height="352" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="828" y="68" width="112" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="884" y="77" text-anchor="middle" class="t-eyebrow">RECORDS &amp; BOOKS</text>
+
+    <!-- arrows (before nodes) -->
+    <path d="M 272,126 H 352" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 272,214 H 300 Q 308,214 308,206 V 164 Q 308,156 316,156 H 352" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 272,302 H 308 Q 316,302 316,310 V 356 Q 316,364 324,364 H 352" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 272,390 H 352" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 480,184 V 212" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 480,332 V 304" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 604,132 H 668 Q 676,132 676,124 H 756" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 604,364 H 692 Q 700,364 700,356 V 196 Q 700,188 708,188 H 756" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+    <path d="M 604,258 H 648 Q 656,258 656,266 V 346 Q 656,354 664,354 H 756" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d1-arrow)"/>
+
+    <!-- arrow labels -->
+    <rect x="286" y="108" width="56" height="12" rx="2" fill="#f5f5f5"/><text x="314" y="117" text-anchor="middle" class="t-arrow">RECEIVE</text>
+    <rect x="252" y="179" width="48" height="12" rx="2" fill="#f5f5f5"/><text x="276" y="188" text-anchor="middle" class="t-arrow">± QTY</text>
+    <rect x="258" y="284" width="64" height="12" rx="2" fill="#f5f5f5"/><text x="290" y="293" text-anchor="middle" class="t-arrow">CONSUME</text>
+    <rect x="282" y="372" width="64" height="12" rx="2" fill="#f5f5f5"/><text x="314" y="381" text-anchor="middle" class="t-arrow">RESTORE</text>
+    <rect x="492" y="192" width="52" height="12" rx="2" fill="#f5f5f5"/><text x="518" y="201" text-anchor="middle" class="t-arrow">Dr 1200</text>
+    <rect x="492" y="308" width="56" height="12" rx="2" fill="#f5f5f5"/><text x="520" y="317" text-anchor="middle" class="t-arrow">COGS JE</text>
+    <rect x="690" y="106" width="68" height="12" rx="2" fill="#f5f5f5"/><text x="724" y="115" text-anchor="middle" class="t-arrow">NEW LAYER</text>
+    <rect x="712" y="270" width="72" height="12" rx="2" fill="#f5f5f5"/><text x="748" y="279" text-anchor="middle" class="t-arrow">± LAYER QTY</text>
+    <rect x="592" y="300" width="56" height="12" rx="2" fill="#f5f5f5"/><text x="620" y="309" text-anchor="middle" class="t-arrow">POST Dr/Cr</text>
+
+    <!-- flow nodes -->
+    <g>
+      <rect x="56" y="96" width="216" height="60" rx="6" fill="#f5f5f5"/>
+      <rect x="56" y="96" width="216" height="60" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="142" y="104" width="44" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="164" y="113" text-anchor="middle" class="t-tag">FLOW</text>
+      <text x="164" y="132" text-anchor="middle" class="t-name">GRN Receive</text>
+      <text x="164" y="148" text-anchor="middle" class="t-sub">purchases/grn · PO receive</text>
+    </g>
+    <g>
+      <rect x="56" y="184" width="216" height="60" rx="6" fill="#f5f5f5"/>
+      <rect x="56" y="184" width="216" height="60" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="138" y="192" width="52" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="164" y="201" text-anchor="middle" class="t-tag">FLOW</text>
+      <text x="164" y="220" text-anchor="middle" class="t-name">Stock Adjust</text>
+      <text x="164" y="236" text-anchor="middle" class="t-sub">inventory edit · CSV import</text>
+    </g>
+    <g>
+      <rect x="56" y="272" width="216" height="60" rx="6" fill="#f5f5f5"/>
+      <rect x="56" y="272" width="216" height="60" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="142" y="280" width="44" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="164" y="289" text-anchor="middle" class="t-tag">FLOW</text>
+      <text x="164" y="308" text-anchor="middle" class="t-name">POS Sale</text>
+      <text x="164" y="324" text-anchor="middle" class="t-sub">sales/pos · invoice + items</text>
+    </g>
+    <g>
+      <rect x="56" y="360" width="216" height="60" rx="6" fill="#f5f5f5"/>
+      <rect x="56" y="360" width="216" height="60" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="138" y="368" width="52" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="164" y="377" text-anchor="middle" class="t-tag">FLOW</text>
+      <text x="164" y="396" text-anchor="middle" class="t-name">Sales Return</text>
+      <text x="164" y="412" text-anchor="middle" class="t-sub">sales/returns · refund</text>
+    </g>
+
+    <!-- engine nodes -->
+    <g>
+      <rect x="356" y="100" width="248" height="84" rx="6" fill="#f5f5f5"/>
+      <rect x="356" y="100" width="248" height="84" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="458" y="108" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="480" y="117" text-anchor="middle" class="t-tag">RPC</text>
+      <text x="480" y="136" text-anchor="middle" class="t-name">Batch RPCs</text>
+      <text x="480" y="155" text-anchor="middle" class="t-sub">create_opening_batch · reduction</text>
+      <text x="480" y="168" text-anchor="middle" class="t-sub">receive_grn · post_grn_journal · GL routing</text>
+    </g>
+    <g>
+      <rect x="356" y="216" width="248" height="84" rx="6" fill="#f5f5f5"/>
+      <rect x="356" y="216" width="248" height="84" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="454" y="224" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="480" y="233" text-anchor="middle" class="t-tag">RPC</text>
+      <text x="480" y="252" text-anchor="middle" class="t-name">Journal Poster</text>
+      <text x="480" y="271" text-anchor="middle" class="t-sub">post_journal_entry() → JE + lines</text>
+      <text x="480" y="284" text-anchor="middle" class="t-sub">maintains accounts.balance</text>
+    </g>
+    <g>
+      <rect x="356" y="332" width="248" height="84" rx="6" fill="#f5f5f5"/>
+      <rect x="356" y="332" width="248" height="84" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="458" y="340" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="480" y="349" text-anchor="middle" class="t-tag">RPC</text>
+      <text x="480" y="368" text-anchor="middle" class="t-name">FIFO Engine</text>
+      <text x="480" y="387" text-anchor="middle" class="t-sub">consume_fifo · restore_fifo · return</text>
+      <text x="480" y="400" text-anchor="middle" class="t-sub">transfer_fifo_batches</text>
+    </g>
+
+    <!-- record nodes -->
+    <g>
+      <rect x="760" y="96" width="304" height="108" rx="6" fill="#f5f5f5"/>
+      <rect x="760" y="96" width="304" height="108" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="888" y="104" width="48" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="912" y="113" text-anchor="middle" class="t-tag" fill="#eb6c36">TABLE</text>
+      <text x="912" y="136" text-anchor="middle" class="t-name">inventory_batches</text>
+      <text x="912" y="155" text-anchor="middle" class="t-sub">FIFO layers · 1,876 rows</text>
+      <text x="912" y="168" text-anchor="middle" class="t-sub">Σ qty_remaining × unit_cost</text>
+      <text x="912" y="188" text-anchor="middle" class="t-value coral">৳18,591,136 · subsidiary ledger of 1200</text>
+    </g>
+    <g>
+      <rect x="760" y="300" width="304" height="108" rx="6" fill="#f5f5f5"/>
+      <rect x="760" y="300" width="304" height="108" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="888" y="308" width="48" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="912" y="317" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="912" y="340" text-anchor="middle" class="t-name">GL Accounts</text>
+      <text x="912" y="359" text-anchor="middle" class="t-sub">1200 Inventory · 5000 COGS · 5900 Adj</text>
+      <text x="912" y="372" text-anchor="middle" class="t-sub">posted by every flow above</text>
+      <text x="912" y="392" text-anchor="middle" class="t-value">৳18,591,136 on account 1200</text>
+    </g>
+
+    <!-- legend -->
+    <line x1="40" y1="500" x2="1080" y2="500" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="40" y="520" class="t-legend" letter-spacing="0.14em">LEGEND</text>
+    <rect x="110" y="510" width="16" height="10" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="0.8"/>
+    <text x="134" y="519" class="t-legend">user flow</text>
+    <rect x="210" y="510" width="16" height="10" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+    <text x="234" y="519" class="t-legend">RPC / trigger fn</text>
+    <rect x="346" y="510" width="16" height="10" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+    <text x="370" y="519" class="t-legend">table / account</text>
+    <rect x="478" y="510" width="16" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+    <text x="502" y="519" class="t-legend">focal — source of truth</text>
+  </svg>
+  </div>
+
+  <p class="prose">Read it left to right. Four user flows drive everything. <b>GRN Receive</b> and <b>Stock Adjust</b> create layers through the batch RPCs; <b>POS Sale</b> and <b>Sales Return</b> consume and restore layers through the FIFO engine. Both paths post their journal entries through the same poster, which also keeps the denormalized <span class="code">accounts.balance</span> in step. One thing to note: stock transfers between warehouses also run through the FIFO engine but post <b>no</b> journal entry — correct, since moving stock doesn't change its value. Since 2026-09-01 every flow keeps its books in the database: GRN receives run through the atomic <span class="code">receive_grn()</span> RPC, and sales returns through the equally atomic <span class="code">record_sales_return()</span> RPC — the page-JavaScript journal building is gone.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:26%">Automation</th><th style="width:22%">Fires on</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td class="code">trg_invoice_accounting</td><td class="code">invoices INSERT / status</td><td>Dr 1100 AR / Cr 4000 Sales on every issued invoice</td></tr>
+      <tr><td class="code">trg_deduct_stock_on_invoice_item</td><td class="code">invoice_items INSERT</td><td>counter −base_qty · writes 'sale' movement (idempotent by notes tag)</td></tr>
+      <tr><td class="code">trg_invoice_items_cogs → consume_fifo()</td><td class="code">invoice_items INSERT</td><td>walks oldest layers, writes consumption rows; shortfall ⇒ negative ADJ− layer at cost_price</td></tr>
+      <tr><td class="code">trg_post_cogs_je_on_item_insert</td><td class="code">invoice_items INSERT</td><td>creates / rewrites one COGS JE: Dr 5000 / Cr 1200</td></tr>
+      <tr><td class="code">trg_invoice_status_cogs</td><td class="code">invoices status → posted</td><td>backup COGS poster — carries a latent void-assignment bug (finding 10)</td></tr>
+      <tr><td class="code">trg_invoice_insert_cogs</td><td class="code">invoices INSERT</td><td class="bad">DEAD — calls a consume_fifo overload that doesn't exist; unreachable today (finding 10)</td></tr>
+      <tr><td class="code">trg_restore_stock_on_invoice_item_delete</td><td class="code">invoice_items DELETE</td><td>+stock · 'return_in' movement; suppressed inside edit_invoice by session flag</td></tr>
+      <tr><td class="code">trg_update_weighted_average_cost</td><td class="code">inventory_batches INSERT</td><td>ratchets products.cost_price up to incoming unit cost (never down)</td></tr>
+      <tr><td class="code">trg_check_batch_unit_cost</td><td class="code">batches BEFORE INS/UPD</td><td>rejects sale-unit costs — layers are strictly base units (meters, not coils)</td></tr>
+      <tr><td class="code">trg_purchase_return_accounting</td><td class="code">purchase_returns INSERT</td><td>Dr 2000 AP / Cr 1200 Inventory</td></tr>
+      <tr><td class="code">receive_grn(...)</td><td class="code">RPC · GRN page</td><td>atomic full receive — GRN + movement + counter + PO qty + FIFO layer + journal + status + reminders in ONE transaction</td></tr>
+      <tr><td class="code">post_grn_journal(grn_id)</td><td class="code">RPC · GRN page</td><td>exactly one Dr 1200 / Cr 2000 per GRN, valued from that GRN's own batches (idempotent)</td></tr>
+      <tr><td class="code">create_opening_batch / create_stock_reduction</td><td class="code">RPC · inventory page</td><td>three-tier routing: opening → Cr 3900 · increase → Cr 5900 · reduction → Dr 5900</td></tr>
+      <tr><td class="code">restore_fifo_on_return</td><td class="code">RPC · record_sales_return</td><td>restores the exact original layers; overflow becomes a new 'return' layer</td></tr>
+      <tr><td class="code">record_sales_return(...)</td><td class="code">RPC · returns page</td><td>atomic full return — return + items + FIFO restore + movement + counter + JE via post_journal_entry + refund payment + invoice state + store credit, one transaction</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="prose">Dropped for good during the September repairs: the old GRN trigger (double-journaling era — 32 GRNs double-posted ৳617,558 before <span class="code">20260901080000</span> replaced it with the idempotent RPC) and the PO-status trigger (47 duplicate purchase_receipt JEs deleted, balances reversed, in <span class="code">20260901110000</span>).</p>
+</section>
+
+<!-- ============ 03 LIFECYCLE ============ -->
+<section id="lifecycle">
+  <div class="sec-head"><span class="sec-num">03</span><h2>Life of a batch — the FIFO mechanics</h2></div>
+  <p class="lede">A batch (layer) is one purchase of one product into one warehouse at one cost. FIFO means sales eat the oldest layer first, and each layer carries its own price forever — that's what makes COGS exact.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1120 496" role="img" aria-labelledby="inv-life-title inv-life-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="inv-life-title">Life of a FIFO batch</title>
+    <desc id="inv-life-desc">State machine showing a batch layer moving between Live, Depleted, and Negative states, with sale, return, edit, and over-sale transitions and their journal effects.</desc>
+    <defs>
+      <marker id="d2-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- transitions -->
+    <path d="M 54,196 H 156" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d2-arrow)"/>
+    <path d="M 416,168 H 556" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d2-arrow)"/>
+    <path d="M 560,224 H 420" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d2-arrow)"/>
+    <path d="M 288,240 V 372 Q 288,380 296,380 H 556" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d2-arrow)"/>
+    <path d="M 688,336 V 244" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d2-arrow)"/>
+
+    <!-- transition labels -->
+    <rect x="56" y="176" width="104" height="12" rx="2" fill="#f5f5f5"/><text x="108" y="185" text-anchor="middle" class="t-arrow">CREATE · Dr 1200</text>
+    <rect x="430" y="148" width="116" height="12" rx="2" fill="#f5f5f5"/><text x="488" y="157" text-anchor="middle" class="t-arrow">sale · consume_fifo</text>
+    <rect x="436" y="176" width="100" height="12" rx="2" fill="#f5f5f5"/><text x="486" y="185" text-anchor="middle" class="t-arrow">Dr 5000 · Cr 1200</text>
+    <rect x="434" y="204" width="104" height="12" rx="2" fill="#f5f5f5"/><text x="486" y="213" text-anchor="middle" class="t-arrow">restore_on_return</text>
+    <rect x="434" y="232" width="104" height="12" rx="2" fill="#f5f5f5"/><text x="486" y="241" text-anchor="middle" class="t-arrow">Dr 1200 · Cr 5000</text>
+    <rect x="300" y="300" width="76" height="12" rx="2" fill="#f5f5f5"/><text x="336" y="309" text-anchor="middle" class="t-arrow">sale &gt; stock</text>
+    <rect x="352" y="362" width="144" height="12" rx="2" fill="#f5f5f5"/><text x="424" y="371" text-anchor="middle" class="t-arrow">layer −qty @ cost_price</text>
+    <rect x="576" y="284" width="104" height="12" rx="2" fill="#f5f5f5"/><text x="628" y="293" text-anchor="middle" class="t-arrow">EDIT · ZEROED</text>
+
+    <!-- start dot -->
+    <circle cx="48" cy="196" r="6" fill="#2d3142"/>
+
+    <!-- states -->
+    <g>
+      <rect x="160" y="152" width="256" height="88" rx="8" fill="#f5f5f5"/>
+      <rect x="160" y="152" width="256" height="88" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="176" y="160" width="48" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="200" y="169" text-anchor="middle" class="t-tag">STATE</text>
+      <text x="288" y="190" text-anchor="middle" class="t-name">Live layer</text>
+      <text x="288" y="209" text-anchor="middle" class="t-sub">qty_remaining &gt; 0 · valued at unit_cost</text>
+      <text x="288" y="222" text-anchor="middle" class="t-sub">eaten oldest-first by every sale</text>
+    </g>
+    <g>
+      <rect x="560" y="152" width="256" height="88" rx="8" fill="#f5f5f5"/>
+      <rect x="560" y="152" width="256" height="88" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="576" y="160" width="48" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="600" y="169" text-anchor="middle" class="t-tag">STATE</text>
+      <text x="688" y="190" text-anchor="middle" class="t-name">Depleted</text>
+      <text x="688" y="209" text-anchor="middle" class="t-sub">qty_remaining = 0 · row kept for audit</text>
+      <text x="688" y="222" text-anchor="middle" class="t-sub">still traceable to its consumption rows</text>
+    </g>
+    <g>
+      <rect x="560" y="336" width="256" height="88" rx="8" fill="#f5f5f5"/>
+      <rect x="560" y="336" width="256" height="88" rx="8" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="576" y="344" width="48" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="600" y="353" text-anchor="middle" class="t-tag" fill="#eb6c36">STATE</text>
+      <text x="688" y="374" text-anchor="middle" class="t-name">Negative layer</text>
+      <text x="688" y="393" text-anchor="middle" class="t-sub">qty &lt; 0 · ADJ− / REDUCE− rows</text>
+      <text x="688" y="406" text-anchor="middle" class="t-sub">created at ratcheted cost_price</text>
+    </g>
+
+    <!-- annotation -->
+    <text x="848" y="352" class="t-aside">−৳425,717 sits in 64 negative layers —</text>
+    <text x="848" y="370" class="t-aside">the ledger's IOU for stock that was</text>
+    <text x="848" y="388" class="t-aside">sold before it existed in any layer.</text>
+
+    <!-- legend -->
+    <line x1="40" y1="452" x2="1080" y2="452" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="40" y="472" class="t-legend" letter-spacing="0.14em">LEGEND</text>
+    <circle cx="112" cy="469" r="4" fill="#2d3142"/><text x="124" y="472" class="t-legend">start (layer created)</text>
+    <rect x="252" y="462" width="16" height="10" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+    <text x="276" y="472" class="t-legend">batch state</text>
+    <rect x="360" y="462" width="16" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+    <text x="384" y="472" class="t-legend">anomaly — distorts value</text>
+    <line x1="552" y1="467" x2="588" y2="467" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d2-arrow)"/>
+    <text x="596" y="472" class="t-legend">transition = event / GL effect</text>
+  </svg>
+  </div>
+
+  <p class="prose"><b>How a layer is born.</b> Four inflows create layers, each with its own credit account: a GRN receive (Cr 2000 AP), opening stock at go-live (Cr 3900 Opening Balance Equity), a stock increase adjustment (Cr 5900 Inventory Adjustment), and a sales-return overflow (new 'return' layer). All debit 1200. The layer then sits in the queue priced at what you actually paid — <b>that cost never changes</b>, even if you later buy the same product dearer.</p>
+  <p class="prose"><b>How it dies — and comes back.</b> A sale consumes the oldest live layers first, records exactly which layers and how many units in <span class="code">invoice_item_batch_consumption</span>, and posts COGS as Dr 5000 / Cr 1200 at the layer cost. A sales return walks those same consumption records and puts each unit back into the exact layer it came from, at the same cost — the ledger ends up exactly as if the sale never happened. Invoice edits and cancels also restore stock, but through a different function (<span class="code">restore_fifo</span>) that refunds to the <b>newest</b> layer instead of the original ones — a subtle cost re-layering covered in finding 8. Stock reductions (<span class="code">create_stock_reduction</span>) consume oldest-first and post Dr 5900 / Cr 1200, leaving a negative audit row behind.</p>
+  <p class="prose"><b>The anomaly state.</b> When a sale asks for more units than the live layers hold, <span class="code">consume_fifo</span> doesn't refuse — it creates a negative ADJ− layer at the product's current (ratcheted) cost_price. The books stay balanced, but the ledger now contains an IOU. Your live data holds 51 such layers worth −৳310,937, plus 11 REDUCE audit rows (−৳114,279), plus 179 zeroed fallback rows left behind by old edits.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Layer type</th><th class="num">Layers</th><th class="num">Qty received</th><th class="num">Qty remaining</th><th class="num">Remaining value ৳</th><th>Created by → GL credit</th></tr></thead>
+    <tbody>
+      <tr><td class="code">opening</td><td class="num">1,333</td><td class="num">58,340.98</td><td class="num">44,817.20</td><td class="num">9,081,057.46</td><td>go-live import · create_opening_batch → Cr 3900</td></tr>
+      <tr><td class="code">adjustment</td><td class="num">449</td><td class="num">143,956.18</td><td class="num">135,883.39</td><td class="num">8,951,533.49</td><td>stock increases (+ fallback layers) → Cr 5900</td></tr>
+      <tr><td class="code">purchase</td><td class="num">81</td><td class="num">1,158.00</td><td class="num">993.00</td><td class="num">542,574.86</td><td>GRN receive → Cr 2000</td></tr>
+      <tr><td class="code">return</td><td class="num">13</td><td class="num">24.00</td><td class="num">12.00</td><td class="num">15,970.50</td><td>sales-return overflow → new layer at return cost</td></tr>
+      <tr class="total"><td>all layers</td><td class="num">1,876</td><td class="num"></td><td class="num"></td><td class="num">18,591,136.31</td><td>= FIFO inventory value</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="prose" style="font-size:13px;color:var(--muted);">Note the shape of your stock: nearly half the value (৳9.08M) is opening layers from the June import, another ৳8.95M came in through August stock adjustments, and only ৳0.54M has ever arrived through actual purchase receipts — the FIFO-era purchase flow is young.</p>
+</section>
+
+<!-- ============ 04 SALE ============ -->
+<section id="sale">
+  <div class="sec-head"><span class="sec-num">04</span><h2>Anatomy of a sale — the trigger cascade</h2></div>
+  <p class="lede">One POS save is a chain reaction: insert the invoice, then each line item fires three triggers in alphabetical order — deduct stock, consume FIFO, post COGS. No code calls these functions; the table does.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1120 640" role="img" aria-labelledby="inv-sale-title inv-sale-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="inv-sale-title">Anatomy of a POS sale</title>
+    <desc id="inv-sale-desc">Sequence diagram of a POS sale: invoice insert posts the AR entry, then for each line item triggers deduct the stock counter, consume FIFO layers, and post the COGS journal entry.</desc>
+    <defs>
+      <marker id="d3-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+      <marker id="d3-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      <marker id="d3-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- lifelines -->
+    <line x1="120" y1="72" x2="120" y2="576" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="360" y1="72" x2="360" y2="576" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="600" y1="72" x2="600" y2="576" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="840" y1="72" x2="840" y2="576" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="1020" y1="72" x2="1020" y2="576" stroke="rgba(45,49,66,0.20)" stroke-width="1" stroke-dasharray="3,3"/>
+
+    <!-- loop fragment -->
+    <rect x="96" y="152" width="948" height="380" rx="4" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <rect x="96" y="152" width="48" height="16" rx="2" fill="#f5f5f5" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="120" y="164" text-anchor="middle" class="t-guard" letter-spacing="0.12em">LOOP</text>
+    <text x="156" y="164" class="t-guard">[for each line item]</text>
+
+    <!-- activations -->
+    <rect x="116" y="104" width="8" height="20" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="116" y="160" width="8" height="348" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="356" y="160" width="8" height="348" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="594" y="282" width="8" height="174" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="834" y="328" width="8" height="72" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1014" y="104" width="8" height="20" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+    <rect x="1014" y="488" width="8" height="20" fill="rgba(45,49,66,0.06)" stroke="#4f5d75" stroke-width="0.8"/>
+
+    <!-- messages -->
+    <path d="M 124,112 H 1010" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#d3-arrow-link)"/>
+    <rect x="420" y="94" width="120" height="12" rx="2" fill="#f5f5f5"/><text x="480" y="103" text-anchor="middle" class="t-arrow">INSERT INVOICE</text>
+    <rect x="424" y="120" width="112" height="12" rx="2" fill="#f5f5f5"/><text x="480" y="129" text-anchor="middle" class="t-arrow">Dr 1100 · Cr 4000</text>
+
+    <path d="M 124,168 H 352" fill="none" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#d3-arrow-link)"/>
+    <rect x="180" y="176" width="104" height="12" rx="2" fill="#f5f5f5"/><text x="232" y="185" text-anchor="middle" class="t-arrow">INSERT ITEM ROW</text>
+
+    <path d="M 364,196 H 404 Q 412,196 412,206 Q 412,216 404,216 H 368" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d3-arrow)"/>
+    <text x="420" y="205" class="t-arrow">① DEDUCT COUNTER</text>
+    <text x="420" y="217" class="t-arrow">· 'sale' movement logged</text>
+
+    <path d="M 364,290 H 590" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d3-arrow)"/>
+    <rect x="424" y="272" width="108" height="12" rx="2" fill="#f5f5f5"/><text x="478" y="281" text-anchor="middle" class="t-arrow">② consume_fifo</text>
+
+    <path d="M 602,336 H 830" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d3-arrow)"/>
+    <rect x="664" y="318" width="112" height="12" rx="2" fill="#f5f5f5"/><text x="720" y="327" text-anchor="middle" class="t-arrow">− OLDEST LAYERS</text>
+
+    <path d="M 830,392 H 606" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#d3-arrow)"/>
+    <rect x="672" y="374" width="96" height="12" rx="2" fill="#f5f5f5"/><text x="720" y="383" text-anchor="middle" class="t-arrow">UNIT COSTS</text>
+
+    <path d="M 590,448 H 368" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#d3-arrow)"/>
+    <rect x="424" y="430" width="104" height="12" rx="2" fill="#f5f5f5"/><text x="476" y="439" text-anchor="middle" class="t-arrow">COGS AMOUNT</text>
+
+    <path d="M 364,496 H 1010" fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#d3-arrow-accent)"/>
+    <rect x="664" y="478" width="112" height="12" rx="2" fill="#f5f5f5"/><text x="720" y="487" text-anchor="middle" class="t-arrow" fill="#eb6c36">③ POST COGS JE</text>
+    <rect x="672" y="502" width="96" height="12" rx="2" fill="#f5f5f5"/><text x="720" y="511" text-anchor="middle" class="t-arrow">Dr 5000 · Cr 1200</text>
+
+    <!-- actors -->
+    <g>
+      <rect x="32" y="24" width="176" height="48" rx="6" fill="#f5f5f5"/>
+      <rect x="32" y="24" width="176" height="48" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="98" y="32" width="44" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="120" y="41" text-anchor="middle" class="t-tag">PAGE</text>
+      <text x="120" y="60" text-anchor="middle" class="t-name">POS Page</text>
+    </g>
+    <g>
+      <rect x="272" y="24" width="176" height="48" rx="6" fill="#f5f5f5"/>
+      <rect x="272" y="24" width="176" height="48" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="338" y="32" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="360" y="41" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="360" y="60" text-anchor="middle" class="t-name">invoice_items</text>
+    </g>
+    <g>
+      <rect x="512" y="24" width="176" height="48" rx="6" fill="#f5f5f5"/>
+      <rect x="512" y="24" width="176" height="48" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="578" y="32" width="44" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="600" y="41" text-anchor="middle" class="t-tag">RPC</text>
+      <text x="600" y="60" text-anchor="middle" class="t-name">consume_fifo</text>
+    </g>
+    <g>
+      <rect x="752" y="24" width="176" height="48" rx="6" fill="#f5f5f5"/>
+      <rect x="752" y="24" width="176" height="48" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="818" y="32" width="44" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="840" y="41" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="840" y="60" text-anchor="middle" class="t-name">inventory_batches</text>
+    </g>
+    <g>
+      <rect x="932" y="24" width="176" height="48" rx="6" fill="#f5f5f5"/>
+      <rect x="932" y="24" width="176" height="48" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="1000" y="32" width="40" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="1020" y="41" text-anchor="middle" class="t-tag">BOOKS</text>
+      <text x="1020" y="60" text-anchor="middle" class="t-name">GL journal</text>
+    </g>
+
+    <!-- legend -->
+    <line x1="32" y1="600" x2="1088" y2="600" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="32" y="620" class="t-legend" letter-spacing="0.14em">LEGEND</text>
+    <line x1="100" y1="616" x2="132" y2="616" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#d3-arrow-link)"/>
+    <text x="140" y="620" class="t-legend">page → DB write</text>
+    <line x1="248" y1="616" x2="280" y2="616" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d3-arrow)"/>
+    <text x="288" y="620" class="t-legend">trigger call</text>
+    <line x1="372" y1="616" x2="404" y2="616" stroke="#4f5d75" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#d3-arrow)"/>
+    <text x="412" y="620" class="t-legend">return value</text>
+    <line x1="508" y1="616" x2="540" y2="616" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#d3-arrow-accent)"/>
+    <text x="548" y="620" class="t-legend">headline — COGS hits the books</text>
+    <rect x="736" y="608" width="40" height="16" rx="3" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+    <text x="788" y="620" class="t-legend">repeats per line item</text>
+  </svg>
+  </div>
+
+  <p class="prose"><b>Why this matters:</b> the item insert is the moment inventory, COGS, and the books all move together — automatically, with no application code in the loop. Three triggers fire in alphabetical order: <span class="code">trg_deduct_stock_on_invoice_item</span> (counter and audit movement), <span class="code">trg_invoice_items_cogs</span> (FIFO consumption), and <span class="code">trg_post_cogs_je_on_item_insert</span> (the journal entry, rewritten once per item so the final JE reflects the full invoice). The COGS posted to 5000 is exactly the cost of the specific layers consumed — which is why the batch ledger, not any average, is the only place where true margins can be computed.</p>
+  <p class="prose"><b>The two traps in this design:</b> the triggers fire even when the invoice is a <b>draft</b> (stock and layers are consumed before confirmation — currently latent because no drafts exist), and a shortfall doesn't block the sale — it silently creates the negative ADJ− layer from section 03.</p>
+</section>
+
+<!-- ============ 05 THREE LEDGERS ============ -->
+<section id="ledgers">
+  <div class="sec-head"><span class="sec-num">05</span><h2>Three ledgers, three numbers</h2></div>
+  <p class="lede">The same physical stock is recorded in three places. Each has its own writers and its own readers — and the readers never see the other records.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1120 552" role="img" aria-labelledby="inv-led-title inv-led-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="inv-led-title">Three parallel stock records</title>
+    <desc id="inv-led-desc">Three columns comparing the inventory_items counter, the inventory_batches FIFO ledger, and GL account 1200 — each with its writer on top, the record and its live value in the middle, and its reader below, with mismatch arrows between them.</desc>
+    <defs>
+      <marker id="d4-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- arrows -->
+    <path d="M 180,136 V 180" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+    <path d="M 560,136 V 180" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+    <path d="M 940,136 V 180" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+    <path d="M 180,312 V 356" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+    <path d="M 560,312 V 356" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+    <path d="M 940,312 V 356" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+    <path d="M 320,248 H 416" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+    <path d="M 700,248 H 796" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#d4-arrow)"/>
+
+    <!-- arrow labels -->
+    <rect x="192" y="148" width="56" height="12" rx="2" fill="#f5f5f5"/><text x="220" y="157" text-anchor="middle" class="t-arrow">WRITES</text>
+    <rect x="572" y="148" width="56" height="12" rx="2" fill="#f5f5f5"/><text x="600" y="157" text-anchor="middle" class="t-arrow">WRITES</text>
+    <rect x="952" y="148" width="56" height="12" rx="2" fill="#f5f5f5"/><text x="980" y="157" text-anchor="middle" class="t-arrow">WRITES</text>
+    <rect x="192" y="324" width="48" height="12" rx="2" fill="#f5f5f5"/><text x="216" y="333" text-anchor="middle" class="t-arrow">READS</text>
+    <rect x="572" y="324" width="48" height="12" rx="2" fill="#f5f5f5"/><text x="596" y="333" text-anchor="middle" class="t-arrow">READS</text>
+    <rect x="952" y="324" width="48" height="12" rx="2" fill="#f5f5f5"/><text x="976" y="333" text-anchor="middle" class="t-arrow">READS</text>
+    <rect x="324" y="230" width="92" height="12" rx="2" fill="#f5f5f5"/><text x="370" y="239" text-anchor="middle" class="t-arrow">TIES · 0 DRIFT</text>
+    <rect x="708" y="230" width="84" height="12" rx="2" fill="#f5f5f5"/><text x="750" y="239" text-anchor="middle" class="t-arrow">TIES · ৳0.00</text>
+
+    <!-- writers -->
+    <g>
+      <rect x="40" y="64" width="280" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="64" width="280" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="148" y="72" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="180" y="81" text-anchor="middle" class="t-tag">WRITER</text>
+      <text x="180" y="102" text-anchor="middle" class="t-name">Triggers · RPCs · page JS</text>
+      <text x="180" y="120" text-anchor="middle" class="t-sub">deduct · restore · direct writes</text>
+    </g>
+    <g>
+      <rect x="420" y="64" width="280" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="420" y="64" width="280" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="528" y="72" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="560" y="81" text-anchor="middle" class="t-tag">WRITER</text>
+      <text x="560" y="102" text-anchor="middle" class="t-name">FIFO RPCs · triggers</text>
+      <text x="560" y="120" text-anchor="middle" class="t-sub">consume · restore · create layers</text>
+    </g>
+    <g>
+      <rect x="800" y="64" width="280" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="800" y="64" width="280" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="908" y="72" width="64" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="940" y="81" text-anchor="middle" class="t-tag">WRITER</text>
+      <text x="940" y="102" text-anchor="middle" class="t-name">post_journal_entry()</text>
+      <text x="940" y="120" text-anchor="middle" class="t-sub">single poster for every flow</text>
+    </g>
+
+    <!-- stores -->
+    <g>
+      <rect x="40" y="184" width="280" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="184" width="280" height="128" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="156" y="192" width="48" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="180" y="201" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="180" y="226" text-anchor="middle" class="t-name">inventory_items</text>
+      <text x="180" y="245" text-anchor="middle" class="t-sub">quantity_on_hand · per product+wh</text>
+      <text x="180" y="258" text-anchor="middle" class="t-sub">rebuilt from batches 2026-09-01</text>
+      <text x="180" y="282" text-anchor="middle" class="t-value">× cost_price ≈ ৳18,169,565</text>
+    </g>
+    <g>
+      <rect x="420" y="184" width="280" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="420" y="184" width="280" height="128" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="536" y="192" width="48" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="560" y="201" text-anchor="middle" class="t-tag" fill="#eb6c36">TABLE</text>
+      <text x="560" y="226" text-anchor="middle" class="t-name">inventory_batches</text>
+      <text x="560" y="245" text-anchor="middle" class="t-sub">FIFO layers · 1,876 rows</text>
+      <text x="560" y="258" text-anchor="middle" class="t-sub">Σ qty_remaining × unit_cost</text>
+      <text x="560" y="282" text-anchor="middle" class="t-value coral">৳18,591,136 — ground truth</text>
+    </g>
+    <g>
+      <rect x="800" y="184" width="280" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="800" y="184" width="280" height="128" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="916" y="192" width="48" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="940" y="201" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="940" y="226" text-anchor="middle" class="t-name">GL account 1200</text>
+      <text x="940" y="245" text-anchor="middle" class="t-sub">journal_entries + journal_lines</text>
+      <text x="940" y="258" text-anchor="middle" class="t-sub">lines ≡ accounts.balance ✓</text>
+      <text x="940" y="282" text-anchor="middle" class="t-value">৳18,591,136 — the books</text>
+    </g>
+
+    <!-- readers -->
+    <g>
+      <rect x="40" y="360" width="280" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="360" width="280" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="156" y="368" width="48" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="180" y="377" text-anchor="middle" class="t-tag">READER</text>
+      <text x="180" y="398" text-anchor="middle" class="t-name">POS · stock columns</text>
+      <text x="180" y="416" text-anchor="middle" class="t-sub">availability checks read the counter</text>
+    </g>
+    <g>
+      <rect x="420" y="360" width="280" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="420" y="360" width="280" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="536" y="368" width="48" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="560" y="377" text-anchor="middle" class="t-tag">READER</text>
+      <text x="560" y="398" text-anchor="middle" class="t-name">FIFO ledger · reports</text>
+      <text x="560" y="416" text-anchor="middle" class="t-sub">value cards · COGS pricing</text>
+    </g>
+    <g>
+      <rect x="800" y="360" width="280" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="800" y="360" width="280" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="916" y="368" width="48" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+      <text x="940" y="377" text-anchor="middle" class="t-tag">READER</text>
+      <text x="940" y="398" text-anchor="middle" class="t-name">Accounting · P&amp;L</text>
+      <text x="940" y="416" text-anchor="middle" class="t-sub">balance sheet · trial balance</text>
+    </g>
+
+    <!-- aside -->
+    <text x="560" y="470" text-anchor="middle" class="t-aside">By end of 2026-09-01 all three records agree — books tied by the baseline adjustment,</text>
+    <text x="560" y="488" text-anchor="middle" class="t-aside">counters rebuilt from the batch ledger. The three-number problem is closed.</text>
+
+    <!-- legend -->
+    <line x1="40" y1="512" x2="1080" y2="512" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="40" y="532" class="t-legend" letter-spacing="0.14em">LEGEND</text>
+    <rect x="110" y="522" width="16" height="10" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+    <text x="134" y="531" class="t-legend">writer</text>
+    <rect x="196" y="522" width="16" height="10" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+    <text x="220" y="531" class="t-legend">stock record</text>
+    <rect x="312" y="522" width="16" height="10" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="0.8"/>
+    <text x="336" y="531" class="t-legend">reader</text>
+    <rect x="396" y="522" width="16" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+    <text x="420" y="531" class="t-legend">focal — ground truth</text>
+  </svg>
+  </div>
+
+  <p class="prose">The counter used to be the dangerous one: the POS checks availability against <span class="code">inventory_items.quantity_on_hand</span>, a denormalized number maintained separately by triggers, RPCs and direct page writes. Its 2026-08-30 rebuild used stock <i>movements</i> rather than the batch ledger, so everything that touched layers without writing movements left it behind — 647 pairs under-counted, 21 over-counted. On 2026-09-01 it was rebuilt from batch truth (migration 20260901130000: 666 pairs corrected, 1 missing row created, per-pair audit in <span class="code">inventory_counter_rebuild_audit</span>). Drift is now zero, and the 30 remaining negative counters honestly mirror negative batch sums. Drift can no longer hide: the Dashboard runs a live reconciliation check (<span class="code">get_inventory_reconciliation()</span>, shipped 2026-09-01) and a nightly pg_cron job snapshots it to <span class="code">inventory_reconciliation_log</span>.</p>
+
+  <p class="prose"><b>The reconciliation bridge</b> — how the books stood at ৳26.48M this morning, and how the one-time adjustment closed the gap to the warehouse, penny for penny:</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Bridge step</th><th class="num">Amount ৳</th><th>Running ৳</th></tr></thead>
+    <tbody>
+      <tr><td>GL account 1200 before the adjustment — as audited 2026-09-01 (lines ≡ cache ✓)</td><td class="num"></td><td class="num">26,481,918.74</td></tr>
+      <tr class="neg"><td>− FIFO-cutover baseline release — Dr 3900 / Cr 1200 · JE-964716 dated 2026-08-08 · booked 2026-09-01, audit-logged, idempotent migration</td><td class="num">−7,890,782.43</td><td class="num">18,591,136.31</td></tr>
+      <tr class="total"><td>= GL account 1200 after — and the batch ledger (all 1,876 layers, incl. 64 negative) says exactly the same</td><td class="num"></td><td class="num">18,591,136.31 ✓</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="prose"><b>What the books are made of</b> — every journal family touching account 1200:</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>JE family (reference_type)</th><th class="num">Lines</th><th class="num">Dr ৳</th><th class="num">Cr ৳</th><th class="num">Net ৳</th><th>Flow</th></tr></thead>
+    <tbody>
+      <tr><td class="code">opening_balance</td><td class="num">1</td><td class="num">19,239,266.48</td><td class="num">0.00</td><td class="num">+19,239,266.48</td><td>OPENING-INV-1200 · one-time, dated 2026-06-01</td></tr>
+      <tr><td class="code">stock_adjustment</td><td class="num">143</td><td class="num">9,560,074.60</td><td class="num">114,780.60</td><td class="num">+9,445,294.00</td><td>adjustment up/down + pre-journal-era backfill</td></tr>
+      <tr><td class="code">product_creation</td><td class="num">5</td><td class="num">860,877.80</td><td class="num">0.00</td><td class="num">+860,877.80</td><td>opening batches posted with new products</td></tr>
+      <tr><td class="code">grn</td><td class="num">47</td><td class="num">637,264.80</td><td class="num">0.00</td><td class="num">+637,264.80</td><td>one idempotent JE per GRN (post_grn_journal)</td></tr>
+      <tr><td class="code">sales_return</td><td class="num">16</td><td class="num">23,553.87</td><td class="num">0.00</td><td class="num">+23,553.87</td><td>COGS reversal on returns</td></tr>
+      <tr><td class="code">invoice_cancel</td><td class="num">26</td><td class="num">7,744.10</td><td class="num">0.00</td><td class="num">+7,744.10</td><td>reverse COGS on cancelled invoices</td></tr>
+      <tr class="neg"><td class="code">invoice</td><td class="num">1,110</td><td class="num">0.00</td><td class="num">3,736,374.31</td><td class="num">−3,736,374.31</td><td>COGS on sales — the only operational outflow</td></tr>
+      <tr class="neg"><td class="code">cutover_adjustment</td><td class="num">1</td><td class="num">0.00</td><td class="num">7,890,782.43</td><td class="num">−7,890,782.43</td><td>one-time baseline release — JE-964716, booked 2026-09-01</td></tr>
+      <tr><td class="code">other (manual · test · payable · cleanup · purchase_return)</td><td class="num">11</td><td class="num">4,309.00</td><td class="num">17.00</td><td class="num">+4,292.00</td><td>strays</td></tr>
+      <tr class="total"><td>net = account 1200</td><td class="num">1,360</td><td class="num"></td><td class="num"></td><td class="num">18,591,136.31</td><td>= batch ledger ✓</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="prose" style="font-size:13px;color:var(--muted);">Read the shape: inventory grew ৳30.2M from openings/adjustments/GRNs, shrank ৳3.74M through COGS, and gave back ৳7.89M in the one-time baseline release. The batch ledger tells the identical story — every inflow family matches its batches (GRN JEs = GRN batches, adjustment JEs = adjustment batches), and after JE-964716 the control account and its subsidiary ledger agree to the taka. Note the release is balance-sheet-only: 3900 (Opening Balance Equity) dropped to ৳12,211,470.85 and no P&amp;L account moved, so margins are untouched.</p>
+</section>
+
+<!-- ============ 06 DATA MODEL ============ -->
+<section id="model">
+  <div class="sec-head"><span class="sec-num">06</span><h2>The data model</h2></div>
+  <p class="lede">Eight tables carry the whole story. The dashed links are the audit's key relationships — records that should mirror each other but have no database constraint keeping them in step.</p>
+
+  <div class="figure">
+  <svg viewBox="0 0 1120 700" role="img" aria-labelledby="inv-er-title inv-er-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="inv-er-title">Inventory data model</title>
+    <desc id="inv-er-desc">Entity-relationship diagram of products, warehouses, inventory_items, inventory_batches, invoice_item_batch_consumption, invoice_items, stock_movements, and journal_lines, with foreign-key and logical relationships.</desc>
+    <defs>
+      <marker id="d5-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+    </defs>
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- relationships (plain lines, drawn before entities) -->
+    <path d="M 280,240 H 324 Q 332,240 332,248 V 280 Q 332,288 340,288 H 388" fill="none" stroke="#4f5d75" stroke-width="1"/>
+    <path d="M 280,408 H 316 Q 324,408 324,400 V 352 Q 324,344 332,344 H 388" fill="none" stroke="#4f5d75" stroke-width="1"/>
+    <path d="M 664,272 H 700 Q 708,272 708,264 V 128 Q 708,120 716,120 H 740" fill="none" stroke="#4f5d75" stroke-width="1"/>
+    <path d="M 900,280 V 236" fill="none" stroke="#4f5d75" stroke-width="1"/>
+    <path d="M 480,160 V 228" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+    <path d="M 160,464 V 492" fill="none" stroke="#4f5d75" stroke-width="1"/>
+    <path d="M 900,448 V 476" fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+
+    <!-- cardinalities + labels -->
+    <text x="288" y="232" class="t-cardinal">1</text>
+    <text x="372" y="284" class="t-cardinal">∗</text>
+    <text x="288" y="400" class="t-cardinal">1</text>
+    <text x="372" y="340" class="t-cardinal">∗</text>
+    <text x="672" y="264" class="t-cardinal">1</text>
+    <text x="724" y="114" class="t-cardinal">∗</text>
+    <text x="908" y="272" class="t-cardinal">1</text>
+    <text x="908" y="232" class="t-cardinal">∗</text>
+    <text x="168" y="478" class="t-cardinal">1</text>
+    <text x="168" y="494" class="t-cardinal">∗</text>
+    <rect x="492" y="192" width="104" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="544" y="201" text-anchor="middle" class="t-arrow">SHOULD EQUAL Σ</text>
+    <rect x="912" y="452" width="104" height="12" rx="2" fill="#f5f5f5"/>
+    <text x="964" y="461" text-anchor="middle" class="t-arrow">COGS · GRN JEs</text>
+
+    <!-- entities -->
+    <g>
+      <rect x="368" y="32" width="224" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="368" y="32" width="224" height="128" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="380" y="42" width="52" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="406" y="51" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="380" y="70" class="t-name">inventory_items</text>
+      <text x="384" y="90" class="t-sub">#id · →product_id · →warehouse_id</text>
+      <text x="384" y="109" class="t-sub">qty_on_hand — the counter</text>
+      <text x="384" y="128" class="t-sub">unique per product+warehouse</text>
+      <text x="384" y="147" class="t-sub">POS availability reads this</text>
+    </g>
+    <g>
+      <rect x="744" y="64" width="312" height="168" rx="6" fill="#f5f5f5"/>
+      <rect x="744" y="64" width="312" height="168" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="756" y="74" width="52" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="782" y="83" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="756" y="102" class="t-name">invoice_item_batch_consumption</text>
+      <text x="760" y="122" class="t-sub">#id · →invoice_item_id · →batch_id</text>
+      <text x="760" y="141" class="t-sub">quantity_consumed (base units)</text>
+      <text x="760" y="160" class="t-sub">unit_cost · cogs_amount</text>
+      <text x="760" y="179" class="t-sub">the receipt tying each sale to its layers</text>
+      <text x="760" y="198" class="t-sub">returns walk this to restore exactly</text>
+      <text x="760" y="217" class="t-sub">1,578 rows · all in 2026-08</text>
+    </g>
+    <g>
+      <rect x="40" y="184" width="240" height="148" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="184" width="240" height="148" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="52" y="194" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="78" y="203" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="52" y="222" class="t-name">products</text>
+      <text x="56" y="242" class="t-sub">#id · sku · name</text>
+      <text x="56" y="261" class="t-sub">unit — base unit (Meter…)</text>
+      <text x="56" y="280" class="t-sub">cost_price — ratchets up only</text>
+      <text x="56" y="299" class="t-sub">enable_multi_unit · sale units</text>
+      <text x="56" y="318" class="t-sub">2,541 rows</text>
+    </g>
+    <g>
+      <rect x="392" y="232" width="272" height="188" rx="6" fill="#f5f5f5"/>
+      <rect x="392" y="232" width="272" height="188" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+      <rect x="404" y="242" width="52" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+      <text x="430" y="251" text-anchor="middle" class="t-tag" fill="#eb6c36">TABLE</text>
+      <text x="404" y="270" class="t-name">inventory_batches</text>
+      <text x="408" y="290" class="t-sub">#id · →product_id · →warehouse_id</text>
+      <text x="408" y="309" class="t-sub">batch_type (opening·pur·adj·ret)</text>
+      <text x="408" y="328" class="t-sub">quantity_received · quantity_remaining</text>
+      <text x="408" y="347" class="t-sub">unit_cost — base units, frozen at entry</text>
+      <text x="408" y="366" class="t-sub">reference_type/id/number</text>
+      <text x="408" y="385" class="t-sub">FIFO order = created_at · 1,876 rows</text>
+      <text x="408" y="404" class="t-sub">subsidiary ledger of GL 1200</text>
+    </g>
+    <g>
+      <rect x="744" y="280" width="312" height="168" rx="6" fill="#f5f5f5"/>
+      <rect x="744" y="280" width="312" height="168" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="756" y="290" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="782" y="299" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="756" y="318" class="t-name">invoice_items</text>
+      <text x="760" y="338" class="t-sub">#id · →invoice_id · →product_id</text>
+      <text x="760" y="357" class="t-sub">quantity (sale units) · base_quantity</text>
+      <text x="760" y="376" class="t-sub">unit_name · conversion_factor</text>
+      <text x="760" y="395" class="t-sub">cost_price — per sale unit</text>
+      <text x="760" y="414" class="t-sub">its INSERT fires the 3-trigger cascade</text>
+      <text x="760" y="433" class="t-sub">1,736 rows</text>
+    </g>
+    <g>
+      <rect x="40" y="352" width="240" height="112" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="352" width="240" height="112" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="52" y="362" width="52" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="78" y="371" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="52" y="390" class="t-name">warehouses</text>
+      <text x="56" y="410" class="t-sub">#id · name · is_default · is_active</text>
+      <text x="56" y="429" class="t-sub">Main · Chittagong · Showroom</text>
+      <text x="56" y="448" class="t-sub">layers are warehouse-scoped</text>
+    </g>
+    <g>
+      <rect x="40" y="496" width="272" height="148" rx="6" fill="#f5f5f5"/>
+      <rect x="40" y="496" width="272" height="148" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="52" y="506" width="52" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="78" y="515" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="52" y="534" class="t-name">stock_movements</text>
+      <text x="56" y="554" class="t-sub">#id · →product_id · →warehouse_id</text>
+      <text x="56" y="573" class="t-sub">movement_type (sale·purchase·ret…)</text>
+      <text x="56" y="592" class="t-sub">signed quantity + base_quantity</text>
+      <text x="56" y="611" class="t-sub">audit trail · no GL effect</text>
+      <text x="56" y="630" class="t-sub">counter was rebuilt from these</text>
+    </g>
+    <g>
+      <rect x="744" y="480" width="312" height="128" rx="6" fill="#f5f5f5"/>
+      <rect x="744" y="480" width="312" height="128" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1"/>
+      <rect x="756" y="490" width="52" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+      <text x="782" y="499" text-anchor="middle" class="t-tag">TABLE</text>
+      <text x="756" y="518" class="t-name">journal_lines</text>
+      <text x="760" y="538" class="t-sub">#id · →journal_entry_id · →account_id</text>
+      <text x="760" y="557" class="t-sub">debit · credit — the double entry</text>
+      <text x="760" y="576" class="t-sub">account 1200 is Inventory's home</text>
+      <text x="760" y="595" class="t-sub">balances recomputed from these 09-01</text>
+    </g>
+
+    <!-- legend -->
+    <line x1="40" y1="664" x2="1080" y2="664" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="40" y="684" class="t-legend" letter-spacing="0.14em">LEGEND</text>
+    <line x1="110" y1="680" x2="142" y2="680" stroke="#4f5d75" stroke-width="1"/>
+    <text x="150" y="684" class="t-legend">foreign-key relationship (1 → ∗)</text>
+    <line x1="356" y1="680" x2="388" y2="680" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+    <text x="396" y="684" class="t-legend">logical link — no constraint enforces it</text>
+    <rect x="652" y="671" width="16" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+    <text x="676" y="684" class="t-legend">focal — where truth lives</text>
+  </svg>
+  </div>
+
+  <p class="prose">The two dashed links are the audit in miniature. <span class="code">inventory_items</span> <i>should</i> equal the sum of each product+warehouse's layer quantities — nothing in the database enforces that; 668 pairs disagreed before the 2026-09-01 rebuild (zero today, and the Dashboard's live reconciliation check now catches any return). <span class="code">journal_lines</span> on account 1200 <i>should</i> equal the value of the layer ledger — that holds only if every layer was born and consumed through a journalized path, which is exactly what the ৳7.47M cutover baseline broke until JE-964716 closed it. Also worth knowing: <span class="code">stock_movements</span> (6,313 rows) is a pure audit trail with a no-op GL trigger, and <span class="code">invoice_item_batch_consumption</span> is the quiet hero of the system — it's what makes returns batch-accurate and the COGS audit page possible.</p>
+</section>
+
+<!-- ============ 07 GROUND ============ -->
+<section id="ground">
+  <div class="sec-head"><span class="sec-num">07</span><h2>Stock on the ground</h2></div>
+  <p class="lede">Where the ৳18.59M actually sits — by warehouse, by product, and by month it arrived.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Warehouse</th><th class="num">Products</th><th class="num">Qty on hand</th><th class="num">FIFO value ৳</th><th class="num">Share</th></tr></thead>
+    <tbody>
+      <tr><td>Main Warehouse</td><td class="num">1,358</td><td class="num">178,789.59</td><td class="num">18,513,216.59</td><td class="num">99.3%</td></tr>
+      <tr><td>Chittagong Branch</td><td class="num">18</td><td class="num">1,138.00</td><td class="num">65,715.50</td><td class="num">0.4%</td></tr>
+      <tr><td>Showroom Store</td><td class="num">18</td><td class="num">1,778.00</td><td class="num">12,204.22</td><td class="num">0.1%</td></tr>
+      <tr class="total"><td>all warehouses</td><td class="num"></td><td class="num"></td><td class="num">18,591,136.31</td><td class="num">100%</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Product</th><th>SKU</th><th class="num">Qty</th><th class="num">Stock value ৳</th></tr></thead>
+    <tbody>
+      <tr><td>walton Cable 1*4.0 RM Black</td><td class="code">1*4.0 RM-BLK</td><td class="num">9,493 m</td><td class="num">874,387.13</td></tr>
+      <tr><td>walton cable 1*2.5 RM Blue</td><td class="code">1*2.5 RM-BLU</td><td class="num">10,870 m</td><td class="num">644,829.40</td></tr>
+      <tr><td>walton cable 1*2.5 RM Black</td><td class="code">1*2.5 RM-BLK</td><td class="num">10,122 m</td><td class="num">607,338.36</td></tr>
+      <tr><td>walton flaxible cable 4*1.2/40/76</td><td class="code">4*1.2/40/76 rm</td><td class="num">35 m</td><td class="num">607,292.00</td></tr>
+      <tr><td>walton cable 1*1.5 RM Red</td><td class="code">1*1.5 RM-RED</td><td class="num">14,365 m</td><td class="num">534,056.50</td></tr>
+      <tr><td>walton Cable 1*4.0 RM Red</td><td class="code">1*4.0 RM-RED</td><td class="num">4,827 m</td><td class="num">443,283.27</td></tr>
+      <tr><td>walton cable 1*2.0 RM Red</td><td class="code">1*2.0 RM-RED</td><td class="num">8,750 m</td><td class="num">423,484.46</td></tr>
+      <tr><td>walton cable 1*1.5 RM Black</td><td class="code">1*1.5 RM-BLK</td><td class="num">12,231 m</td><td class="num">418,546.19</td></tr>
+      <tr><td>walton cable 1*1.0 re Green</td><td class="code">1*1.0 re-GRN</td><td class="num">15,976 m</td><td class="num">400,114.27</td></tr>
+      <tr><td>walton cable 1*2.0 RM Black</td><td class="code">1*2.0 RM-BLK</td><td class="num">8,150 m</td><td class="num">396,318.91</td></tr>
+      <tr class="total"><td>top 10 (all cables)</td><td class="code"></td><td class="num"></td><td class="num">5,349,650.49 · 28.8% of value</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th>Month</th><th class="num">New layers</th><th class="num">Value received ৳</th><th>Consumption (FIFO era)</th></tr></thead>
+    <tbody>
+      <tr><td>2026-06</td><td class="num">1,226</td><td class="num">10,767,735.32</td><td>— (pre-FIFO: sales used cost_price snapshots)</td></tr>
+      <tr><td>2026-07</td><td class="num">2</td><td class="num">6.00</td><td>— (test batch)</td></tr>
+      <tr><td>2026-08</td><td class="num">648</td><td class="num">11,080,880.07</td><td>1,578 consumption records · ৳3,535,839.84 COGS</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="prose">Three facts stand out. <b>Cables are half the business</b> — 61 cable SKUs hold ৳8.98M (48.3% of total value), and one flexible-cable SKU carries ৳607K in just 35 meters. <b>Everything is in one warehouse</b> — Main holds 99.3%, so the multi-warehouse machinery (transfers, warehouse-scoped layers) is barely exercised. And <b>the stock arrived in two waves</b> — the June go-live import and the August adjustment era — while purchase-driven inflow has only just started (81 GRN layers ever).</p>
+</section>
+
+<!-- ============ 08 HEALTH ============ -->
+<section id="health">
+  <div class="sec-head"><span class="sec-num">08</span><h2>Health check</h2></div>
+  <p class="lede">Every integrity check run against the live database, pass or fail.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:30%">Check</th><th>Result</th><th style="width:14%">Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Counter vs batches (per product+warehouse)</td><td>0 pairs differ — rebuilt from batch truth 2026-09-01 (666 corrected, 1 missing row created, audited); was 668/1,401 drifted, 119,831 units</td><td class="ok">✓ REBUILT</td></tr>
+      <tr><td>Negative stock counters</td><td>30 rows — exactly the 30 negative-sum batch pairs (honest IOU mirror); was 518 bogus rows before the rebuild</td><td class="ok">✓</td></tr>
+      <tr><td>Hidden stock (counter ≤ 0, layers hold value)</td><td>0 pairs — ৳3,261,017 unlocked for POS by the rebuild</td><td class="ok">✓</td></tr>
+      <tr><td>Phantom stock (counter &gt; 0, no layers)</td><td>1 pair · 2 units with no batch history — flagged for owner decision (audit table); was 7 pairs</td><td class="warn">⚠ FLAGGED</td></tr>
+      <tr><td>Negative FIFO layers</td><td>64 · −৳425,717 (51 ADJ− oversell · 11 REDUCE audit · 2 misc)</td><td class="bad">✗</td></tr>
+      <tr><td>Zeroed fallback layers</td><td>179 rows at qty = 0 — ledger clutter from repaired edits</td><td class="warn">⚠ CLUTTER</td></tr>
+      <tr><td>Over-restored layers (remaining &gt; received)</td><td>0</td><td class="ok">✓</td></tr>
+      <tr><td>GL 1200 vs batch ledger</td><td>within ৳75.23 (0.0004%) — the one-time baseline adjustment JE-964716 closed the ৳7.89M gap; the residual is accumulated JE-at-cost_price vs layer-cost differences, and reductions now post at actual layer value so it does not grow (20260901200000)</td><td class="ok">✓</td></tr>
+      <tr><td>GL cache vs journal lines (1200)</td><td>identical — ৳18,591,136.31 both ways</td><td class="ok">✓</td></tr>
+      <tr><td>Account balances vs lines (all accounts)</td><td>recomputed from lines 2026-09-01 (৳1.63M drift fixed, audited)</td><td class="ok">✓</td></tr>
+      <tr><td>Cancelled invoices holding consumption</td><td>0 of 151 — orphan-COGS cleanup holds</td><td class="ok">✓</td></tr>
+      <tr><td>Draft invoices consuming FIFO</td><td>0 live drafts (trigger consumes on insert — latent)</td><td class="warn">⚠ LATENT</td></tr>
+      <tr><td>Dead products (no stock anywhere)</td><td>1,176 of 2,541 SKUs — catalog, not stock, problem</td><td class="warn">ℹ INFO</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ============ 09 FINDINGS ============ -->
+<section id="findings">
+  <div class="sec-head"><span class="sec-num">09</span><h2>Findings</h2></div>
+  <p class="lede">Eleven findings, ordered by severity. Everything above was verified against live data and the current migration state.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:9%">Severity</th><th style="width:5%">#</th><th>Finding &amp; evidence</th></tr></thead>
+    <tbody>
+      <tr><td><span class="chip high">HIGH</span></td><td class="code">1</td><td><b>Three stock records, zero reconciliation.</b> Counter, layers, and GL are maintained by different actors across separate HTTP round trips — 668/1,401 pairs had drifted, invisibly. <span class="ok">LARGELY RESOLVED 2026-09-01</span> — baseline booked (JE-964716) + counters rebuilt from batches (20260901130000) + live reconciliation check shipped on the Dashboard (20260901140000), so drift can no longer hide.</td></tr>
+      <tr><td><span class="chip high">HIGH</span></td><td class="code">2</td><td><b>৳3.26M hidden stock.</b> 365 pairs held real FIFO value while the POS availability counter read zero or negative — sellable stock the storefront wouldn't offer. <span class="ok">RESOLVED 2026-09-01</span> — the counter rebuild unlocked all of it; hidden stock is now ৳0.</td></tr>
+      <tr><td><span class="chip high">HIGH</span></td><td class="code">3</td><td><b>Books vs ledger gap of ৳7.89M.</b> GL 1200 ৳26.48M vs FIFO ৳18.59M: ৳7.47M documented FIFO-cutover baseline + ৳0.43M negative layers. <span class="ok">RESOLVED 2026-09-01</span> — booked as one-time adjustment JE-964716 (Dr 3900 / Cr 1200 ৳7,890,782.43, dated 2026-08-08, audit-logged in cutover_baseline_adjustment_audit). Account 1200 now ties to the ledger exactly.</td></tr>
+      <tr><td><span class="chip high">HIGH</span></td><td class="code">4</td><td><b>64 negative layers (−৳425,717).</b> Overselling mints ADJ− layers at ratcheted cost_price (51 rows, −৳310,937); stock reductions leave REDUCE− audit rows (11, −৳114,279); 179 zeroed fallback rows add clutter. The −৳310,937 also understates today's true stock value.</td></tr>
+      <tr><td><span class="chip med">MEDIUM</span></td><td class="code">5</td><td><b>GRN save was 6+ sequential frontend writes with no transaction.</b> A mid-flow failure left stock counted without layers or a journal entry — the exact pattern behind August's double-posting era. <span class="ok">RESOLVED 2026-09-01</span> — the entire receive now runs in the atomic receive_grn() RPC (migration 20260901150000): GRN header, movements, counters, PO quantities, FIFO layers, journal, PO status, and reminders commit together or not at all. Verified end-to-end with a rolled-back test GRN (all records landed in sync, journal value = batch value).</td></tr>
+      <tr><td><span class="chip med">MEDIUM</span></td><td class="code">6</td><td><b>Sales returns kept their books in JavaScript.</b> The only inventory flow posting GL from the page: JE assembled client-side, account balances updated by hand-computed deltas. <span class="ok">RESOLVED 2026-09-01</span> — record_sales_return() RPC (migration 20260901160000) posts through post_journal_entry and does the whole return atomically. The rebuild also exposed two latent page bugs that had been failing silently: refund payments violated the payments check constraint (payment_id NULL on all 16 historical returns) and the invoice update wrote a GENERATED column (amount_paid never reduced — 6 invoices overstated by ৳27,772, repaired and audited in migration 20260901170000).</td></tr>
+      <tr><td><span class="chip med">MEDIUM</span></td><td class="code">7</td><td><b>cost_price ratchet overstates fallbacks.</b> cost_price = highest-ever purchase price, so every fallback valuation (POS shortfall layers, product-detail Stock Value, the helper's fallback path) prices stock above what its layers actually cost.</td></tr>
+      <tr><td><span class="chip med">MEDIUM</span></td><td class="code">8</td><td><b>Two restore semantics.</b> restore_fifo_on_return restores the exact original layers; restore_fifo (edit/cancel) refunds to the newest layer — LIFO re-layering that quietly moves costs between layers on every invoice edit.</td></tr>
+      <tr><td><span class="chip med">MEDIUM</span></td><td class="code">9</td><td><b>Live DB ≠ migrations.</b> transfer_fifo_batches, reverse_fifo_on_purchase_return, purchase_returns DDL, and the scalar get_fifo_inventory_value exist only as out-of-band deployments — rebuilding the database from migrations breaks transfers and purchase returns. A SECURITY DEFINER exec_sql() helper is still granted.</td></tr>
+      <tr><td><span class="chip low">LOW</span></td><td class="code">10</td><td><b>Dormant trigger bugs.</b> trg_invoice_insert_cogs called a 4-arg consume_fifo overload that didn't exist in the DB (unreachable only because FK ordering prevents items before invoices); trg_invoice_status_cogs assigned a void function's result to a numeric. <span class="ok">RESOLVED 2026-09-01</span> — dead trigger and function dropped, void-assignment fixed to PERFORM + read-back (migration 20260901180000).</td></tr>
+      <tr><td><span class="chip low">LOW</span></td><td class="code">11</td><td><b>Draft invoices consume real stock.</b> The item-insert triggers deduct and consume regardless of draft status. Zero drafts exist today, but any future draft flow would hold stock and layers before confirmation.</td></tr>
+      <tr><td><span class="chip high">HIGH</span></td><td class="code">12</td><td><b>Stock reductions double-subtracted the batch ledger.</b> create_stock_reduction consumed real FIFO layers AND inserted a −qty audit row while the JE posted once — every reduction covered by real stock removed the value twice from the ledger but once from the books. Latent since 2026-08-29 (the 11 historical REDUCE rows were over-reductions on already-empty layers, which masked it); surfaced 2026-09-01 by a live fully-covered reduction of ৳224,734. <span class="ok">RESOLVED same day</span> — the audit row now records only the uncovered shortfall, the JE posts at actual consumed layer value (migrations 20260901190000 + 20260901200000), and the erroneous rows were deleted with a full audit trail.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ============ 10 FIXES ============ -->
+<section id="fixes">
+  <div class="sec-head"><span class="sec-num">10</span><h2>What to fix, in order</h2></div>
+  <p class="lede">Four of these are migrations you already have precedent for — the September repairs established every pattern needed.</p>
+
+  <ol class="fixes">
+    <li><b>✅ DONE — cutover baseline booked (2026-09-01).</b> One-time adjustment JE-964716: Dr 3900 / Cr 1200 ৳7,890,782.43, dated 2026-08-08 (the cutover), gap computed live at apply time, audit-logged, idempotent (migration 20260901120000). GL 1200 now equals the batch ledger penny for penny. Every recommendation on this list is now done except the optional historical-layer purge above.</li>
+    <li><b>✅ DONE — counters rebuilt from batch truth (2026-09-01).</b> Migration 20260901130000: 666 pairs corrected, 1 missing counter row created (Stella Mario, 5 units), 518 bogus negative counters cleared (30 honest negatives remain, mirroring negative batch sums), ৳3.26M hidden stock unlocked. Per-pair audit in inventory_counter_rebuild_audit. One 2-unit pair with no batch history is flagged in the audit table for your decision — keep or write off.</li>
+    <li><b>✅ DONE — reconciliation check shipped (2026-09-01).</b> get_inventory_reconciliation() RPC compares counter vs batches, missing counter rows, GL 1200 vs ledger value, and every account's balance cache — live on the Dashboard as an "Inventory records in sync" health strip (red + details the moment anything drifts), with a nightly pg_cron snapshot logged to inventory_reconciliation_log. The reason 668 pairs once drifted silently is that nothing looked; now something always does.</li>
+    <li><b>✅ DONE — GRN receive is atomic (2026-09-01).</b> receive_grn() RPC (migration 20260901150000) does the whole receive in one transaction — GRN header, movements, counters, PO received quantities, FIFO layers (cost ratchet fires as before), journal via post_grn_journal, PO status, reminder fulfillment — and returns the new GRN number plus cost updates for the toast. The page now makes a single RPC call.</li>
+    <li><b>✅ DONE — sales returns post their books in the database (2026-09-01).</b> record_sales_return() RPC (migration 20260901160000): one atomic transaction for return + items + batch-accurate FIFO restore + movements + counters + journal via post_journal_entry + refund payment + invoice state + store credit, with prices and FIFO costs derived server-side. Two silent page bugs it replaced (rejected payment inserts, generated-column invoice updates) plus the ৳27,772 stale-invoice data they left behind were repaired in migration 20260901170000.</li>
+    <li><b>✅ DONE — overselling policy decided and gated (2026-09-01).</b> Decision: warn-and-confirm, not a hard block. The POS now compares every sale against the FIFO batch ledger (get_batch_stock_by_product_warehouse RPC, migration 20260901210000): cart rows with a shortfall show an amber warning live, checkout opens an explicit "Sell beyond ledger stock?" dialog listing each shortfall and its value, and only a deliberate "Sell anyway" proceeds — the invoice item records the shortfall in its description. When <i>both</i> the ledger and the counter show zero, the sale is blocked outright (a wrong SKU or a 10× quantity typo, not a real sale). A hard block was rejected deliberately: a stale ledger must never stop a legitimate sale at the counter. Remaining tail: an optional one-time audited purge of the 62 historical negative layers once physical counts confirm them.</li>
+    <li><b>✅ DONE — housekeeping batch (2026-09-01, migration 20260901180000).</b> Live definitions of transfer_fifo_batches, reverse_fifo_on_purchase_return, and the scalar get_fifo_inventory_value backfilled into migrations (a DB rebuild no longer breaks transfers or the inventory-value helper); purchase_returns tables backfilled with constraints and indexes; dead trg_invoice_insert_cogs + its function dropped; the void-assignment in trg_invoice_status_cogs fixed; exec_sql revoked from anon/authenticated.</li>
+  </ol>
+</section>
+
+<footer class="footer">
+  GENERATED 2026-09-01 · UPDATED SAME DAY AFTER BOOKING THE CUTOVER BASELINE (JE-964716) · SI BUILDING SOLUTIONS ERP — INVENTORY AUDIT<br>
+  Sources: live Supabase Postgres (aws-1-ap-southeast-2) · supabase/migrations through 20260901110000 · app/(erp) pages · branch customer-search-improvements @ e9721c9<br>
+  Method: schema + trigger + RPC inventory from pg_catalog; flows traced from latest-migration-wins definitions; all figures re-queried at report time. Diagrams follow the Schematic editorial system.
+</footer>
+
+</div>
+</body>
+</html>
