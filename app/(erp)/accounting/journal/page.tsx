@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, ChevronDown, ChevronRight, FileText, Receipt, CreditCard, Package, ArrowRightLeft, ShoppingBag, X, Trash2, Lightbulb, Banknote, Building2, Zap, Truck, Users, RotateCcw, Search, Filter, Pencil as Edit2, TriangleAlert as AlertTriangle, Info, User, Calendar, Link as LinkIcon, Ban } from 'lucide-react';
+import { Plus, ChevronDown, ChevronRight, FileText, Receipt, CreditCard, Package, ArrowRightLeft, ShoppingBag, X, Trash2, Lightbulb, Banknote, Building2, Zap, Truck, Users, RotateCcw, Search, Filter, Pencil as Edit2, TriangleAlert as AlertTriangle, Info, User, Calendar, Link as LinkIcon, Ban, Scale } from 'lucide-react';
 import type { Account } from '@/lib/types';
 import AppPagination from '@/components/ui/AppPagination';
 
@@ -47,6 +47,7 @@ const refIcons: Record<string, React.ElementType> = {
   opening_balance: Building2,
   receivable: User,
   invoice_edit: RotateCcw,
+  cutover_adjustment: Scale,
 };
 
 const refLabels: Record<string, string> = {
@@ -61,6 +62,7 @@ const refLabels: Record<string, string> = {
   opening_balance: 'Opening Balance',
   receivable: 'Receivable',
   invoice_edit: 'Invoice Edit Reversal',
+  cutover_adjustment: 'Cutover Adjustment',
 };
 
 const refColors: Record<string, string> = {
@@ -75,6 +77,7 @@ const refColors: Record<string, string> = {
   opening_balance: 'bg-purple-50 text-purple-600',
   receivable: 'bg-indigo-50 text-indigo-600',
   invoice_edit: 'bg-rose-50 text-rose-600',
+  cutover_adjustment: 'bg-cyan-50 text-cyan-600',
 };
 
 // Plain-English templates for non-accountants
