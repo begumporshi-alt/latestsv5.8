@@ -406,183 +406,52 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
     setSaving(true);
 
     try {
-      const grnId = crypto.randomUUID();
-      const grnNumber = `GRN-${Date.now().toString().slice(-6)}`;
+      // One atomic server-side RPC: GRN header, stock movements, counters, PO
+      // received quantities, FIFO batches (with cost ratchet), journal entry,
+      // PO status, and reminder fulfillment commit together or not at all.
+      const payload = itemsToReceive
+        .map(([itemId, qty]) => {
+          const item = items.find(i => i.id === itemId);
+          if (!item) return null;
+          return {
+            po_item_id: directMode ? null : itemId,
+            product_id: item.product_id,
+            quantity: Number(qty),
+            unit_cost: Number(item.unit_cost),
+          };
+        })
+        .filter(Boolean);
+
       const warehouseId = directMode ? directWarehouse : warehouses.find(w => w.is_default)?.id || warehouses[0]?.id;
 
-      // Create GRN record
-      await supabase.from('goods_receipt_notes').insert({
-        id: grnId,
-        tenant_id: '00000000-0000-0000-0000-000000000001',
-        grn_number: grnNumber,
-        supplier_id: directMode ? directSupplier : selectedPO!.supplier_id,
-        purchase_order_id: directMode ? null : selectedPO!.id,
-        warehouse_id: warehouseId,
-        received_date: new Date().toISOString().split('T')[0],
-        status: 'posted',
+      const { data, error: rpcError } = await supabase.rpc('receive_grn', {
+        p_supplier_id: directMode ? directSupplier : selectedPO!.supplier_id,
+        p_purchase_order_id: directMode ? null : selectedPO!.id,
+        p_warehouse_id: warehouseId,
+        p_items: payload,
       });
+      if (rpcError) throw new Error(rpcError.message);
 
-      // Process each item
-      for (const [itemId, qty] of itemsToReceive) {
-        const item = items.find(i => i.id === itemId);
-        if (!item) continue;
+      const result = (data || {}) as {
+        grn_number?: string;
+        cost_updates?: { name: string; before: number; after: number }[];
+      };
 
-        // Create stock movement
-        await supabase.from('stock_movements').insert({
-          tenant_id: '00000000-0000-0000-0000-000000000001',
-          product_id: item.product_id,
-          warehouse_id: warehouseId,
-          movement_type: 'purchase',
-          quantity: qty,
-          unit_cost: item.unit_cost,
-          reference_type: 'grn',
-          reference_id: grnId,
-          reference_number: grnNumber,
-        });
-
-        // Update or create inventory item
-        const { data: invItem } = await supabase
-          .from('inventory_items')
-          .select('id, quantity_on_hand')
-          .eq('product_id', item.product_id)
-          .eq('warehouse_id', warehouseId)
-          .maybeSingle();
-
-        if (invItem) {
-          await supabase.from('inventory_items').update({
-            quantity_on_hand: Number(invItem.quantity_on_hand) + qty,
-            updated_at: new Date().toISOString(),
-          }).eq('id', invItem.id);
-        } else {
-          await supabase.from('inventory_items').insert({
-            tenant_id: '00000000-0000-0000-0000-000000000001',
-            product_id: item.product_id,
-            warehouse_id: warehouseId,
-            quantity_on_hand: qty,
-          });
-        }
-
-        // Update PO item received quantity
-        if (!directMode && selectedPO) {
-          await supabase.from('purchase_order_items').update({
-            received_quantity: Number(item.received_quantity) + qty,
-          }).eq('id', itemId);
-        }
-      }
-
-      // Snapshot cost prices before the batch inserts — the DB trigger
-      // (update_weighted_average_cost) raises products.cost_price only when
-      // a received unit cost is higher than the current cost
-      const receivedProductIds = items
-        .filter(i => Number(receiveItems[i.id] || 0) > 0)
-        .map(i => i.product_id);
-      const uniqueProductIds = Array.from(new Set(receivedProductIds));
-      const beforeCosts: Record<string, number> = {};
-      if (uniqueProductIds.length > 0) {
-        const { data: beforeProducts } = await supabase
-          .from('products')
-          .select('id, cost_price')
-          .in('id', uniqueProductIds);
-        (beforeProducts || []).forEach((p: any) => { beforeCosts[p.id] = Number(p.cost_price) || 0; });
-      }
-
-      // Create inventory_batches for FIFO inventory tracking
-      // This is done in the frontend (not a DB trigger) for reliability —
-      // DB triggers have race conditions and pooling timing issues
-      const batchInserts: any[] = [];
-      for (const [itemId, qty] of itemsToReceive) {
-        const item = items.find(i => i.id === itemId);
-        if (!item) continue;
-
-        batchInserts.push({
-          product_id: item.product_id,
-          variant_id: null,
-          warehouse_id: warehouseId,
-          batch_number: `${grnNumber}-${item.id.slice(0, 8)}`,
-          quantity_received: qty,
-          quantity_remaining: qty,
-          unit_cost: item.unit_cost,
-          batch_type: 'purchase',
-          reference_type: 'grn',
-          reference_id: grnId,
-          reference_number: grnNumber,
-          notes: `Goods received via GRN`,
-          created_at: new Date().toISOString(),
-        });
-      }
-
-      if (batchInserts.length > 0) {
-        const { error: batchError } = await supabase.from('inventory_batches').insert(batchInserts);
-        if (batchError) {
-          console.error('Failed to create inventory batches:', batchError);
-          // Don't fail the GRN, but show warning
-          toast({ title: 'Warning', description: `GRN created but batch creation failed: ${batchError.message}`, variant: 'destructive' });
-        }
-      }
-
-      // Post the GRN journal entry (Dr 1200 Inventory / Cr 2000 AP) via the
-      // idempotent server-side RPC — it derives the amount from this GRN's
-      // own batches and skips if a journal already exists.
-      const { error: journalError } = await supabase.rpc('post_grn_journal', { p_grn_id: grnId });
-      if (journalError) {
-        console.error('Failed to post GRN journal:', journalError);
-        toast({ title: 'Warning', description: `GRN created but journal posting failed: ${journalError.message}`, variant: 'destructive' });
-      }
-
-      // Update PO status
-      if (!directMode && selectedPO) {
-        const { data: allItems } = await supabase
-          .from('purchase_order_items')
-          .select('quantity, received_quantity')
-          .eq('purchase_order_id', selectedPO.id);
-
-        const allReceived = (allItems || []).every(i => Number(i.received_quantity) >= Number(i.quantity));
-        const someReceived = (allItems || []).some(i => Number(i.received_quantity) > 0);
-
-        const newStatus = allReceived ? 'received' : someReceived ? 'partially_received' : 'approved';
-        await supabase.from('purchase_orders').update({ status: newStatus }).eq('id', selectedPO.id);
-      }
-
-      // Cost prices can only rise here: the trigger sets products.cost_price to
-      // the received unit cost only when it is higher than the current cost.
-      // Report only the products whose cost actually changed.
+      // Cost prices can only rise here: the DB trigger sets products.cost_price
+      // to the received unit cost only when it is higher than the current cost.
       let costUpdateSummary = '';
-      if (uniqueProductIds.length > 0) {
-        const { data: updatedProducts } = await supabase
-          .from('products')
-          .select('id, name, cost_price')
-          .in('id', uniqueProductIds);
-        const changed = (updatedProducts || []).filter(p => Number(p.cost_price) > (beforeCosts[p.id] ?? 0));
-        if (changed.length > 0) {
-          const lines = changed
-            .map(p => `${p.name}: ৳${(beforeCosts[p.id] ?? 0).toFixed(2)} → ৳${Number(p.cost_price).toFixed(2)}`)
-            .slice(0, 3);
-          const more = changed.length > 3 ? ` (+${changed.length - 3} more)` : '';
-          costUpdateSummary = ` • Cost updated — ${lines.join(', ')}${more}`;
-        }
+      const changed = result.cost_updates || [];
+      if (changed.length > 0) {
+        const lines = changed
+          .map(c => `${c.name}: ৳${Number(c.before).toFixed(2)} → ৳${Number(c.after).toFixed(2)}`)
+          .slice(0, 3);
+        const more = changed.length > 3 ? ` (+${changed.length - 3} more)` : '';
+        costUpdateSummary = ` • Cost updated — ${lines.join(', ')}${more}`;
       }
 
-
-      // Auto-fulfill purchase reminders for received products
-      const reminderProductIds = items
-        .filter(i => Number(receiveItems[i.id] || 0) > 0)
-        .map(i => i.product_id);
-      const uniqueReminderProductIds = Array.from(new Set(reminderProductIds));
-      if (uniqueReminderProductIds.length > 0) {
-        await supabase
-          .from("purchase_reminders")
-          .update({
-            status: "fulfilled",
-            fulfilled_at: new Date().toISOString(),
-            fulfilled_by_grn_id: grnId,
-            updated_at: new Date().toISOString(),
-          })
-          .in("product_id", uniqueReminderProductIds)
-          .eq("status", "pending");
-      }
       toast({
         title: 'Success',
-        description: `GRN ${grnNumber} created successfully${costUpdateSummary}`,
+        description: `GRN ${result.grn_number} created successfully${costUpdateSummary}`,
       });
       onSaved();
       onClose();
