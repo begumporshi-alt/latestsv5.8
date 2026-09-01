@@ -56,6 +56,7 @@ export default function DashboardPage() {
   const [outstandingDues, setOutstandingDues] = useState<Customer[]>([]);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [recentActivities, setRecentActivities] = useState<any[]>([]);
+  const [reconChecks, setReconChecks] = useState<any[]>([]);
   const [showReceivablesModal, setShowReceivablesModal] = useState(false);
   const [showExpensesModal, setShowExpensesModal] = useState(false);
 
@@ -110,6 +111,9 @@ export default function DashboardPage() {
     const payables = (suppliersRes.data || []).reduce((s: number, s2: any) => s + Number(s2.outstanding_balance), 0);
     const invResult = await getInventoryValue(supabase);
     const invValue = invResult.total;
+
+    const { data: reconData } = await supabase.rpc('get_inventory_reconciliation');
+    setReconChecks(((reconData || []) as any[]).sort((a: any, b: any) => a.sort_key - b.sort_key));
 
     const deliveries = dlvRes.data || [];
     const onlineOrders = onlineOrdersRes.data || [];
@@ -252,6 +256,37 @@ export default function DashboardPage() {
           </div>
         ))}
       </div>
+
+      {reconChecks.length > 0 && (() => {
+        const drifted = reconChecks.filter((c: any) => c.status === 'drift');
+        const infos = reconChecks.filter((c: any) => c.status === 'info');
+        const allOk = drifted.length === 0;
+        return (
+          <div className={`rounded-xl border p-4 shadow-sm flex flex-wrap items-center gap-x-5 gap-y-2 ${allOk ? 'bg-emerald-50/40 border-emerald-200' : 'bg-red-50/40 border-red-200'}`}>
+            <div className="flex items-center gap-2.5">
+              {allOk
+                ? <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                : <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />}
+              <div>
+                <p className={`text-sm font-semibold ${allOk ? 'text-emerald-700' : 'text-red-700'}`}>
+                  {allOk ? 'Inventory records in sync' : `${drifted.length} inventory check${drifted.length > 1 ? 's' : ''} drifting`}
+                </p>
+                <p className="text-xs text-muted-foreground">Stock counter · FIFO batch ledger · GL 1200 — checked live</p>
+              </div>
+            </div>
+            {drifted.map((c: any) => (
+              <span key={c.check_name} className="text-xs text-red-700 bg-red-100/70 border border-red-200 px-2.5 py-1 rounded-md">
+                {c.check_name}: {c.details}
+              </span>
+            ))}
+            {allOk && infos.map((c: any) => (
+              <span key={c.check_name} className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md">
+                {c.check_name}: {c.drift}
+              </span>
+            ))}
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <div className="lg:col-span-3 bg-white rounded-xl border border-border p-5 shadow-sm">
