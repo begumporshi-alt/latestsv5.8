@@ -310,7 +310,7 @@ const scenarios: JournalScenario[] = [
     icon: Truck,
     iconColor: 'bg-indigo-50 text-indigo-600',
     summary: 'When a Goods Receipt Note (GRN) is posted, the system records inventory received and creates an Accounts Payable liability to the supplier.',
-    trigger: 'AFTER UPDATE on goods_receipt_notes (when status changes to posted)',
+    trigger: 'GRN save handler calls the post_grn_journal RPC after batches are created (idempotent — one journal per GRN)',
     entries: [
       {
         description: 'Record inventory received and payable to supplier',

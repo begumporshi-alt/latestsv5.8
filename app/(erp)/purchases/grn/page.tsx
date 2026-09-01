@@ -520,6 +520,15 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         }
       }
 
+      // Post the GRN journal entry (Dr 1200 Inventory / Cr 2000 AP) via the
+      // idempotent server-side RPC — it derives the amount from this GRN's
+      // own batches and skips if a journal already exists.
+      const { error: journalError } = await supabase.rpc('post_grn_journal', { p_grn_id: grnId });
+      if (journalError) {
+        console.error('Failed to post GRN journal:', journalError);
+        toast({ title: 'Warning', description: `GRN created but journal posting failed: ${journalError.message}`, variant: 'destructive' });
+      }
+
       // Update PO status
       if (!directMode && selectedPO) {
         const { data: allItems } = await supabase
