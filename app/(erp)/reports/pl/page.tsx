@@ -73,7 +73,8 @@ export default function PLPage() {
     setPeriodLabel(label);
 
     const [invoicesRes, accountsRes] = await Promise.all([
-      supabase.from('invoices').select('total_amount').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled'),
+      // Drafts post no journal entries, so they are not revenue yet
+      supabase.from('invoices').select('total_amount').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled').neq('status', 'draft'),
       supabase.from('accounts').select('id, code, name, account_type'),
     ]);
 

@@ -58,6 +58,23 @@ interface InvoiceItem {
   base_quantity: number;
 }
 
+// Fetch every row of a query, paginating past Supabase's 1000-row default
+// cap. Takes a builder factory so each page runs a fresh query (builders
+// mutate in place, so they can't be reused across pages).
+async function fetchAll<T = any>(build: () => any, pageSize = 1000): Promise<T[]> {
+  const rows: T[] = [];
+  let pg = 0;
+  while (true) {
+    const { data, error } = await build().range(pg * pageSize, (pg + 1) * pageSize - 1);
+    if (error) throw error;
+    const page = (data || []) as T[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    pg++;
+  }
+  return rows;
+}
+
 export default function SalesPage() {
   const router = useRouter();
   const [invoices, setInvoices] = useState<InvoiceWithCustomer[]>([]);
@@ -114,47 +131,54 @@ export default function SalesPage() {
   async function loadData() {
     setLoading(true);
     const { from, to } = getPeriodRange();
-    let invQuery = supabase.from('invoices').select('*, customer:customers(name, code, phone, address)').order('created_at', { ascending: false });
-    if (from) invQuery = invQuery.gte('invoice_date', from);
-    if (to) invQuery = invQuery.lte('invoice_date', to);
 
-    let receivablePaymentsQuery = supabase.from('payments')
-      .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
-      .eq('payment_type', 'received')
-      .in('reference_type', ['invoice', 'receivable'])
-      .eq('is_reversed', false)
-      .neq('payment_for', 'reversal_payment');
-    if (from) receivablePaymentsQuery = receivablePaymentsQuery.gte('payment_date', from);
-    if (to) receivablePaymentsQuery = receivablePaymentsQuery.lte('payment_date', to);
-
-    // Refunds are filtered by return_date (when the refund actually happened),
-    // matching the same period window as payments — not by invoice_date.
-    let returnsForStatsQuery = supabase.from('sales_returns')
-      .select('id, invoice_id, return_number, total_refund_amount, refund_method, return_date, items:sales_return_items(quantity_returned)');
-    if (from) returnsForStatsQuery = returnsForStatsQuery.gte('return_date', from);
-    if (to) returnsForStatsQuery = returnsForStatsQuery.lte('return_date', to);
-
-    const [invRes, custRes, prodRes, settingsRes, returnsRes, paymentMethodsRes, paymentsRes, deliveriesRes, warehousesRes, receivablePaymentsRes, returnsForStatsRes, accountsRes] = await Promise.all([
-      invQuery.limit(500),
-      supabase.from('customers').select('*').eq('is_active', true).order('name'),
-      supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name'),
+    // All completeness-dependent queries go through fetchAll so stats and
+    // pickers are never silently truncated by Supabase's row caps (the
+    // invoices query previously had .limit(500), which hid the oldest 80
+    // invoices and understated Total Sales by ~6.3L).
+    const [invoicesData, custRes, productsData, settingsRes, returnsData, paymentMethodsRes, paymentsData, deliveriesData, warehousesRes, receivablePaymentsData, returnsForStatsData, accountsRes] = await Promise.all([
+      fetchAll(() => {
+        let q = supabase.from('invoices').select('*, customer:customers(name, code, phone, address)').order('created_at', { ascending: false });
+        if (from) q = q.gte('invoice_date', from);
+        if (to) q = q.lte('invoice_date', to);
+        return q;
+      }),
+      fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name')),
+      fetchAll(() => supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name')),
       supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle(),
-      supabase.from('sales_returns').select('id, invoice_id, return_number, total_refund_amount, items:sales_return_items(quantity_returned)'),
+      fetchAll(() => supabase.from('sales_returns').select('id, invoice_id, return_number, total_refund_amount, items:sales_return_items(quantity_returned)')),
       supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order'),
-      supabase.from('payments').select('id, reference_id, payment_method, amount, payment_date').eq('reference_type', 'invoice'),
-      supabase.from('deliveries').select('id, invoice_id, delivery_number, status'),
+      fetchAll(() => supabase.from('payments').select('id, reference_id, payment_method, amount, payment_date').eq('reference_type', 'invoice')),
+      fetchAll(() => supabase.from('deliveries').select('id, invoice_id, delivery_number, status')),
       supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
-      receivablePaymentsQuery,
-      returnsForStatsQuery,
+      fetchAll(() => {
+        let q = supabase.from('payments')
+          .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
+          .eq('payment_type', 'received')
+          .in('reference_type', ['invoice', 'receivable'])
+          .eq('is_reversed', false)
+          .neq('payment_for', 'reversal_payment');
+        if (from) q = q.gte('payment_date', from);
+        if (to) q = q.lte('payment_date', to);
+        return q;
+      }),
+      // Refunds for the stats cards — filtered by return_date to match the payment period window.
+      fetchAll(() => {
+        let q = supabase.from('sales_returns')
+          .select('id, invoice_id, return_number, total_refund_amount, refund_method, return_date, items:sales_return_items(quantity_returned)');
+        if (from) q = q.gte('return_date', from);
+        if (to) q = q.lte('return_date', to);
+        return q;
+      }),
       supabase.from('accounts').select('id, code, name, account_type'),
     ]);
 
     // Refunds for the stats cards — filtered by return_date to match the payment period window.
-    const periodRefunded = (returnsForStatsRes.data || []).reduce((s: number, r: any) => s + Number(r.total_refund_amount), 0);
+    const periodRefunded = (returnsForStatsData || []).reduce((s: number, r: any) => s + Number(r.total_refund_amount), 0);
 
     // Attach deliveries to their corresponding invoices
     const deliveriesMap = new Map<string, any[]>();
-    (deliveriesRes.data || []).forEach((del: any) => {
+    (deliveriesData || []).forEach((del: any) => {
       if (del.invoice_id) {
         const existing = deliveriesMap.get(del.invoice_id) || [];
         existing.push(del);
@@ -164,7 +188,7 @@ export default function SalesPage() {
 
     // Attach sales returns to their corresponding invoices
     const returnsMap = new Map<string, any[]>();
-    (returnsRes.data || []).forEach((ret: any) => {
+    (returnsData || []).forEach((ret: any) => {
       const existing = returnsMap.get(ret.invoice_id) || [];
       existing.push(ret);
       returnsMap.set(ret.invoice_id, existing);
@@ -172,13 +196,13 @@ export default function SalesPage() {
 
     // Attach payments to their corresponding invoices
     const paymentsMap = new Map<string, any[]>();
-    (paymentsRes.data || []).forEach((pay: any) => {
+    (paymentsData || []).forEach((pay: any) => {
       const existing = paymentsMap.get(pay.reference_id) || [];
       existing.push(pay);
       paymentsMap.set(pay.reference_id, existing);
     });
 
-    const invoicesWithReturns = (invRes.data || []).map((inv: any) => ({
+    const invoicesWithReturns = (invoicesData || []).map((inv: any) => ({
       ...inv,
       sales_returns: returnsMap.get(inv.id) || [],
       payments: paymentsMap.get(inv.id) || [],
@@ -188,8 +212,8 @@ export default function SalesPage() {
     setInvoices(invoicesWithReturns);
     setPaymentMethods(paymentMethodsRes.data || []);
     setWarehouses(warehousesRes.data || []);
-    setCustomers(custRes.data || []);
-    setProducts(prodRes.data || []);
+    setCustomers(custRes || []);
+    setProducts(productsData || []);
     if (settingsRes.data?.setting_value) setCompanySettings(settingsRes.data.setting_value);
 
     const allInv = invoicesWithReturns;
@@ -198,7 +222,7 @@ export default function SalesPage() {
     // Calculate collected amount from payments table filtered by payment_date,
     // so payments on old invoices collected today still show in today's stats.
     // Reversed payments (from invoice edits/cancels) are excluded so they don't inflate the total.
-    const allReceivedPayments = (receivablePaymentsRes.data || []) as any[];
+    const allReceivedPayments = receivablePaymentsData || [];
     const invoiceCollected = allReceivedPayments
       .filter((p: any) => p.reference_type === 'invoice')
       .reduce((s: number, p: any) => s + Number(p.amount), 0);
@@ -688,7 +712,7 @@ export default function SalesPage() {
       <div className="pb-2 -mx-1 px-1">
         <div className="flex flex-wrap gap-4">
           {[
-            { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false, info: 'Sum of total_amount for all non-cancelled invoices in the selected period.' },
+            { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false, info: 'Sum of total_amount for all non-cancelled, non-draft invoices in the selected period.' },
             { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false, info: 'Cost of Goods Sold: net of Cost of Goods Sold account 5000 in the ledger for the selected period.' },
             { label: 'Payment Collected at Sale', value: formatCurrency(stats.paymentCollectedAtSale), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false, info: 'Amount paid at the time of sale (POS and paid invoices). Excludes later payments and manual receivable collections.' },
             { label: 'Total Collection', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false, info: 'All payments received in the period: invoice payments + manual receivable collections. Excludes reversed payments from edits/cancels.' },
