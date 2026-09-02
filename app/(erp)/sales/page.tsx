@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
@@ -93,7 +93,7 @@ export default function SalesPage() {
   const [productFilteredIds, setProductFilteredIds] = useState<Set<string> | null>(null);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0, cogs: 0, paymentCollectedAtSale: 0 });
+  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0, cogs: 0, paymentCollectedAtSale: 0, invoiceCount: 0, costHistoryTotal: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
   const [showOutstandingModal, setShowOutstandingModal] = useState(false);
@@ -136,7 +136,7 @@ export default function SalesPage() {
     // pickers are never silently truncated by Supabase's row caps (the
     // invoices query previously had .limit(500), which hid the oldest 80
     // invoices and understated Total Sales by ~6.3L).
-    const [invoicesData, custRes, productsData, settingsRes, returnsData, paymentMethodsRes, paymentsData, deliveriesData, warehousesRes, receivablePaymentsData, returnsForStatsData, accountsRes] = await Promise.all([
+    const [invoicesData, custRes, productsData, settingsRes, returnsData, paymentMethodsRes, paymentsData, deliveriesData, warehousesRes, receivablePaymentsData, returnsForStatsData, accountsRes, cphData] = await Promise.all([
       fetchAll(() => {
         let q = supabase.from('invoices').select('*, customer:customers(name, code, phone, address)').order('created_at', { ascending: false });
         if (from) q = q.gte('invoice_date', from);
@@ -171,6 +171,7 @@ export default function SalesPage() {
         return q;
       }),
       supabase.from('accounts').select('id, code, name, account_type'),
+      fetchAll(() => supabase.from('cost_price_history').select('invoice_id, cost_price_for_added_qty')),
     ]);
 
     // Refunds for the stats cards — filtered by return_date to match the payment period window.
@@ -202,11 +203,19 @@ export default function SalesPage() {
       paymentsMap.set(pay.reference_id, existing);
     });
 
+    // Attach per-invoice cost totals from cost price history (per-invoice
+    // basis for matching the COGS journal entry against recorded cost)
+    const costMap = new Map<string, number>();
+    (cphData || []).forEach((r: any) => {
+      costMap.set(r.invoice_id, (costMap.get(r.invoice_id) || 0) + Number(r.cost_price_for_added_qty || 0));
+    });
+
     const invoicesWithReturns = (invoicesData || []).map((inv: any) => ({
       ...inv,
       sales_returns: returnsMap.get(inv.id) || [],
       payments: paymentsMap.get(inv.id) || [],
       deliveries: deliveriesMap.get(inv.id) || [],
+      cph_total: costMap.get(inv.id) || 0,
     }));
 
     setInvoices(invoicesWithReturns);
@@ -266,6 +275,8 @@ export default function SalesPage() {
       badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
       cogs: cogsAmount,
       paymentCollectedAtSale,
+      invoiceCount: activeInv.length,
+      costHistoryTotal: activeInv.reduce((s: number, i: any) => s + Number(i.cph_total || 0), 0),
     });
     setLoading(false);
   }
@@ -713,7 +724,9 @@ export default function SalesPage() {
         <div className="flex flex-wrap gap-4">
           {[
             { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false, info: 'Sum of total_amount for all non-cancelled, non-draft invoices in the selected period.' },
+            { label: 'Total Invoices', value: stats.invoiceCount.toLocaleString(), icon: FileText, color: 'text-sky-500 bg-sky-50', clickable: false, info: 'Number of non-cancelled, non-draft invoices in the selected period (same basis as Total Sales).' },
             { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false, info: 'Cost of Goods Sold: net of Cost of Goods Sold account 5000 in the ledger for the selected period.' },
+            { label: 'Total Cost (History)', value: formatCurrency(stats.costHistoryTotal), icon: Calculator, color: 'text-amber-500 bg-amber-50', clickable: false, info: 'Sum of cost price history for the same invoices as Total Sales. Compare with Total COGS: a difference flags invoices whose booked COGS does not match their recorded cost history (per-invoice Total Cost column shows the history side).' },
             { label: 'Payment Collected at Sale', value: formatCurrency(stats.paymentCollectedAtSale), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false, info: 'Amount paid at the time of sale (POS and paid invoices). Excludes later payments and manual receivable collections.' },
             { label: 'Total Collection', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false, info: 'All payments received in the period: invoice payments + manual receivable collections. Excludes reversed payments from edits/cancels.' },
             { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false, info: 'Total refund amounts from sales returns in the selected period.' },
@@ -853,6 +866,7 @@ export default function SalesPage() {
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Due Date</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Amount</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Total Cost</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Paid</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Balance</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Bad Debt</th>
@@ -863,9 +877,9 @@ export default function SalesPage() {
             </thead>
             <tbody className="divide-y divide-border">
               {loading ? Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i}>{Array.from({ length: 11 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
+                <tr key={i}>{Array.from({ length: 12 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
               )) : displayInvoices.length === 0 ? (
-                <tr><td colSpan={11} className="px-4 py-12 text-center text-muted-foreground text-sm">
+                <tr><td colSpan={12} className="px-4 py-12 text-center text-muted-foreground text-sm">
                   {period === 'today' ? 'No invoices for today. Try "Last 7 Days" to see more.' : 'No invoices found'}
                 </td></tr>
               ) : pagedInvoices.map((inv) => {
@@ -909,6 +923,9 @@ export default function SalesPage() {
                     <td className="px-4 py-3 text-sm text-muted-foreground">{formatDate(inv.invoice_date)}</td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">{inv.due_date ? formatDate(inv.due_date) : '-'}</td>
                     <td className="px-4 py-3 text-right text-sm font-semibold text-foreground">{formatCurrency(inv.total_amount)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-medium text-orange-600" title="Total cost recorded in cost price history (compare with this invoice's COGS journal entry)">
+                      {Number((inv as any).cph_total) > 0 ? formatCurrency((inv as any).cph_total) : <span className="text-muted-foreground">—</span>}
+                    </td>
                     <td className="px-4 py-3 text-right text-sm text-green-600 font-semibold">{formatCurrency(inv.amount_paid)}</td>
                     <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{formatCurrency(inv.balance_due ?? (inv.total_amount - inv.amount_paid))}</td>
                     <td className="px-4 py-3 text-right text-sm font-medium text-red-500">{Number(inv.bad_debt_amount) > 0 ? formatCurrency(inv.bad_debt_amount) : <span className="text-muted-foreground">—</span>}</td>
