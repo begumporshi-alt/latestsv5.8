@@ -386,20 +386,6 @@ export default function PrintTemplate({
                     <td style={{ fontWeight: '700', paddingBottom: '2px' }}>{customer.address}</td>
                   </tr>
                 )}
-                {(customer.total_outstanding !== undefined && customer.total_outstanding > 0) && (
-                  <tr>
-                    <td style={{ color: '#666', paddingBottom: '2px', paddingRight: '6px' }}>Total Due</td>
-                    <td style={{ color: '#666', paddingBottom: '2px', paddingRight: '4px' }}>:</td>
-                    <td style={{ fontWeight: '700', paddingBottom: '2px', color: '#dc2626' }}>
-                      {fmt(customer.total_outstanding)}
-                      {(customer.invoice_outstanding !== undefined || customer.manual_outstanding !== undefined) && (
-                        <span style={{ fontWeight: '400', fontSize: '9px', color: '#888', marginLeft: '4px' }}>
-                          (Inv: {fmt(customer.invoice_outstanding || 0)} | Manual: {fmt(customer.manual_outstanding || 0)})
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>
@@ -634,14 +620,27 @@ export default function PrintTemplate({
               <div style={{ border: `2px solid ${PRIMARY}`, padding: '3px', display: 'inline-block', background: '#fff' }}>
                 <QRPlaceholder />
               </div>
-              <div>
-                <div style={{ fontSize: '10px', color: '#555', lineHeight: '1.5' }}>
-                  Scan this QR code<br />to verify this invoice.
+              {(customer.total_outstanding !== undefined && customer.total_outstanding > 0) ? (
+                <div>
+                  <div style={{ fontSize: '10px', fontWeight: '700', color: '#666', letterSpacing: '1px' }}>
+                    TOTAL DUE
+                  </div>
+                  <div style={{ fontSize: '16px', fontWeight: '800', color: '#dc2626', marginTop: '2px', lineHeight: '1.2' }}>
+                    {fmt(customer.total_outstanding)}
+                  </div>
+                  {(customer.invoice_outstanding !== undefined || customer.manual_outstanding !== undefined) && (
+                    <div style={{ fontSize: '9px', color: '#888', marginTop: '3px' }}>
+                      Inv: {fmt(customer.invoice_outstanding || 0)} | Manual: {fmt(customer.manual_outstanding || 0)}
+                    </div>
+                  )}
                 </div>
-                <div style={{ fontSize: '10px', fontWeight: '700', color: PRIMARY, marginTop: '3px' }}>
-                  Invoice No: {docNumber}
-                </div>
-              </div>
+              ) : (
+                customer.total_outstanding !== undefined && (
+                  <div style={{ fontSize: '10px', fontWeight: '700', color: '#16a34a', letterSpacing: '0.5px' }}>
+                    No outstanding dues
+                  </div>
+                )
+              )}
             </div>
           </div>
 
