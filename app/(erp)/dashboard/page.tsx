@@ -53,7 +53,8 @@ export default function DashboardPage() {
   const [salesChartData, setSalesChartData] = useState<{ month: string; sales: number; profit: number }[]>([]);
   const [categoryData, setCategoryData] = useState<{ name: string; value: number; color: string }[]>([]);
   const [topCustomers, setTopCustomers] = useState<Customer[]>([]);
-  const [outstandingDues, setOutstandingDues] = useState<Customer[]>([]);
+  const [invoiceDues, setInvoiceDues] = useState<{ id: string; name: string; due: number }[]>([]);
+  const [manualDues, setManualDues] = useState<{ id: string; name: string; due: number }[]>([]);
   const [lowStockItems, setLowStockItems] = useState<any[]>([]);
   const [recentActivities, setRecentActivities] = useState<any[]>([]);
   const [reconChecks, setReconChecks] = useState<any[]>([]);
@@ -73,7 +74,7 @@ export default function DashboardPage() {
 
     const [
       todayInvRes, monthlyInvRes, customersRes, suppliersRes,
-      dlvRes, onlineOrdersRes, topCustRes, duesRes,
+      dlvRes, onlineOrdersRes, topCustRes, unpaidInvRes, recvEntriesRes, recvPaymentsRes,
       lowStockRes, actRes, expensesRes, todayCollectionRes
     ] = await Promise.all([
       supabase.from('invoices').select('total_amount').eq('invoice_date', today).neq('status', 'cancelled'),
@@ -83,7 +84,9 @@ export default function DashboardPage() {
       supabase.from('deliveries').select('status'),
       supabase.from('online_orders').select('total_amount, status').gte('created_at', monthStart),
       supabase.from('customers').select('*').order('total_purchases', { ascending: false }).limit(5),
-      supabase.from('customers').select('*').gt('outstanding_balance', 0).order('outstanding_balance', { ascending: false }).limit(5),
+      supabase.from('invoices').select('customer_id, balance_due, customer:customers(id, name)').not('status', 'in', '("cancelled","refunded","paid")').gt('balance_due', 0),
+      supabase.from('journal_entries').select('id, customer_id, total_debit, customer:customers(id, name)').eq('reference_type', 'receivable').eq('is_posted', true),
+      supabase.from('payments').select('reference_id, amount').eq('reference_type', 'receivable').eq('is_reversed', false),
       supabase.from('inventory_items').select('quantity_on_hand, product:products(id, name, sku, min_stock_level, image_url)').lt('quantity_on_hand', 20).limit(5),
       supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(5),
       supabase.from('journal_entries').select('total_debit, entry_date').eq('reference_type', 'manual').eq('is_posted', true).gte('entry_date', yearStart),
@@ -143,7 +146,37 @@ export default function DashboardPage() {
     const lowStock = (lowStockRes.data || []).filter((i: any) => i.product && i.quantity_on_hand < (i.product.min_stock_level || 20));
     setLowStockItems(lowStock.slice(0, 3));
     setTopCustomers(topCustRes.data || []);
-    setOutstandingDues(duesRes.data || []);
+
+    // Invoice dues per customer: unpaid invoice balances (same rule as the sales page)
+    const invDueMap = new Map<string, { id: string; name: string; due: number }>();
+    (unpaidInvRes.data || []).forEach((i: any) => {
+      if (!i.customer_id || !i.customer) return;
+      const entry = invDueMap.get(i.customer_id) || { id: i.customer.id ?? i.customer_id, name: i.customer.name, due: 0 };
+      entry.due += Number(i.balance_due || 0);
+      invDueMap.set(i.customer_id, entry);
+    });
+    setInvoiceDues(
+      [...invDueMap.values()].filter((d) => d.due > 0).sort((a, b) => b.due - a.due).slice(0, 5)
+    );
+
+    // Manual dues per customer: receivable journal entries minus payments against them
+    const paidByEntry = new Map<string, number>();
+    (recvPaymentsRes.data || []).forEach((p: any) => {
+      if (p.reference_id) paidByEntry.set(p.reference_id, (paidByEntry.get(p.reference_id) || 0) + Number(p.amount || 0));
+    });
+    const manualDueMap = new Map<string, { id: string; name: string; due: number }>();
+    (recvEntriesRes.data || []).forEach((e: any) => {
+      if (!e.customer_id || !e.customer) return;
+      const outstanding = Number(e.total_debit || 0) - (paidByEntry.get(e.id) || 0);
+      if (outstanding <= 0) return;
+      const entry = manualDueMap.get(e.customer_id) || { id: e.customer.id ?? e.customer_id, name: e.customer.name, due: 0 };
+      entry.due += outstanding;
+      manualDueMap.set(e.customer_id, entry);
+    });
+    setManualDues(
+      [...manualDueMap.values()].sort((a, b) => b.due - a.due).slice(0, 5)
+    );
+
     setRecentActivities(actRes.data || []);
 
     const chartData = await getSalesChartData();
@@ -386,16 +419,18 @@ export default function DashboardPage() {
 
         <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-foreground">Outstanding Dues</h3>
-            <Link href="/crm" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
+            <h3 className="text-sm font-semibold text-foreground">Invoice Outstanding Dues</h3>
+            <Link href="/sales" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-2.5">
-            {(outstandingDues.length > 0 ? outstandingDues : []).slice(0, 5).map((c) => (
+            {invoiceDues.length > 0 ? invoiceDues.map((c) => (
               <div key={c.id} className="flex items-center justify-between">
                 <Link href={`/crm/${c.id}`} className="text-sm text-foreground truncate max-w-[130px] hover:text-blue-600 transition">{c.name}</Link>
-                <span className="text-sm font-semibold text-red-600">{formatCurrency(c.outstanding_balance)}</span>
+                <span className="text-sm font-semibold text-red-600">{formatCurrency(c.due)}</span>
               </div>
-            ))}
+            )) : (
+              <p className="text-xs text-muted-foreground py-2">No outstanding invoice dues</p>
+            )}
           </div>
         </div>
       </div>
@@ -458,16 +493,18 @@ export default function DashboardPage() {
 
         <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-foreground">Outstanding Dues</h3>
-            <Link href="/crm" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
+            <h3 className="text-sm font-semibold text-foreground">Manual Outstanding Dues</h3>
+            <Link href="/accounting" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-2.5">
-            {(outstandingDues.length > 0 ? outstandingDues : []).slice(0, 5).map((c) => (
+            {manualDues.length > 0 ? manualDues.map((c) => (
               <div key={c.id} className="flex items-center justify-between">
                 <Link href={`/crm/${c.id}`} className="text-sm text-foreground truncate max-w-[130px] hover:text-blue-600 transition">{c.name}</Link>
-                <span className="text-sm font-semibold text-red-600">{formatCurrency(c.outstanding_balance)}</span>
+                <span className="text-sm font-semibold text-red-600">{formatCurrency(c.due)}</span>
               </div>
-            ))}
+            )) : (
+              <p className="text-xs text-muted-foreground py-2">No outstanding manual dues</p>
+            )}
           </div>
         </div>
       </div>
