@@ -105,6 +105,7 @@ export default function SalesPage() {
   const [companySettings, setCompanySettings] = useState<any>({ name: '', address: '', phone: '', email: '', logo_url: '' });
   const [convertingInvoice, setConvertingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [viewingChallan, setViewingChallan] = useState<any>(null);
+  const [cogsGap, setCogsGap] = useState<any>(null);
   const [editingInvoice, setEditingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [cancellingInvoice, setCancellingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [viewTab, setViewTab] = useState<'details' | 'history' | 'cost-history'>('details');
@@ -258,6 +259,14 @@ export default function SalesPage() {
       });
       cogsAmount = Math.max(0, Number(cogsData || 0));
     }
+
+    // Why Total COGS (journal) differs from Total Cost (History): per-cause
+    // decomposition on the same period basis as the two cards
+    const { data: gapRows } = await supabase.rpc('get_cogs_history_gap_breakdown', {
+      p_start_date: from || null,
+      p_end_date: to || null,
+    });
+    setCogsGap((gapRows && gapRows.length > 0) ? gapRows[0] : null);
 
     // Payment collected at sale: total amount paid on invoices that were fully or partially paid at time of sale
     const paymentCollectedAtSale = activeInv
@@ -761,6 +770,72 @@ export default function SalesPage() {
             </div>
           ))}
         </div>
+        {cogsGap && Math.abs(Number(cogsGap.gap)) > 0.01 && (() => {
+          const g = Number(cogsGap.gap);
+          const parts = [
+            {
+              show: Math.abs(Number(cogsGap.stale_history)) > 0.01,
+              label: 'Stale cost history',
+              value: Number(cogsGap.stale_history),
+              note: Number(cogsGap.stale_history_count),
+              tip: 'Invoices edited after sale: their COGS journal entry matches the current items, but the cost price history snapshot still holds the pre-edit amounts.',
+            },
+            {
+              show: Math.abs(Number(cogsGap.journal_wrong)) > 0.01,
+              label: 'COGS posted at wrong amount',
+              value: Number(cogsGap.journal_wrong),
+              note: Number(cogsGap.journal_wrong_count),
+              tip: 'Invoices whose COGS journal entry disagrees with the current items × cost — the journal side is the wrong one.',
+            },
+            {
+              show: Math.abs(Number(cogsGap.both_off)) > 0.01,
+              label: 'Both sides off',
+              value: Number(cogsGap.both_off),
+              note: Number(cogsGap.both_off_count),
+              tip: 'Invoices where neither the journal entry nor the history snapshot matches the current items × cost.',
+            },
+            {
+              show: Math.abs(Number(cogsGap.returns_credit)) > 0.01,
+              label: 'Sales returns',
+              value: Number(cogsGap.returns_credit),
+              tip: 'Returns reverse COGS in the journal but never rewrite the cost price history — by design, the history is a sale-time snapshot.',
+            },
+            {
+              show: Math.abs(Number(cogsGap.cancelled_net)) > 0.01,
+              label: 'Cancelled invoices',
+              value: Number(cogsGap.cancelled_net),
+              tip: 'Net COGS left on the journal by cancelled invoices; cancelled invoices are excluded from the history total.',
+            },
+            {
+              show: Math.abs(Number(cogsGap.residual)) > 0.01,
+              label: 'Other / timing',
+              value: Number(cogsGap.residual),
+              tip: 'Entries dated in this period for invoices outside it (e.g. COGS reposted later after an edit) and small rounding.',
+            },
+          ].filter(p => p.show);
+          return (
+            <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50/70 px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+              <span className="font-semibold text-amber-900 whitespace-nowrap" title="Total COGS (journal, account 5000) minus Total Cost (History) for the selected period">
+                COGS Δ (Journal − History):{' '}
+                <span className={g > 0 ? 'text-red-600' : 'text-emerald-700'}>
+                  {g > 0 ? '+' : '−'}{formatCurrency(Math.abs(g))}
+                </span>
+              </span>
+              {parts.map(p => (
+                <span key={p.label} title={p.tip} className="text-amber-800 whitespace-nowrap">
+                  {p.label}:{' '}
+                  <b className={p.value > 0 ? 'text-red-600' : 'text-emerald-700'}>
+                    {p.value > 0 ? '+' : '−'}{formatCurrency(Math.abs(p.value))}
+                  </b>
+                  {p.note !== undefined && p.note > 0 ? ` (${p.note} inv)` : ''}
+                </span>
+              ))}
+              <Link href="/reports/cogs-audit?tab=history-diff" className="ml-auto text-blue-600 hover:underline font-medium whitespace-nowrap">
+                Review in COGS Audit →
+              </Link>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Period filter */}
