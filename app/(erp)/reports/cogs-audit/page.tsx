@@ -79,7 +79,7 @@ interface AuditRow {
   root_cause: string;
 }
 
-type Filter = 'all' | 'duplicate' | 'mismatch' | 'missing' | 'consistent' | 'cancelled';
+type Filter = 'all' | 'duplicate' | 'mismatch' | 'missing' | 'consistent' | 'cancelled' | 'history-diff';
 
 const FILTER_LABELS: Record<Exclude<Filter, 'all'>, string> = {
   duplicate: 'Duplicate COGS',
@@ -87,6 +87,7 @@ const FILTER_LABELS: Record<Exclude<Filter, 'all'>, string> = {
   missing: 'Missing',
   consistent: 'Consistent',
   cancelled: 'Cancelled Orphan',
+  'history-diff': 'History Δ',
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -177,6 +178,7 @@ interface AuditTotals {
   expectedA: number;
   expectedB: number;
   journalC: number;
+  cMinusB: number;
   fifoD: number;
   jeCount: number;
   impact: number;
@@ -185,13 +187,14 @@ interface AuditTotals {
 function computeTotals(list: AuditRow[]): AuditTotals {
   const t: AuditTotals = {
     count: list.length, items: 0, expectedA: 0, expectedB: 0,
-    journalC: 0, fifoD: 0, jeCount: 0, impact: 0,
+    journalC: 0, cMinusB: 0, fifoD: 0, jeCount: 0, impact: 0,
   };
   for (const r of list) {
     t.items += r.item_count || 0;
     t.expectedA += r.expected_cogs_a || 0;
     t.expectedB += r.expected_cogs_b || 0;
     t.journalC += r.journal_cogs_c || 0;
+    t.cMinusB += historyDiff(r);
     t.fifoD += r.fifo_cogs_d || 0;
     t.jeCount += r.journal_je_count || 0;
     t.impact += r.balance_impact || 0;
@@ -203,6 +206,23 @@ function SignedAmount({ value }: { value: number }) {
   if (value > 0) return <span className="text-red-600 font-semibold">+{formatCurrency(value)}</span>;
   if (value < 0) return <span className="text-amber-600 font-semibold">−{formatCurrency(Math.abs(value))}</span>;
   return <span className="text-gray-400">{formatCurrency(0)}</span>;
+}
+
+// Same tolerance the RPC's keeper detection uses: a value "matches" expected
+// when it is within ৳1, or within 1% + ৳10 of a positive expected.
+function matchesExpected(value: number, expected: number): boolean {
+  const diff = Math.abs((value || 0) - (expected || 0));
+  if (diff <= 1.00) return true;
+  if (expected > 0 && diff <= expected * 0.01 + 10) return true;
+  return expected === 0 && value === 0;
+}
+
+function historyDiff(r: AuditRow): number {
+  return (r.journal_cogs_c || 0) - (r.expected_cogs_b || 0);
+}
+
+function isHistoryDiffRow(r: AuditRow): boolean {
+  return r.invoice_status !== 'cancelled' && Math.abs(historyDiff(r)) > 0.01;
 }
 
 export default function COGSAuditPage() {
@@ -223,9 +243,18 @@ export default function COGSAuditPage() {
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [showReasonModal, setShowReasonModal] = useState<{ invoiceId: string; jeId: string } | null>(null);
   const [singleReason, setSingleReason] = useState('');
+  const [showRepairModal, setShowRepairModal] = useState<{ invoiceId: string; action: 'repost-cogs' | 'refresh-history' } | null>(null);
+  const [repairReason, setRepairReason] = useState('');
   const cancelRef = useRef(false);
 
   useEffect(() => { loadData(); }, []);
+
+  // Deep-link support: /reports/cogs-audit?tab=history-diff opens the History Δ
+  // tab directly (linked from the sales page's Total Cost (History) card).
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    if (tab === 'history-diff') setFilter('history-diff');
+  }, []);
 
   async function loadData() {
     setLoading(true);
@@ -270,11 +299,14 @@ export default function COGSAuditPage() {
     const orphanNetImpact = cancelledOrphans.reduce((s, r) => s + r.balance_impact, 0);
     const doubleTriggerCount = dateFiltered.filter(r => r.root_cause === 'DOUBLE_TRIGGER').length;
     const autoFixableCount = duplicates.length + cancelledOrphans.length;
+    const historyDiffRows = dateFiltered.filter(isHistoryDiffRow);
+    const historyDiffNet = historyDiffRows.reduce((s, r) => s + historyDiff(r), 0);
     return {
       total, duplicates: duplicates.length, mismatches: mismatches.length,
       missing: missing.length, consistent: consistent.length,
       cancelledOrphans: cancelledOrphans.length,
       totalOverstatement, orphanNetImpact, doubleTriggerCount, autoFixableCount,
+      historyDiff: historyDiffRows.length, historyDiffNet,
       duplicateInvoiceIds: new Set(duplicates.map(d => d.invoice_id)),
     };
   }, [dateFiltered]);
@@ -282,12 +314,14 @@ export default function COGSAuditPage() {
   // ── Filtered rows (status tab + search) ───────────────
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
-    return dateFiltered.filter(r => {
-      if (filter === 'duplicate' && r.audit_status !== 'DUPLICATE_COGS') return false;
-      if (filter === 'mismatch' && r.audit_status !== 'MISMATCH') return false;
-      if (filter === 'missing' && r.audit_status !== 'MISSING') return false;
-      if (filter === 'consistent' && r.audit_status !== 'CONSISTENT') return false;
-      if (filter === 'cancelled' && r.audit_status !== 'CANCELLED_ORPHAN') return false;
+    const out = dateFiltered.filter(r => {
+      if (filter === 'history-diff') {
+        if (!isHistoryDiffRow(r)) return false;
+      } else if (filter === 'duplicate' && r.audit_status !== 'DUPLICATE_COGS') return false;
+      else if (filter === 'mismatch' && r.audit_status !== 'MISMATCH') return false;
+      else if (filter === 'missing' && r.audit_status !== 'MISSING') return false;
+      else if (filter === 'consistent' && r.audit_status !== 'CONSISTENT') return false;
+      else if (filter === 'cancelled' && r.audit_status !== 'CANCELLED_ORPHAN') return false;
       if (!term) return true;
       return (
         r.invoice_number.toLowerCase().includes(term) ||
@@ -296,6 +330,11 @@ export default function COGSAuditPage() {
         (r.root_cause || '').toLowerCase().includes(term)
       );
     });
+    // The History Δ tab is ranked by the size of the journal-vs-history gap
+    if (filter === 'history-diff') {
+      out.sort((a, b) => Math.abs(historyDiff(b)) - Math.abs(historyDiff(a)));
+    }
+    return out;
   }, [dateFiltered, filter, search]);
 
   const paginated = useMemo(() => {
@@ -352,6 +391,40 @@ export default function COGSAuditPage() {
       await loadData();
     } catch (e: any) {
       alert('Delete failed: ' + e.message);
+    } finally {
+      setFixing(false);
+    }
+  }
+
+  // ── History Δ repairs (journal → items, history → items) ──
+  async function runHistoryDiffRepair() {
+    if (!showRepairModal) return;
+    if (!repairReason.trim()) { alert('Reason is required'); return; }
+    const { invoiceId, action } = showRepairModal;
+    const row = rows.find(r => r.invoice_id === invoiceId);
+    setFixing(true);
+    try {
+      const rpcName = action === 'repost-cogs' ? 'repair_invoice_cogs_to_items' : 'refresh_cost_price_history_from_items';
+      const { data, error } = await supabase.rpc(rpcName, {
+        p_invoice_id: invoiceId,
+        p_reason: repairReason,
+        p_username: 'admin',
+      });
+      if (error) throw error;
+      const result = data as { success: boolean; error?: string; idempotent?: boolean };
+      if (!result.success) {
+        alert('Repair failed: ' + (result.error || 'unknown error'));
+        return;
+      }
+      const what = action === 'repost-cogs'
+        ? `COGS reposted at items × cost (journal was ${formatCurrency(row?.journal_cogs_c || 0)})`
+        : `History refreshed to current items (was ${formatCurrency(row?.expected_cogs_b || 0)})`;
+      setFixLog(prev => [...prev, `${row?.invoice_number}: ${what}`]);
+      setShowRepairModal(null);
+      setRepairReason('');
+      await loadData();
+    } catch (e: any) {
+      alert('Repair failed: ' + e.message);
     } finally {
       setFixing(false);
     }
@@ -497,8 +570,9 @@ export default function COGSAuditPage() {
       </div>
 
       {/* ── Stats cards ────────────────────────────────── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         <StatCard label="Total Invoices" value={stats.total} color="#6b7280" />
+        <StatCard label="History Δ (C−B)" value={stats.historyDiff} color="#f59e0b" />
         <StatCard label="Consistent" value={stats.consistent} color={STATUS_COLORS.CONSISTENT} />
         <StatCard label="Duplicate COGS" value={stats.duplicates} color={STATUS_COLORS.DUPLICATE_COGS} />
         <StatCard label="Mismatch" value={stats.mismatches} color={STATUS_COLORS.MISMATCH} />
@@ -547,6 +621,26 @@ export default function COGSAuditPage() {
         </div>
       )}
 
+      {/* ── History Δ alert ────────────────────────────── */}
+      {filter === 'history-diff' && stats.historyDiff > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded p-4 flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="font-semibold text-amber-900">
+              Journal COGS vs Cost Price History — net gap <SignedAmount value={stats.historyDiffNet} /> over {stats.historyDiff} invoice{stats.historyDiff > 1 ? 's' : ''}
+            </h3>
+            <p className="text-sm text-amber-800 mt-1">
+              Journal (C) is what account 5000 booked for the invoice; History (B) is the cost snapshot recorded at
+              sale time. Ranked by |C − B|. Common causes: sales returns reverse journal COGS but never rewrite
+              history; edited invoices keep their pre-edit history snapshot; occasionally COGS was posted at the
+              wrong amount outright. Use Expected (A) — current items × cost — to decide which side is wrong:
+              if the journal matches A, refresh the history; if the journal doesn't match A, repost the journal.
+              Both repairs are per-row, audited, and require a reason.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── Charts ─────────────────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white border rounded p-4">
@@ -580,7 +674,7 @@ export default function COGSAuditPage() {
       {/* ── Filters ────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2">
-          {(['all', 'duplicate', 'cancelled', 'mismatch', 'missing', 'consistent'] as Filter[]).map(f => (
+          {(['all', 'history-diff', 'duplicate', 'cancelled', 'mismatch', 'missing', 'consistent'] as Filter[]).map(f => (
             <button
               key={f}
               onClick={() => { setFilter(f); setPage(1); }}
@@ -590,6 +684,7 @@ export default function COGSAuditPage() {
             >
               {f === 'all' ? 'All' : FILTER_LABELS[f]}
               {f === 'all' && ` (${stats.total})`}
+              {f === 'history-diff' && ` (${stats.historyDiff})`}
               {f === 'duplicate' && ` (${stats.duplicates})`}
               {f === 'mismatch' && ` (${stats.mismatches})`}
               {f === 'missing' && ` (${stats.missing})`}
@@ -790,6 +885,7 @@ export default function COGSAuditPage() {
               <th className="p-2 text-right">Expected (A)</th>
               <th className="p-2 text-right">History (B)</th>
               <th className="p-2 text-right">Journal (C)</th>
+              <th className="p-2 text-right">Δ (C−B)</th>
               <th className="p-2 text-right">FIFO (D)</th>
               <th className="p-2 text-center">JEs</th>
               <th className="p-2 text-right">Overstated By</th>
@@ -801,7 +897,7 @@ export default function COGSAuditPage() {
           <tbody>
             {paginated.length === 0 && (
               <tr>
-                <td colSpan={14} className="p-8 text-center text-gray-500">
+                <td colSpan={15} className="p-8 text-center text-gray-500">
                   No invoices match the current filter.
                 </td>
               </tr>
@@ -822,6 +918,7 @@ export default function COGSAuditPage() {
                   });
                 }}
                 onDeleteJE={(jeId) => setShowReasonModal({ invoiceId: r.invoice_id, jeId })}
+                onRepair={(action) => setShowRepairModal({ invoiceId: r.invoice_id, action })}
               />
             ))}
           </tbody>
@@ -836,6 +933,7 @@ export default function COGSAuditPage() {
                 {pageTotals.expectedB > 0 ? formatCurrency(pageTotals.expectedB) : '—'}
               </td>
               <td className="p-2 text-right font-mono">{formatCurrency(pageTotals.journalC)}</td>
+              <td className="p-2 text-right font-mono"><SignedAmount value={pageTotals.cMinusB} /></td>
               <td className="p-2 text-right font-mono">
                 {pageTotals.fifoD > 0 ? formatCurrency(pageTotals.fifoD) : '—'}
               </td>
@@ -939,6 +1037,60 @@ export default function COGSAuditPage() {
           </div>
         </div>
       )}
+
+      {/* ── History Δ repair modal ─────────────────────── */}
+      {showRepairModal && (() => {
+        const row = rows.find(r => r.invoice_id === showRepairModal.invoiceId);
+        if (!row) return null;
+        const isRepost = showRepairModal.action === 'repost-cogs';
+        return (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-full max-w-lg space-y-4">
+              <h2 className="text-lg font-bold">
+                {isRepost ? 'Repost COGS at current items' : 'Refresh cost price history'}
+              </h2>
+              <p className="text-sm text-gray-600">
+                <b>{row.invoice_number}</b> ({row.invoice_date}) — Expected (A) items × cost:{' '}
+                <b>{formatCurrency(row.expected_cogs_a)}</b>, Journal (C):{' '}
+                <b>{formatCurrency(row.journal_cogs_c)}</b>, History (B):{' '}
+                <b>{formatCurrency(row.expected_cogs_b)}</b>.
+              </p>
+              <p className="text-sm text-gray-600">
+                {isRepost
+                  ? 'Deletes every COGS journal entry for this invoice (audited, balance-reversing) and posts one replacement at items × cost_price, dated at the invoice date.'
+                  : 'Replaces this invoice\u2019s cost price history snapshot with rows rebuilt from its current items. The old rows are kept in cost_price_history_repair_audit.'}
+              </p>
+              <div>
+                <label className="text-sm font-medium">Reason (required, audit log)</label>
+                <textarea
+                  value={repairReason}
+                  onChange={e => setRepairReason(e.target.value)}
+                  placeholder={isRepost
+                    ? 'e.g. COGS JE posted at wrong amount (see History Δ view) — reposting at current items'
+                    : 'e.g. History snapshot is stale after invoice edits — refreshing to current items'}
+                  className="w-full mt-1 p-2 border rounded text-sm"
+                  rows={3}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => { setShowRepairModal(null); setRepairReason(''); }}
+                  className="px-3 py-2 text-sm border rounded hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={runHistoryDiffRepair}
+                  disabled={!repairReason.trim() || fixing}
+                  className={`px-3 py-2 text-sm text-white rounded disabled:opacity-50 ${isRepost ? 'bg-red-600 hover:bg-red-700' : 'bg-amber-600 hover:bg-amber-700'}`}
+                >
+                  {fixing ? 'Working...' : (isRepost ? 'Repost COGS' : 'Refresh history')}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -955,7 +1107,7 @@ function StatCard({ label, value, color }: { label: string; value: number | stri
 }
 
 function AuditTableRow({
-  row, selected, expanded, onToggleSelect, onToggleExpand, onDeleteJE,
+  row, selected, expanded, onToggleSelect, onToggleExpand, onDeleteJE, onRepair,
 }: {
   row: AuditRow;
   selected: boolean;
@@ -963,10 +1115,16 @@ function AuditTableRow({
   onToggleSelect: () => void;
   onToggleExpand: () => void;
   onDeleteJE: (jeId: string) => void;
+  onRepair: (action: 'repost-cogs' | 'refresh-history') => void;
 }) {
   const statusColor = STATUS_COLORS[row.audit_status] || '#6b7280';
   const fixColor = FIX_COLORS[row.fix_action] || '#6b7280';
   const isIssue = row.audit_status !== 'CONSISTENT';
+  const notCancelled = row.invoice_status !== 'cancelled';
+  const jeMatchesItems = matchesExpected(row.journal_cogs_c, row.expected_cogs_a);
+  const histMatchesItems = matchesExpected(row.expected_cogs_b, row.expected_cogs_a);
+  const showRepost = notCancelled && !jeMatchesItems;
+  const showRefresh = notCancelled && !histMatchesItems && row.expected_cogs_a > 0;
 
   return (
     <>
@@ -990,6 +1148,13 @@ function AuditTableRow({
         </td>
         <td className="p-2 text-right font-mono text-xs">
           {formatCurrency(row.journal_cogs_c)}
+        </td>
+        <td className="p-2 text-right font-mono text-xs">
+          {notCancelled && Math.abs(historyDiff(row)) > 0.01 ? (
+            <SignedAmount value={historyDiff(row)} />
+          ) : (
+            <span className="text-gray-400">—</span>
+          )}
         </td>
         <td className="p-2 text-right font-mono text-xs">
           {row.fifo_cogs_d > 0 ? formatCurrency(row.fifo_cogs_d) : '—'}
@@ -1032,6 +1197,28 @@ function AuditTableRow({
           {row.root_cause && (
             <div className="text-xs text-gray-500 mt-0.5">{row.root_cause}</div>
           )}
+          {(showRepost || showRefresh) && (
+            <div className="flex flex-wrap gap-x-2 gap-y-1 mt-1">
+              {showRepost && (
+                <button
+                  onClick={() => onRepair('repost-cogs')}
+                  className="text-[11px] text-red-600 hover:underline whitespace-nowrap"
+                  title={`Journal (C) ${formatCurrency(row.journal_cogs_c)} doesn't match current items (A) ${formatCurrency(row.expected_cogs_a)} — deletes this invoice's COGS entries and reposts one at items × cost`}
+                >
+                  Repost COGS @ items
+                </button>
+              )}
+              {showRefresh && (
+                <button
+                  onClick={() => onRepair('refresh-history')}
+                  className="text-[11px] text-amber-700 hover:underline whitespace-nowrap"
+                  title={`History (B) ${formatCurrency(row.expected_cogs_b)} doesn't match current items (A) ${formatCurrency(row.expected_cogs_a)} — rewrites the history snapshot from current items (old rows are audit-logged)`}
+                >
+                  Refresh history
+                </button>
+              )}
+            </div>
+          )}
         </td>
         <td className="p-2">
           {isIssue && (
@@ -1047,7 +1234,7 @@ function AuditTableRow({
       </tr>
       {expanded && isIssue && (
         <tr className="bg-gray-50">
-          <td colSpan={14} className="p-4">
+          <td colSpan={15} className="p-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
               {/* COGS journal entries */}
               <div>

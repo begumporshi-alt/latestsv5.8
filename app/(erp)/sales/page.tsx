@@ -726,7 +726,7 @@ export default function SalesPage() {
             { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false, info: 'Sum of total_amount for all non-cancelled, non-draft invoices in the selected period.' },
             { label: 'Total Invoices', value: stats.invoiceCount.toLocaleString(), icon: FileText, color: 'text-sky-500 bg-sky-50', clickable: false, info: 'Number of non-cancelled, non-draft invoices in the selected period (same basis as Total Sales).' },
             { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false, info: 'Cost of Goods Sold: net of Cost of Goods Sold account 5000 in the ledger for the selected period.' },
-            { label: 'Total Cost (History)', value: formatCurrency(stats.costHistoryTotal), icon: Calculator, color: 'text-amber-500 bg-amber-50', clickable: false, info: 'Sum of cost price history for the same invoices as Total Sales. Compare with Total COGS: a difference flags invoices whose booked COGS does not match their recorded cost history (per-invoice Total Cost column shows the history side).' },
+            { label: 'Total Cost (History)', value: formatCurrency(stats.costHistoryTotal), icon: Calculator, color: 'text-amber-500 bg-amber-50', clickable: true, info: 'Sum of cost price history for the same invoices as Total Sales. Compare with Total COGS: a difference flags invoices whose booked COGS does not match their recorded cost history. Click to open the COGS Audit History Δ view ranked by difference.' },
             { label: 'Payment Collected at Sale', value: formatCurrency(stats.paymentCollectedAtSale), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false, info: 'Amount paid at the time of sale (POS and paid invoices). Excludes later payments and manual receivable collections.' },
             { label: 'Total Collection', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false, info: 'All payments received in the period: invoice payments + manual receivable collections. Excludes reversed payments from edits/cancels.' },
             { label: 'Refunded', value: formatCurrency(stats.refunded), icon: RotateCcw, color: 'text-purple-500 bg-purple-50', clickable: false, info: 'Total refund amounts from sales returns in the selected period.' },
@@ -738,7 +738,11 @@ export default function SalesPage() {
             <div
               key={s.label}
               className={`stat-card flex items-center gap-3 shrink-0 min-w-[180px] ${s.clickable ? 'cursor-pointer hover:shadow-md hover:border-teal-300 transition-all' : ''}`}
-              onClick={s.clickable ? () => s.label === 'Outstanding' ? setShowOutstandingModal(true) : setShowNetCollectedModal(true) : undefined}
+              onClick={s.clickable ? () => {
+                if (s.label === 'Outstanding') setShowOutstandingModal(true);
+                else if (s.label === 'Total Cost (History)') router.push('/reports/cogs-audit?tab=history-diff');
+                else setShowNetCollectedModal(true);
+              } : undefined}
             >
               <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color} shrink-0`}><s.icon className="w-5 h-5" /></div>
               <div className="min-w-0 flex-1">
