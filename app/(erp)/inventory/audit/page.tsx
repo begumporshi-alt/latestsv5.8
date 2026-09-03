@@ -69,12 +69,12 @@ function logChecks(h: LogRow): { sort_key: number; check_name: string; status: s
 
 type Tab = 'layers' | 'balances' | 'history';
 
-const KIND_META: Record<string, { label: string; className: string; hint: string }> = {
-  ADJ: { label: 'Oversell IOU', className: 'bg-red-50 text-red-700 border-red-200', hint: 'Minted when a sale oversold the FIFO ledger (old flow)' },
-  REDUCE: { label: 'Reduction', className: 'bg-orange-50 text-orange-700 border-orange-200', hint: 'Over-reduction on already-empty layers' },
-  IOU: { label: 'Live IOU', className: 'bg-amber-50 text-amber-700 border-amber-200', hint: 'Recent deliberate oversell ("Sell anyway")' },
-  UNNAMED: { label: 'Unnamed', className: 'bg-slate-100 text-slate-600 border-slate-300', hint: 'Test-era row with no batch number' },
-  OTHER: { label: 'Other', className: 'bg-slate-100 text-slate-600 border-slate-300', hint: 'Unclassified negative layer' },
+const KIND_META: Record<string, { label: string; className: string; desc: string }> = {
+  ADJ: { label: 'Oversell IOU', className: 'bg-red-50 text-red-700 border-red-200', desc: 'a sale took more units than the ledger held (old flow, before the warn-and-confirm gate)' },
+  REDUCE: { label: 'Reduction', className: 'bg-orange-50 text-orange-700 border-orange-200', desc: 'stock was reduced on a product whose ledger was already empty' },
+  IOU: { label: 'Live IOU', className: 'bg-amber-50 text-amber-700 border-amber-200', desc: 'a recent deliberate oversell — someone confirmed "Sell anyway" at the counter' },
+  UNNAMED: { label: 'Unnamed', className: 'bg-slate-100 text-slate-600 border-slate-300', desc: 'an old test-era row with no batch number' },
+  OTHER: { label: 'Other', className: 'bg-slate-100 text-slate-600 border-slate-300', desc: 'an unclassified negative layer' },
 };
 
 const STATUS_STYLE: Record<string, { border: string; badge: string; icon: typeof CheckCircle2 }> = {
@@ -370,6 +370,32 @@ export default function InventoryAuditPage() {
       {/* ----------------------------------------------------------------- */}
       {tab === 'layers' && (
         <div className="space-y-3">
+          {/* Plain-language legend so a new person understands the page without training */}
+          <div className="rounded-xl border border-border bg-muted/30 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Info className="w-4 h-4 text-blue-600 shrink-0" />
+              What is an IOU layer?
+            </div>
+            <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+              When a sale or stock reduction asks for more units than the FIFO batch ledger holds, the
+              missing units are recorded as a <b>negative layer — an &ldquo;IOU&rdquo;</b> (&ldquo;I owe you&rdquo;): a marker
+              that the ledger owes stock it never received. The books stay balanced, but the product&rsquo;s
+              net stock reads lower than the shelf may actually hold. Each layer below is therefore a
+              decision: <b>purge it once a physical count confirms the stock is really there, or keep it
+              if the goods truly left.</b>
+            </p>
+            <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-2.5">
+              {Object.entries(KIND_META).map(([, m]) => (
+                <span key={m.label} className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap ${m.className}`}>
+                    {m.label}
+                  </span>
+                  {m.desc}
+                </span>
+              ))}
+            </div>
+          </div>
+
           {/* Filters */}
           <div className="flex flex-wrap items-center gap-2">
             <select
@@ -469,7 +495,7 @@ export default function InventoryAuditPage() {
                       <td className="px-3 py-2 whitespace-nowrap">{l.warehouse || '—'}</td>
                       <td className="px-3 py-2">
                         <span
-                          title={meta.hint}
+                          title={meta.desc}
                           className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap ${meta.className}`}
                         >
                           {meta.label}
@@ -513,10 +539,9 @@ export default function InventoryAuditPage() {
           </div>
 
           <p className="text-xs text-muted-foreground leading-relaxed">
-            Each layer is an IOU the ledger carries for stock that was sold or reduced beyond what it ever received.
-            <b> Purge a layer only after a physical count confirms the stock is actually on the shelf</b> — print the
-            count sheet, compare with <i>System Net</i>, and purge where the shelf holds more than the ledger says.
-            If the goods really left, keep the layer: it is an honest record.
+            Print the count sheet and compare each product&rsquo;s <i>System Net</i> with the shelf:
+            where the shelf holds <b>more</b> than System Net, the IOU is a data artifact — safe to
+            purge. Where it matches (or is lower), the goods really left — keep the layer.
             {negCheck ? ` (Currently ${negCheck.drift} layer(s).)` : ''}
           </p>
         </div>
