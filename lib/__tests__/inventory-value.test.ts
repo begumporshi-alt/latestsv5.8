@@ -3,8 +3,8 @@ import { getInventoryValue } from '../inventory-value';
 // Minimal mock that mimics the supabase-js call chain used by the helper.
 // The helper makes three kinds of calls:
 //   rpc('get_fifo_inventory_value') -> { data, error }
-//   from('inventory_items').select(...).gt(...) -> { data, error }
-//   from('inventory_batches').select(...).gt(...) -> { data, error }
+//   from('inventory_items').select(...).gt(...).order(...) -> { data, error }
+//   from('inventory_batches').select(...).gt(...).order(...) -> { data, error }
 function mockSupabase(opts: {
   fifoValue: number | null;
   invItems: any[];        // rows from inventory_items
@@ -19,10 +19,12 @@ function mockSupabase(opts: {
       const builder: any = {
         select: jest.fn(),
         gt: jest.fn(),
+        order: jest.fn(),
         range: jest.fn(),
       };
       builder.select.mockReturnValue(builder);
       builder.gt.mockReturnValue(builder);
+      builder.order.mockReturnValue(builder);
       builder.range.mockResolvedValue({ data: opts.invItems, error: null });
       return builder;
     }
@@ -34,10 +36,12 @@ function mockSupabase(opts: {
       const builder: any = {
         select: jest.fn(),
         gt: jest.fn(),
+        order: jest.fn(),
         range: jest.fn(),
       };
       builder.select.mockReturnValue(builder);
       builder.gt.mockReturnValue(builder);
+      builder.order.mockReturnValue(builder);
       builder.range.mockResolvedValue({ data: batchData, error: null });
       return builder;
     }

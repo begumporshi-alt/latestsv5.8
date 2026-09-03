@@ -37,6 +37,7 @@ export default function FifoLedgerPage() {
           .from('inventory_batches')
           .select('*, product:products(name, sku), warehouse:warehouses(name)')
           .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         all = all.concat((pageData || []) as Batch[]);
         if (!pageData || pageData.length < 1000) break;

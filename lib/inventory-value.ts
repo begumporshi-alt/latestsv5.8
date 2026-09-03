@@ -30,6 +30,7 @@ export async function getInventoryValue(
           .from('inventory_items')
           .select('product_id, warehouse_id, quantity_on_hand, product:products(id, cost_price)')
           .gt('quantity_on_hand', 0)
+          .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         const page = invPage || [];
         missing.push(...page);
@@ -42,6 +43,7 @@ export async function getInventoryValue(
           .from('inventory_batches')
           .select('product_id, warehouse_id')
           .gt('quantity_remaining', 0)
+          .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         const page = batchPage || [];
         for (const b of page) {
@@ -82,6 +84,7 @@ export async function getInventoryValue(
         const { data: pageData } = await supabase
           .from('inventory_items')
           .select('quantity_on_hand, product:products(cost_price)')
+          .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         const page = pageData || [];
         for (const item of page) {

@@ -33,9 +33,10 @@ export default function InventoryReportPage() {
         let pg = 0;
         while (true) {
           const { data: pageData } = await supabase
-            .from('inventory_items')
-            .select('*, product:products(name, sku, unit, cost_price, sale_price, min_stock_level, category:categories(id, name)), warehouse:warehouses(id, name)')
-            .range(pg * 1000, (pg + 1) * 1000 - 1);
+          .from('inventory_items')
+          .select('*, product:products(name, sku, unit, cost_price, sale_price, min_stock_level, category:categories(id, name)), warehouse:warehouses(id, name)')
+          .order('id')
+          .range(pg * 1000, (pg + 1) * 1000 - 1);
           allItems = allItems.concat(pageData || []);
           if (!pageData || pageData.length < 1000) break;
           pg++;
@@ -47,10 +48,11 @@ export default function InventoryReportPage() {
         let pg = 0;
         while (true) {
           const { data: batchPage } = await supabase
-            .from('inventory_batches')
-            .select('product_id, warehouse_id, quantity_remaining, unit_cost')
-            .gt('quantity_remaining', 0)
-            .range(pg * 1000, (pg + 1) * 1000 - 1);
+          .from('inventory_batches')
+          .select('product_id, warehouse_id, quantity_remaining, unit_cost')
+          .gt('quantity_remaining', 0)
+          .order('id')
+          .range(pg * 1000, (pg + 1) * 1000 - 1);
           const page = batchPage || [];
           page.forEach((b: any) => {
             const key = `${b.product_id}|${b.warehouse_id}`;

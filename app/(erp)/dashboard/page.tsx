@@ -101,6 +101,7 @@ export default function DashboardPage() {
         const { data: pageData } = await supabase
           .from('inventory_items')
           .select('quantity_on_hand, product:products(cost_price)')
+          .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         allInvItems = allInvItems.concat(pageData || []);
         if (!pageData || pageData.length < 1000) break;
