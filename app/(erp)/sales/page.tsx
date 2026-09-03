@@ -652,7 +652,7 @@ export default function SalesPage() {
 
   const filtered = invoices.filter(i => {
     // Basic filters
-    if (search && !i.invoice_number.toLowerCase().includes(search.toLowerCase()) && !i.customer?.name?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !i.invoice_number.toLowerCase().includes(search.toLowerCase()) && !i.customer?.name?.toLowerCase().includes(search.toLowerCase()) && !(i.reference || '').toLowerCase().includes(search.toLowerCase())) return false;
     if (filterStatus === 'refundable') {
       // Invoices eligible for return (paid or partially paid, with remaining balance)
       if (i.status !== 'paid' && i.status !== 'partially_paid') return false;
@@ -3126,7 +3126,7 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
   }, []);
 
   const filtered = invoices.filter(inv => {
-    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase()) || (inv.reference || '').toLowerCase().includes(search.toLowerCase());
     const matchStatus = !filterStatus || inv.status === filterStatus;
     return matchSearch && matchStatus;
   });
@@ -3181,7 +3181,7 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search by invoice # or customer..."
+                  placeholder="Search by invoice #, customer, or reference..."
                 className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               />
             </div>
