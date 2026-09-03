@@ -40,6 +40,7 @@ interface Layer {
   pair_net_qty: number;
   counter_qty: number;
   invoice_numbers: string | null;
+  stock_at_sale: string | null;
 }
 
 interface DriftAccount {
@@ -79,6 +80,14 @@ const KIND_META: Record<string, { label: string; className: string; desc: string
   OTHER: { label: 'Other', className: 'bg-slate-100 text-slate-600 border-slate-300', desc: 'an unclassified negative layer' },
 };
 
+// Was FIFO stock recorded for this product + warehouse at the time of the sale?
+// (from get_negative_inventory_layers; NULL = no invoice behind the layer)
+const STOCK_AT_SALE_META: Record<string, { label: string; className: string; desc: string }> = {
+  none: { label: 'None ever', className: 'bg-red-50 text-red-700 border-red-200', desc: 'no FIFO batch was ever recorded for this product + warehouse before the sale — the stock never entered the ledger (pre-FIFO gap)' },
+  after_sale: { label: 'After sale', className: 'bg-amber-50 text-amber-700 border-amber-200', desc: 'the first FIFO batch for this product + warehouse was recorded only AFTER the sale — the ledger did not know this stock yet' },
+  existed: { label: 'Existed', className: 'bg-sky-50 text-sky-700 border-sky-200', desc: 'the ledger held FIFO stock before this sale — a genuine oversell, or the recorded stock was less than the shelf held (count decides)' },
+};
+
 const STATUS_STYLE: Record<string, { border: string; badge: string; icon: typeof CheckCircle2 }> = {
   ok: { border: 'border-emerald-200 bg-emerald-50/40', badge: 'bg-emerald-100 text-emerald-700', icon: CheckCircle2 },
   drift: { border: 'border-red-300 bg-red-50/50', badge: 'bg-red-100 text-red-700', icon: AlertTriangle },
@@ -99,6 +108,7 @@ export default function InventoryAuditPage() {
   const [tab, setTab] = useState<Tab>('layers');
   const [kindFilter, setKindFilter] = useState<string>('all');
   const [warehouseFilter, setWarehouseFilter] = useState<string>('all');
+  const [stockFilter, setStockFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -162,13 +172,14 @@ export default function InventoryAuditPage() {
     return layers.filter(l => {
       if (kindFilter !== 'all' && l.kind !== kindFilter) return false;
       if (warehouseFilter !== 'all' && (l.warehouse || '—') !== warehouseFilter) return false;
+      if (stockFilter !== 'all' && (l.stock_at_sale || 'n/a') !== stockFilter) return false;
       if (q) {
         const hay = `${l.product_name} ${l.product_sku} ${l.batch_number || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [layers, kindFilter, warehouseFilter, search]);
+  }, [layers, kindFilter, warehouseFilter, stockFilter, search]);
 
   const totalDrag = useMemo(
     () => filteredLayers.reduce((s, l) => s + Math.abs(Number(l.value)), 0),
@@ -396,6 +407,18 @@ export default function InventoryAuditPage() {
                 </span>
               ))}
             </div>
+            <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-2 pt-2 border-t border-border/60">
+              <span className="text-xs font-semibold text-foreground">FIFO stock at sale:</span>
+              {Object.entries(STOCK_AT_SALE_META).map(([, m]) => (
+                <span key={m.label} className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap ${m.className}`}>
+                    {m.label}
+                  </span>
+                  {m.desc}
+                </span>
+              ))}
+              <span className="text-xs text-muted-foreground">— no badge: no invoice behind the layer (reductions, unnamed rows)</span>
+            </div>
           </div>
 
           {/* Filters */}
@@ -417,6 +440,17 @@ export default function InventoryAuditPage() {
             >
               <option value="all">All warehouses</option>
               {warehouses.map(w => <option key={w} value={w}>{w}</option>)}
+            </select>
+            <select
+              value={stockFilter}
+              onChange={e => setStockFilter(e.target.value)}
+              className="border border-border rounded-lg px-2.5 py-1.5 text-sm bg-white"
+            >
+              <option value="all">FIFO stock at sale: all</option>
+              <option value="none">No stock ever recorded</option>
+              <option value="after_sale">Stock recorded after sale</option>
+              <option value="existed">Stock existed at sale</option>
+              <option value="n/a">No invoice behind layer</option>
             </select>
             <input
               value={search}
@@ -469,6 +503,7 @@ export default function InventoryAuditPage() {
                   <th className="px-3 py-2.5">Product</th>
                   <th className="px-3 py-2.5">Warehouse</th>
                   <th className="px-3 py-2.5">Kind</th>
+                  <th className="px-3 py-2.5 hidden lg:table-cell">FIFO stock at sale</th>
                   <th className="px-3 py-2.5 hidden lg:table-cell">Batch</th>
                   <th className="px-3 py-2.5 hidden lg:table-cell">Invoice(s)</th>
                   <th className="px-3 py-2.5 text-right">Qty</th>
@@ -503,6 +538,18 @@ export default function InventoryAuditPage() {
                         >
                           {meta.label}
                         </span>
+                      </td>
+                      <td className="px-3 py-2 hidden lg:table-cell">
+                        {l.stock_at_sale && STOCK_AT_SALE_META[l.stock_at_sale] ? (
+                          <span
+                            title={STOCK_AT_SALE_META[l.stock_at_sale].desc}
+                            className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full border whitespace-nowrap ${STOCK_AT_SALE_META[l.stock_at_sale].className}`}
+                          >
+                            {STOCK_AT_SALE_META[l.stock_at_sale].label}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
                       </td>
                       <td className="px-3 py-2 hidden lg:table-cell">
                         <span className="font-mono text-[11px] text-muted-foreground" title={l.batch_number || '(no batch number)'}>
@@ -552,7 +599,7 @@ export default function InventoryAuditPage() {
                 })}
                 {filteredLayers.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="px-3 py-10 text-center text-muted-foreground">
+                    <td colSpan={12} className="px-3 py-10 text-center text-muted-foreground">
                       No negative layers match the filters.
                     </td>
                   </tr>
