@@ -61,7 +61,7 @@ ${headHtml}
     z-index: auto !important;
   }
   /* The copied app stylesheets above can hide everything for print —
-     globals.css sets `body * { visibility: hidden !important }` for in-page
+     globals.css sets "body * { visibility: hidden !important }" for in-page
      modal printing (only .print-modal descendants are re-shown), and the
      cloned node does not carry that class, so every print would come out
      blank. This popup exists solely to print the clone, so re-enable
