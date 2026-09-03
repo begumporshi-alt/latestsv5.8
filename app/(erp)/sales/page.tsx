@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator } from 'lucide-react';
@@ -58,23 +59,6 @@ interface InvoiceItem {
   subtotal: number;
   selected_unit?: ProductUnit;
   base_quantity: number;
-}
-
-// Fetch every row of a query, paginating past Supabase's 1000-row default
-// cap. Takes a builder factory so each page runs a fresh query (builders
-// mutate in place, so they can't be reused across pages).
-async function fetchAll<T = any>(build: () => any, pageSize = 1000): Promise<T[]> {
-  const rows: T[] = [];
-  let pg = 0;
-  while (true) {
-    const { data, error } = await build().range(pg * pageSize, (pg + 1) * pageSize - 1);
-    if (error) throw error;
-    const page = (data || []) as T[];
-    rows.push(...page);
-    if (page.length < pageSize) break;
-    pg++;
-  }
-  return rows;
 }
 
 export default function SalesPage() {

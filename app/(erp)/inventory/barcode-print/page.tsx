@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import JsBarcode from 'jsbarcode';
 import QRCode from 'qrcode';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { Barcode, QrCode, Printer, Search, Package, FileText, X, ChevronDown, CircleCheck as CheckCircle2, Settings, Layers, Boxes, ShoppingCart, Eye, Download } from 'lucide-react';
@@ -102,17 +103,27 @@ export default function BarcodePrintPage() {
 
   async function loadData() {
     setLoading(true);
-    const [prodRes, catRes, brandRes, invRes] = await Promise.all([
-      supabase.from('products').select('*, category:categories(name), brand:brands(name)').eq('is_active', true).order('name'),
-      supabase.from('categories').select('*').eq('is_active', true).order('name'),
-      supabase.from('brands').select('*').eq('is_active', true).order('name'),
-      supabase.from('invoices').select('*, customer:customers(name)').order('created_at', { ascending: false }).limit(500),
-    ]);
-    setProducts(prodRes.data || []);
-    setCategories(catRes.data || []);
-    setBrands(brandRes.data || []);
-    setInvoices((invRes.data || []) as any);
-    setLoading(false);
+    try {
+      // 2541+ active products / 600+ invoices exceed Supabase's 1000-row
+      // default cap — page through everything so search sees the whole
+      // catalog. id tiebreaker keeps page boundaries stable (product names
+      // are not unique).
+      const [productsData, catRes, brandRes, invoicesData] = await Promise.all([
+        fetchAll<Product>(() => supabase.from('products').select('*, category:categories(name), brand:brands(name)').eq('is_active', true).order('name').order('id')),
+        supabase.from('categories').select('*').eq('is_active', true).order('name'),
+        supabase.from('brands').select('*').eq('is_active', true).order('name'),
+        fetchAll(() => supabase.from('invoices').select('*, customer:customers(name)').order('created_at', { ascending: false }).order('id')),
+      ]);
+      setProducts(productsData);
+      setCategories(catRes.data || []);
+      setBrands(brandRes.data || []);
+      setInvoices(invoicesData as any);
+    } catch (err) {
+      console.error('Failed to load barcode print data', err);
+      toast({ title: 'Failed to load data', description: 'Please refresh the page to try again.', variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
   }
 
   const filteredProducts = products.filter(p => {
