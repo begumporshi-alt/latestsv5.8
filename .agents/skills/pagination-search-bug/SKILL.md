@@ -1,6 +1,6 @@
 ---
 name: pagination-search-bug
-description: Diagnose and fix items missing from a list/search UI. Use when a user reports an item not appearing in a search, filter, or dropdown — especially after an edit or new record creation. Triggers on reports like "item X doesn't show up", "search returns nothing", "dropdown is missing options", "can't find the record I just created". Always check the pattern described here before assuming a display bug or permission issue.
+description: Diagnose and fix items missing from a list/search UI, and stats/totals that are silently wrong. Use when a user reports an item not appearing in a search, filter, or dropdown — especially after an edit or new record creation — OR when a total/sum on a page (Total Sales, counts, dashboard cards) is understated versus another report or SQL. Triggers on "item X doesn't show up", "search returns nothing", "dropdown is missing options", "can't find the record I just created", "total is wrong", "the two pages show different totals". Always check the pattern described here before assuming a display bug, permission issue, or calculation error.
 ---
 
 # Pagination-Search Bug Hunter
@@ -9,9 +9,36 @@ description: Diagnose and fix items missing from a list/search UI. Use when a us
 
 A record **exists in the database** but is **not found** in a search or dropdown UI. The user can see it elsewhere (e.g. a detail page, a report, a different module) but searching in a specific UI field returns nothing. All other records in the same list appear fine.
 
+Real case: a barcode-label printing page loaded products with **no `.limit()` at all** (PostgREST still caps every response at 1,000 rows by default) on a 2,541-product catalog, then filtered client-side — 60% of the catalog was unfindable in label search. The same page capped invoices at `.limit(500)` while the table had 602 rows.
+
+## Second symptom: silently wrong totals
+
+A stat card, count, or sum on a page is **understated** because it is computed
+client-side over a capped fetch (`.limit(N)`, or Supabase's implicit 1,000-row
+default when no limit is set). Nothing looks broken in the UI — the number is
+just quietly missing rows. Indicators:
+
+- A list page shows a LOWER total than a statement/report page (statements
+  usually aggregate in SQL over a separate unfiltered query, so they're right)
+- The gap equals exactly the value of the dropped rows (verify in SQL —
+  see the "Attributing a totals gap" section below)
+- The table looks complete because the cap is high (e.g. 500) and the user
+  rarely scrolls past it
+
+Real cases of the totals variant:
+- Invoices page `.limit(500)` with 580 invoices → "Total Sales" understated
+  by exactly the 34 oldest invoices' value (35.09L shown vs 41.43L true)
+- Products query with no explicit limit → Supabase returned only 1,000 of
+  2,528 active products; the invoice product picker was blind to half the catalog
+- Payments query (625 rows, no limit) heading toward the same 1,000-row cliff
+
+Once you find ONE capped query on a page, sweep the page's OTHER queries —
+the same author usually capped siblings (payments, returns, deliveries,
+lookup tables feeding pickers).
+
 ## The root cause (most common)
 
-**Client-side filter over a capped, unordered initial load.** The UI fetches only the first N rows with `.limit(N)` (often 50 or 100) and no `ORDER BY`, then filters those rows in JavaScript. Items beyond the limit are silently absent. This is especially likely when:
+**Client-side filter over a capped, unordered initial load.** The UI fetches only the first N rows with `.limit(N)` (often 50 or 100) and no `ORDER BY`, then filters those rows in JavaScript. Items beyond the limit are silently absent. **A query with no `.limit()` is still capped** — Supabase/PostgREST returns at most 1,000 rows per response by default, so "no limit" just means "invisible cap at 1,000". This is especially likely when:
 - The user reports the item existed before (it was created earlier)
 - The item has a name/code near the end of alphabetical order
 - The list has grown past the `.limit()` cap since deployment
@@ -40,9 +67,11 @@ grep -rn "filter(c =>\|.filter(\|includes(.*toLowerCase)" --include="*.tsx" .
 
 ### Step 2: Check if the record exists in the database
 
-Query the database directly with `psql`. The connection string for this project is:
+Query the database directly with `psql`. The connection string is
+`NEXT_PUBLIC_SUPABASE_DB_URL` in `.env`:
+
 ```
-postgresql://postgres.qdnbefqmcxjvddlabeww:ooDwacL1abHedqXa@aws-1-ap-southeast-2.pooler.supabase.com:6543/postgres
+DB_URL=$(grep -oP '^NEXT_PUBLIC_SUPABASE_DB_URL=\K.*' .env) && psql "$DB_URL" -c "..."
 ```
 
 For a missing item by code/name:
@@ -168,6 +197,7 @@ When sweeping for similar bugs, check every `.limit(N)` call paired with a clien
 4. **"No results" check that checks fewer fields than the actual filter** — gives false "not found" for partial matches
 5. **`.limit()` cap close to total row count** — likely to silently exclude records as data grows
 6. **`.ilike('name', ...)` without `.or('code.ilike...')`** — common in form-side helpers (sales advances, header global search). Typing a customer code (e.g. `167982`) or product SKU returns nothing because only `name` is searched. Fix by adding a `searchCols` array and using `.or()` with each column.
+7. **Query with no `.limit()` at all** — PostgREST still caps the response at 1,000 rows; check the table's real row count in SQL. A missing limit is NOT an unlimited query.
 
 To sweep the codebase:
 ```
@@ -177,6 +207,108 @@ grep -rn "\.ilike(" --include="*.tsx" --include="*.ts" . | grep -v node_modules
 
 For each result, check if there's a `.filter()` on the same data downstream. If so, apply the checklist above.
 
+## The fix for capped fetches: paginate past the row cap
+
+For queries whose completeness matters (stats, pickers, attach-to-parent maps),
+fetch ALL rows by paging. Supabase/postgrest-js builders mutate in place, so
+give the loop a **factory** that builds a fresh query per page:
+
+```typescript
+async function fetchAll<T = any>(build: () => any, pageSize = 1000): Promise<T[]> {
+  const rows: T[] = [];
+  let pg = 0;
+  while (true) {
+    const { data, error } = await build().range(pg * pageSize, (pg + 1) * pageSize - 1);
+    if (error) throw error;
+    const page = (data || []) as T[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    pg++;
+  }
+  return rows;
+}
+
+// usage inside loadData — the factory re-applies filters per page
+const invoices = await fetchAll(() => {
+  let q = supabase.from('invoices')
+    .select('*, customer:customers(name)').order('created_at', { ascending: false });
+  if (from) q = q.gte('invoice_date', from);
+  if (to) q = q.lte('invoice_date', to);
+  return q;
+});
+```
+
+**In this project the helper already exists: `lib/fetch-all.ts` (added
+2026-09-03).** Import it — never copy-paste the implementation into a page;
+the copies drift.
+
+Apply to every query on the page whose rows must be complete: the main list,
+any per-record attachments (payments, returns, deliveries), lookup tables
+feeding pickers (products, customers). Small tables (payment methods,
+warehouses) are fine unpaged but cost nothing to page.
+
+**The paginated query MUST have a deterministic ORDER BY.** If the sort column
+isn't unique, tied rows can swap places between `.range()` pages — you'll get
+duplicates and omissions at page boundaries even after "fixing" the cap. Add a
+unique tiebreaker column (id works) whenever the visible sort column can repeat:
+
+```typescript
+// 152 of 2,541 products shared a name — .order('name') alone let rows shift
+// between pages. Tiebreaker makes page boundaries stable:
+.order('name').order('id')
+```
+
+Check for duplicate sort keys before paginating:
+```sql
+SELECT count(*) FROM (SELECT <sort_col> FROM <table>
+  WHERE <filters> GROUP BY <sort_col> HAVING count(*) > 1) d;
+```
+
+## Verify the fix
+
+Two cheap checks against the live page:
+
+1. **Row-count parity** — count rendered rows in the browser
+   (`document.querySelectorAll('table tbody tr').length`, valid when the table
+   renders all rows without virtualization) and compare with `SELECT count(*)`
+   under the same filters. 2,541 in the DOM = 2,541 in the DB.
+2. **Boundary-row search** — pick rows just past the old cap, in the query's
+   own order, and search for them in the UI:
+
+```sql
+WITH ordered AS (
+  SELECT row_number() OVER (ORDER BY name, id) AS rn, name, sku
+  FROM products WHERE is_active = true
+)
+SELECT rn, name, sku FROM ordered WHERE rn >= 1000 ORDER BY rn LIMIT 3;
+```
+
+Rows at rn 1001+ were invisible before the fix; finding them in the UI's
+search proves the pagination works. Clear the search box before counting rows
+(leftover filter text silently shrinks the list).
+
+## Attributing a totals gap (prove it before fixing)
+
+Reproduce BOTH disagreeing numbers in SQL, including the cap, and check the
+dropped rows equal the gap:
+
+```sql
+WITH ranked AS (
+  SELECT total_amount, status,
+         ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn
+  FROM invoices
+)
+SELECT
+  (SELECT SUM(total_amount) FROM ranked WHERE status NOT IN ('cancelled','draft')) AS true_total,
+  (SELECT SUM(total_amount) FROM ranked WHERE rn <= 500 AND status NOT IN ('cancelled','draft')) AS capped_total,
+  (SELECT SUM(total_amount) FROM ranked WHERE rn > 500 AND status NOT IN ('cancelled','draft')) AS dropped_rows;
+-- dropped_rows = true_total − capped_total → cap fully explains the gap
+```
+
+If it doesn't reconcile exactly, another axis is in play (status filters,
+date semantics, gross-vs-net) — see the report-total-discrepancy-triage skill
+for the full decomposition checklist.
+
 ## What this is NOT
 
 - This is NOT a permission/RLS issue — those would prevent the record from loading at all (empty result, not "missing specific item")
@@ -185,17 +317,20 @@ For each result, check if there's a `.filter()` on the same data downstream. If 
 
 ## This Project's Known Patterns
 
+Shared helper: **`lib/fetch-all.ts`** — import it instead of re-implementing.
+
 | Entity | File | Bug | Fix | Status |
 |--------|------|-----|-----|--------|
-| Customers (POS dropdown) | `app/(erp)/sales/pos/page.tsx:217-224` | `.limit(100)` without `ORDER BY` — record at row 103+ invisible | `.order('name')` (removed limit) | Fixed |
-| Customer search (advances) | `app/(erp)/sales/advances/page.tsx:477` | `.ilike('name', ...)` only — code/phone search returns nothing | `.or('name/code/phone.ilike...')` | Fixed |
-| Global header search | `components/layout/Header.tsx:112` | `.ilike(src.labelCol, ...)` only — customer code and product SKU search broken | Added `searchCols[]` + `.or()` | Fixed |
-| Products (POS) | `app/(erp)/sales/pos/page.tsx:200-203` | Server-side search with `.or()` and `ORDER BY name` — correct | None | OK |
-| Products | `components/ui/ProductFilterDropdown.tsx:39` | Server-side search with `.or()` — correct | None | OK |
-| Products | `components/ui/ProductSearchInput.tsx:86` | Server-side search with `.or()` — correct | None | OK |
-| Customers (CRM) | `app/(erp)/crm/page.tsx:68` | Loads all rows — correct | None | OK |
-| Customers | `components/ui/CustomerSearchInput.tsx:51` | Server-side search with `.or()` — correct | None | OK |
-| Suppliers | `app/(erp)/suppliers/page.tsx:25` | Loads all rows — correct | None | OK |
-| Suppliers | `components/ui/SupplierSearchInput.tsx:53` | Server-side search with `.or()` — correct | None | OK |
-| Expenses (journal) | `app/(erp)/expenses/page.tsx:86` | `.limit(500)` + client-side filter on `reference_type=manual` | Verify count of manual entries < 500 | Needs check |
-| Invoices (sales) | `app/(erp)/sales/page.tsx:138` | `.limit(500)`, 387 non-cancelled invoices total — safe for now | Add `ORDER BY invoice_date DESC` | Low risk |
+| Customers (POS dropdown) | `app/(erp)/sales/pos/page.tsx` | `.limit(100)` without `ORDER BY` — record at row 103+ invisible | `.order('name')` (removed limit) | Fixed; 129 active customers, safe under 1,000 cap |
+| Customer search (advances) | `app/(erp)/sales/advances/page.tsx` | `.ilike('name', ...)` only — code/phone search returns nothing | `.or('name/code/phone.ilike...')` | Fixed |
+| Global header search | `components/layout/Header.tsx` | `.ilike(src.labelCol, ...)` only — customer code and product SKU search broken | Added `searchCols[]` + `.or()` | Fixed |
+| Products (POS) | `app/(erp)/sales/pos/page.tsx` | Server-side search with `.or()` and `ORDER BY name` — correct | None | OK |
+| Products | `components/ui/ProductFilterDropdown.tsx` | Server-side search with `.or()` — correct | None | OK |
+| Products | `components/ui/ProductSearchInput.tsx` | Server-side search with `.or()` — correct | None | OK |
+| Customers (CRM) | `app/(erp)/crm/page.tsx` | Loads all rows — correct | None | OK |
+| Customers | `components/ui/CustomerSearchInput.tsx` | Server-side search with `.or()` — correct | None | OK |
+| Suppliers | `app/(erp)/suppliers/page.tsx` | Loads all rows — correct | None | OK |
+| Suppliers | `components/ui/SupplierSearchInput.tsx` | Server-side search with `.or()` — correct | None | OK |
+| Expenses (journal) | `app/(erp)/expenses/page.tsx` | `.limit(500)` + client-side filter on `reference_type=manual` | 129 manual entries as of 2026-09-03 — safe; switch to fetchAll as it approaches 500 | Verified safe |
+| Invoices (sales) | `app/(erp)/sales/page.tsx` | `.limit(500)` understated Total Sales ৳6.34L | `fetchAll` pagination via `lib/fetch-all.ts` | Fixed 2026-09-01 |
+| Products + invoices (barcode-print) | `app/(erp)/inventory/barcode-print/page.tsx` | products query no `.limit()` → 1,000 of 2,541 loaded (60% of catalog unfindable); invoices `.limit(500)` of 602 | `fetchAll` + `.order('id')` tiebreakers (152 duplicate product names) — commit 2500ed9 | Fixed 2026-09-03 |
