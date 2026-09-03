@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { Package, Search } from 'lucide-react';
@@ -82,7 +83,10 @@ export default function FifoLedgerPage() {
 
   // Grand totals across all batches (read-only ledger summary).
   const summary = useMemo(() => {
-    let totalValue = 0;
+    let totalValue = 0;       // net book value — includes negative IOU layers
+    let positiveValue = 0;    // physical stock — positive layers only
+    let iouValue = 0;         // value tied up in negative (oversell IOU) layers
+    let iouLayers = 0;
     let totalRemaining = 0;
     const productIds = new Set<string>();
     const byWarehouse = new Map<string, { name: string; value: number; remaining: number }>();
@@ -92,6 +96,12 @@ export default function FifoLedgerPage() {
       const value = remaining * Number(b.unit_cost);
       totalValue += value;
       totalRemaining += remaining;
+      if (remaining > 0) {
+        positiveValue += value;
+      } else if (remaining < 0) {
+        iouValue += value;
+        iouLayers++;
+      }
       if (b.product_id) productIds.add(b.product_id as unknown as string);
       if (b.warehouse_id) {
         const whKey = b.warehouse_id as unknown as string;
@@ -108,6 +118,9 @@ export default function FifoLedgerPage() {
     }
     return {
       totalValue,
+      positiveValue,
+      iouValue,
+      iouLayers,
       totalRemaining,
       productCount: productIds.size,
       byWarehouse: Array.from(byWarehouse.entries())
@@ -144,9 +157,13 @@ export default function FifoLedgerPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 mb-6">
         <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
-          <p className="text-xs text-muted-foreground font-medium">Total Inventory Value</p>
+          <p className="text-xs text-muted-foreground font-medium">Stock Value (physical layers)</p>
+          <p className="text-xl font-bold text-foreground mt-1">{formatCurrency(summary.positiveValue)}</p>
+        </div>
+        <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
+          <p className="text-xs text-muted-foreground font-medium">Net Book Value (GL 1200)</p>
           <p className="text-xl font-bold text-foreground mt-1">{formatCurrency(summary.totalValue)}</p>
         </div>
         <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
@@ -162,6 +179,22 @@ export default function FifoLedgerPage() {
           <p className="text-xl font-bold text-foreground mt-1">{batches.length.toLocaleString()}</p>
         </div>
       </div>
+
+      {summary.iouLayers > 0 && (
+        <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          <span className="font-semibold">Why two values? </span>
+          Stock Value counts physical stock (positive FIFO layers) — the same basis as the
+          Inventory page&rsquo;s &ldquo;Inventory Value&rdquo; card. Net Book Value additionally
+          includes {summary.iouLayers} negative oversell IOU layer{summary.iouLayers === 1 ? '' : 's'} worth{' '}
+          {formatCurrency(Math.abs(summary.iouValue))} and matches GL account 1200 — the Dashboard
+          reconciliation check verifies this live. The IOUs await the physical-count decision on
+          the{' '}
+          <Link href="/inventory/audit" className="font-semibold underline underline-offset-2">
+            Inventory Audit
+          </Link>{' '}
+          page.
+        </div>
+      )}
 
       {/* Breakdown by warehouse and batch type */}
       {summary.byWarehouse.length > 0 && (
