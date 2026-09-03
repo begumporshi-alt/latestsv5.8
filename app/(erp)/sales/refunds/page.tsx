@@ -11,6 +11,7 @@ interface RefundRecord {
   return_number: string;
   invoice_id: string;
   invoice_number: string;
+  invoice_reference: string;
   customer_id: string;
   customer_name: string;
   customer_code: string;
@@ -44,7 +45,7 @@ export default function RefundsPage() {
       .select(`
         id, return_number, invoice_id, customer_id, total_refund_amount, refund_method, status, created_at,
         journal_entry_id,
-        invoice:invoices!inner(invoice_number),
+        invoice:invoices!inner(invoice_number, reference),
         customer:customers!inner(name, code),
         items:sales_return_items(quantity_returned, unit_price, discount_percent, subtotal, product:products(name, sku))
       `)
@@ -55,6 +56,7 @@ export default function RefundsPage() {
       return_number: r.return_number,
       invoice_id: r.invoice_id,
       invoice_number: r.invoice?.invoice_number || '',
+      invoice_reference: r.invoice?.reference || '',
       customer_id: r.customer_id,
       customer_name: r.customer?.name || 'Unknown',
       customer_code: r.customer?.code || '',
@@ -104,6 +106,7 @@ export default function RefundsPage() {
     const matchesSearch = !search.trim()
       || r.return_number.toLowerCase().includes(search.trim().toLowerCase())
       || r.invoice_number.toLowerCase().includes(search.trim().toLowerCase())
+      || r.invoice_reference.toLowerCase().includes(search.trim().toLowerCase())
       || r.customer_name.toLowerCase().includes(search.trim().toLowerCase())
       || r.customer_code.toLowerCase().includes(search.trim().toLowerCase());
     const matchesMethod = methodFilter === 'all' || r.refund_method === methodFilter;
@@ -164,7 +167,7 @@ export default function RefundsPage() {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search by return number, invoice, or customer..."
+            placeholder="Search by return number, invoice, reference, or customer..."
             className="w-full pl-10 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
           />
         </div>

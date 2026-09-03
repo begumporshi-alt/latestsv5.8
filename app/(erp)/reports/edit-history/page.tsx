@@ -9,6 +9,7 @@ interface EditHistoryEntry {
   id: string;
   invoice_id: string;
   invoice_number: string;
+  invoice?: { reference: string | null };
   edited_by_name: string | null;
   edited_at: string;
   change_type: string;
@@ -34,7 +35,7 @@ export default function EditHistoryReportPage() {
     setLoading(true);
     let query = supabase
       .from('invoice_edit_history')
-      .select('*')
+      .select('*, invoice:invoices(reference)')
       .order('edited_at', { ascending: false });
 
     if (dateFrom) query = query.gte('edited_at', dateFrom);
@@ -79,7 +80,7 @@ export default function EditHistoryReportPage() {
   }
 
   const filteredHistory = history.filter(e => {
-    if (searchTerm && !e.invoice_number.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+    if (searchTerm && !e.invoice_number.toLowerCase().includes(searchTerm.toLowerCase()) && !(e.invoice?.reference || '').toLowerCase().includes(searchTerm.toLowerCase())) return false;
     if (changeTypeFilter !== 'all' && !e.change_type.includes(changeTypeFilter)) return false;
     if (editorFilter !== 'all' && e.edited_by_name !== editorFilter) return false;
     return true;

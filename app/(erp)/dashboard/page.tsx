@@ -568,7 +568,7 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
     setLoading(true);
     let baseQuery = supabase
       .from('invoices')
-      .select('id, invoice_number, customer:customers(name), status, invoice_date, due_date, total_amount, amount_paid, balance_due', { count: 'exact' })
+      .select('id, invoice_number, reference, customer:customers(name), status, invoice_date, due_date, total_amount, amount_paid, balance_due', { count: 'exact' })
       .in('status', ['sent', 'partially_paid', 'overdue'])
       .gt('balance_due', 0)
       .order('invoice_date', { ascending: false });
@@ -582,7 +582,7 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
     let filtered = data || [];
     if (search.trim()) {
       const q = search.toLowerCase();
-      filtered = filtered.filter((i: any) => i.invoice_number?.toLowerCase().includes(q) || (i.customer?.name || '').toLowerCase().includes(q));
+      filtered = filtered.filter((i: any) => i.invoice_number?.toLowerCase().includes(q) || (i.customer?.name || '').toLowerCase().includes(q) || (i.reference || '').toLowerCase().includes(q));
     }
 
     setInvData(filtered);

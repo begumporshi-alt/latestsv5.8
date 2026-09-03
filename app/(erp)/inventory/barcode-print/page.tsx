@@ -134,7 +134,7 @@ export default function BarcodePrintPage() {
   });
 
   const filteredInvoices = invoices.filter(inv => {
-    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase()) || (inv.reference || '').toLowerCase().includes(search.toLowerCase());
     const matchStatus = !filterStatus || inv.status === filterStatus;
     return matchSearch && matchStatus;
   });

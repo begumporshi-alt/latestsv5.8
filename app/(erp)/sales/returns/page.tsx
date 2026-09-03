@@ -18,6 +18,7 @@ interface Invoice {
   total_amount: number;
   amount_paid: number;
   balance_due: number;
+  reference?: string;
   customer?: { name: string; code: string };
   existing_refunds?: number;
 }
@@ -112,7 +113,8 @@ export default function SalesReturnsPage() {
   const filteredInvoices = invoices.filter(inv =>
     !search ||
     inv.invoice_number.toLowerCase().includes(search.toLowerCase()) ||
-    inv.customer?.name?.toLowerCase().includes(search.toLowerCase())
+    inv.customer?.name?.toLowerCase().includes(search.toLowerCase()) ||
+    (inv.reference || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const filteredReturns = returns.filter(r =>
@@ -395,7 +397,8 @@ function ReturnModal({ invoices, onClose, onSaved }: {
   const filteredInvoices = invoices.filter(inv =>
     !search ||
     inv.invoice_number.toLowerCase().includes(search.toLowerCase()) ||
-    inv.customer?.name?.toLowerCase().includes(search.toLowerCase())
+    inv.customer?.name?.toLowerCase().includes(search.toLowerCase()) ||
+    (inv.reference || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const totalRefundAmount = Object.entries(returnItems).reduce((sum, [itemId, { qty }]) => {
