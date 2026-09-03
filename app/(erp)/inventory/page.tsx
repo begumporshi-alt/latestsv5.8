@@ -184,6 +184,7 @@ export default function InventoryPage() {
         .from('products')
         .select('*, category:categories(name), brand:brands(name), product_colors(id, name, hex_code), product_sizes(id, name)')
         .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
         .range(page * PAGE, (page + 1) * PAGE - 1);
       if (error) break;
       allProds = allProds.concat(data || []);
@@ -199,6 +200,7 @@ export default function InventoryPage() {
         const { data: invPage } = await supabase
           .from('inventory_items')
           .select('product_id, warehouse_id, quantity_on_hand')
+          .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         allInvItems = allInvItems.concat(invPage || []);
         if (!invPage || invPage.length < 1000) break;
@@ -214,6 +216,7 @@ export default function InventoryPage() {
         const { data: soldPage } = await supabase
           .from('invoice_items')
           .select('product_id, quantity')
+          .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         allSoldItems = allSoldItems.concat(soldPage || []);
         if (!soldPage || soldPage.length < 1000) break;
@@ -278,19 +281,25 @@ export default function InventoryPage() {
     const activeProds = prods.filter((p: any) => p.is_active);
     const lowStock = activeProds.filter((p: any) => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length;
     const outOfStock = activeProds.filter((p: any) => (p.total_stock || 0) === 0).length;
-    // Fetch FIFO batch data for accurate valuation (paginated to avoid the 1000-row cap)
+    // Fetch FIFO batch data for accurate valuation (paginated to avoid the 1000-row cap).
+    // Keyed both by product (all-warehouse total) and by product|warehouse so the
+    // Filtered value readout can scope to one warehouse when a warehouse filter is set.
     const fMap: Record<string, number> = {};
     {
       let pg = 0;
       while (true) {
         const { data: batchPage } = await supabase
           .from('inventory_batches')
-          .select('product_id, quantity_remaining, unit_cost')
+          .select('product_id, warehouse_id, quantity_remaining, unit_cost')
           .gt('quantity_remaining', 0)
+          .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
         const page = batchPage || [];
         page.forEach((b: any) => {
-          fMap[b.product_id] = (fMap[b.product_id] || 0) + Number(b.quantity_remaining) * Number(b.unit_cost);
+          const batchValue = Number(b.quantity_remaining) * Number(b.unit_cost);
+          fMap[b.product_id] = (fMap[b.product_id] || 0) + batchValue;
+          const pairKey = `${b.product_id}|${b.warehouse_id}`;
+          fMap[pairKey] = (fMap[pairKey] || 0) + batchValue;
         });
         if (page.length < 1000) break;
         pg++;
@@ -325,6 +334,31 @@ export default function InventoryPage() {
   const pagedFiltered = filtered.slice((page - 1) * pageSize, page * pageSize);
   // Reset to page 1 when filters change
   useEffect(() => { setPage(1); }, [search, filterCategory, filterBrand, filterStatus, filterWarehouse, filterColor, filterSize, filterUnit]);
+
+  // FIFO value of one product|warehouse pair; stock without batch layers falls
+  // back to qty × cost_price, matching getInventoryValue's semantics.
+  const pairFifoValue = (productId: string, warehouseId: string, costPrice: number): number => {
+    const fifo = fifoValueMap[`${productId}|${warehouseId}`];
+    if (fifo !== undefined) return fifo;
+    const qty = inventoryByWarehouse[productId]?.[warehouseId] || 0;
+    return qty > 0 ? qty * costPrice : 0;
+  };
+  // Warehouse-scoped readouts: with a warehouse filter active, count only that
+  // warehouse's stock and FIFO value, not the product's all-warehouse totals.
+  const filteredStock = filterWarehouse
+    ? filtered.reduce((sum, p) => sum + (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0), 0)
+    : filtered.reduce((sum, p) => sum + (p.total_stock || 0), 0);
+  const filteredValue = filterWarehouse
+    ? filtered.reduce((sum, p) => sum + pairFifoValue(p.id, filterWarehouse, Number(p.cost_price || 0)), 0)
+    : filtered.reduce((sum, p) => {
+        let value = fifoValueMap[p.id] || 0;
+        for (const wid of Object.keys(inventoryByWarehouse[p.id] || {})) {
+          if (fifoValueMap[`${p.id}|${wid}`] === undefined) {
+            value += pairFifoValue(p.id, wid, Number(p.cost_price || 0));
+          }
+        }
+        return sum + value;
+      }, 0);
 
   function getStockBadge(qty: number, min: number) {
     if (qty === 0) return <span className="badge-status bg-red-50 text-red-600">Out of Stock</span>;
@@ -503,7 +537,7 @@ export default function InventoryPage() {
           </span>
           <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-lg font-medium">
             <Package className="w-4 h-4" />
-            Total stock: {filtered.reduce((sum, p) => sum + (p.total_stock || 0), 0).toLocaleString()} items
+            Total stock: {filteredStock.toLocaleString()} items
           </span>
           <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-medium">
             <AlertTriangle className="w-4 h-4" />
@@ -515,7 +549,7 @@ export default function InventoryPage() {
           </span>
           <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-muted text-muted-foreground rounded-lg font-medium">
             <BarChart3 className="w-4 h-4" />
-            Filtered value: {formatCurrency(filtered.reduce((sum, p) => sum + (fifoValueMap[p.id] !== undefined ? fifoValueMap[p.id] : (p.total_stock || 0) * p.cost_price), 0))}
+            Filtered value: {formatCurrency(filteredValue)}
           </span>
         </div>
       )}
