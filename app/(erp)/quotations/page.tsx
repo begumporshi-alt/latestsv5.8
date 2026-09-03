@@ -7,6 +7,8 @@ import { toast } from '@/hooks/use-toast';
 import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell } from 'lucide-react';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
+import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
@@ -1458,6 +1460,10 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // Oversell gate state — same warn-and-confirm as POS / invoice creation.
+  const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
+  const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const shortfallConfirmedRef = useRef(false);
 
   useEffect(() => {
     supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
@@ -1479,8 +1485,8 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
     form.payment_type === 'credit' ? 'sent' :
     'draft';
 
-  async function handleConvert(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleConvert(e?: React.FormEvent) {
+    e?.preventDefault();
     if (form.payment_type === 'partial' && (form.amount_paid <= 0 || form.amount_paid >= totalAmount)) {
       setError('Partial payment amount must be greater than 0 and less than the total amount');
       return;
@@ -1507,7 +1513,7 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
       return;
     }
 
-    // Validate stock before conversion
+    // Counter stock per item (feeds the both-empty data-error check below)
     const stockChecks = await Promise.all(
       (items || []).map(async (item: any) => {
         const { data: invItems } = await supabase
@@ -1520,12 +1526,41 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
       })
     );
 
-    const insufficientItems = stockChecks.filter(s => s.baseQty > s.totalStock);
-    if (insufficientItems.length > 0) {
-      setError(`Insufficient stock for: ${insufficientItems.map(s => `${s.productName} (need ${s.baseQty}, have ${s.totalStock})`).join(', ')}`);
-      setSaving(false);
-      return;
+    // Oversell gate — same warn-and-confirm as POS / invoice creation:
+    // compare against the FIFO batch ledger (the counter can drift and is
+    // not the truth). A shortfall is sellable only after explicit
+    // confirmation; ledger AND counter both empty is a data error (wrong
+    // SKU / 10x quantity typo) and blocks outright. Quotation items carry
+    // no warehouse, so consume_fifo will draw from the default warehouse —
+    // the gate compares against that same warehouse.
+    const gateStock = await fetchLedgerStockFor(Array.from(new Set(items.map((i: any) => i.product_id))));
+    if (!shortfallConfirmedRef.current && gateStock) {
+      const shortfalls = computeShortfalls(
+        stockChecks.map(s => ({
+          product_id: s.item.product_id,
+          warehouse_id: null as string | null,
+          base_quantity: s.baseQty,
+          name: s.productName || s.item.product_id,
+          sku: '',
+          cost_price: (Array.isArray(s.item.product) ? s.item.product[0]?.cost_price : s.item.product?.cost_price) || 0,
+          stock_available: s.totalStock,
+        })),
+        gateStock
+      );
+      if (shortfalls.length > 0) {
+        const blocked = shortfalls.filter(x => x.bothEmpty);
+        if (blocked.length > 0) {
+          setError(`Cannot sell — no stock record at all for ${blocked.map(x => x.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`);
+          setSaving(false);
+          return;
+        }
+        setPendingShortfalls(shortfalls);
+        setShortfallConfirmOpen(true);
+        setSaving(false);
+        return;
+      }
     }
+    // gateStock null (ledger lookup failed) → advisory gate fails open.
 
     const { data: invoiceNum, error: numError } = await supabase.rpc('generate_invoice_number');
     if (numError) { setError('Failed to generate invoice number: ' + numError.message); setSaving(false); return; }
@@ -1565,6 +1600,13 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
         unit_name: (item as any).unit_name || null,
         unit_conversion_factor: (item as any).unit_conversion_factor || null,
         base_quantity: (item as any).base_quantity || item.quantity,
+        description: gateStock
+          ? shortfallDescription(
+              { product_id: item.product_id, warehouse_id: null, base_quantity: (item as any).base_quantity || item.quantity },
+              gateStock,
+              'quote conversion'
+            )
+          : null,
       }));
       const { data: insertedInvoiceItems, error: itemsInsertError } = await supabase.from('invoice_items').insert(invoiceItems).select();
       if (itemsInsertError) {
@@ -1764,6 +1806,19 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
             </button>
           </div>
         </form>
+
+        {shortfallConfirmOpen && (
+          <OversellConfirmDialog
+            shortfalls={pendingShortfalls}
+            confirmLabel="Convert anyway"
+            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+            onConfirm={() => {
+              shortfallConfirmedRef.current = true;
+              setShortfallConfirmOpen(false);
+              handleConvert();
+            }}
+          />
+        )}
       </div>
     </div>
   );

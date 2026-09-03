@@ -13,6 +13,8 @@ import { useRouter } from 'next/navigation';
 import Pagination from '@/components/ui/AppPagination';
 import type { Invoice, InvoiceStatus, Customer, Product, Payment, PaymentMethod, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import { fetchLedgerStockFor, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
+import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
@@ -1222,6 +1224,27 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const [customerList, setCustomerList] = useState(customers);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [formTab, setFormTab] = useState<'items' | 'cost'>('items');
+  // Oversell gate state — same warn-and-confirm as the POS page.
+  const [ledgerStock, setLedgerStock] = useState<LedgerStock | null>(null);
+  const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
+  const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const shortfallConfirmedRef = useRef(false);
+
+  // Any items change invalidates a prior "Sell anyway" confirmation and
+  // refreshes the batch-ledger data behind the per-row hint (fetched for
+  // exactly these products — never the whole catalog, which exceeds the
+  // 1000-row RPC cap).
+  const itemProductKey = Array.from(new Set(items.map(i => i.product_id))).join(',');
+  useEffect(() => {
+    shortfallConfirmedRef.current = false;
+    if (!itemProductKey) { setLedgerStock(null); return; }
+    let stale = false;
+    (async () => {
+      const stock = await fetchLedgerStockFor(itemProductKey.split(','));
+      if (!stale && stock) setLedgerStock(stock);
+    })();
+    return () => { stale = true; };
+  }, [itemProductKey]);
 
   async function pasteProductList() {
     try {
@@ -1447,20 +1470,45 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     }
   }
 
-  async function handleSave(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleSave(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!form.customer_id) { setError('Please select a customer'); return; }
     if (items.length === 0) { setError('Please add at least one item'); return; }
     if (form.payment_type === 'partial' && form.amount_paid <= 0) { setError('Please enter payment amount for partial payment'); return; }
     if (form.payment_type === 'partial' && form.amount_paid >= totalAmount) { setError('Partial payment must be less than total. Use "Full Payment" instead.'); return; }
 
-    // Final stock validation before saving
-    for (const item of items) {
-      if (item.stock_qty !== null && item.base_quantity > item.stock_qty) {
-        setError(`Insufficient stock for ${item.product_name}. Available: ${item.stock_qty} ${item.product_base_unit || 'units'}, Requested: ${item.base_quantity}`);
+    // Oversell gate — same warn-and-confirm as the POS page: compare the
+    // line items against the FIFO batch ledger (the counter can drift and
+    // is not the truth). A shortfall is sellable only after explicit
+    // confirmation; ledger AND counter both empty is a data error (wrong
+    // SKU / 10x quantity typo) and blocks outright.
+    const gateStock = await fetchLedgerStockFor(Array.from(new Set(items.map(i => i.product_id))));
+    if (gateStock) setLedgerStock(gateStock);
+    if (!shortfallConfirmedRef.current && gateStock) {
+      const shortfalls = computeShortfalls(
+        items.map(item => ({
+          product_id: item.product_id,
+          warehouse_id: item.warehouse_id,
+          base_quantity: item.base_quantity,
+          name: item.product_name,
+          sku: item.product_sku || '',
+          cost_price: item.cost_price || 0,
+          stock_available: item.stock_qty,
+        })),
+        gateStock
+      );
+      if (shortfalls.length > 0) {
+        const blocked = shortfalls.filter(s => s.bothEmpty);
+        if (blocked.length > 0) {
+          setError(`Cannot sell — no stock record at all for ${blocked.map(s => s.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`);
+          return;
+        }
+        setPendingShortfalls(shortfalls);
+        setShortfallConfirmOpen(true);
         return;
       }
     }
+    // gateStock null (ledger lookup failed) → advisory gate fails open.
 
     setSaving(true);
     setError('');
@@ -1504,6 +1552,13 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       unit_conversion_factor: item.selected_unit?.conversion_factor,
       base_quantity: item.base_quantity,
       warehouse_id: item.warehouse_id || null,
+      description: gateStock
+        ? shortfallDescription(
+            { product_id: item.product_id, warehouse_id: item.warehouse_id, base_quantity: item.base_quantity },
+            gateStock,
+            'invoice creation'
+          )
+        : null,
     }));
 
     const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems);
@@ -1695,6 +1750,14 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                             <p className={`text-[10px] font-medium ${item.stock_qty > 0 ? (item.base_quantity > item.stock_qty ? 'text-red-500' : 'text-green-600') : 'text-red-500'}`}>
                               {item.stock_qty > 0 ? `${item.stock_qty} ${item.product_base_unit || 'units'} in stock` : 'Out of stock'}
                               {item.base_quantity > item.stock_qty && item.stock_qty > 0 && ' (over limit!)'}
+                            </p>
+                          )}
+                          {ledgerStock && item.base_quantity - Math.max(
+                            ledgerQtyFor({ product_id: item.product_id, warehouse_id: item.warehouse_id }, ledgerStock), 0
+                          ) > 0 && (
+                            <p className="mt-1 flex items-center gap-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 w-fit">
+                              <AlertTriangle className="w-3 h-3 shrink-0" />
+                              Ledger stock {ledgerQtyFor({ product_id: item.product_id, warehouse_id: item.warehouse_id }, ledgerStock)} of {item.base_quantity} — needs confirmation
                             </p>
                           )}
                           {item.available_units && item.selected_unit && (
@@ -1986,6 +2049,18 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           <AddCustomerModal
             onClose={() => setShowAddCustomer(false)}
             onSaved={(id) => { handleAddCustomer(id); setShowAddCustomer(false); }}
+          />
+        )}
+
+        {shortfallConfirmOpen && (
+          <OversellConfirmDialog
+            shortfalls={pendingShortfalls}
+            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+            onConfirm={() => {
+              shortfallConfirmedRef.current = true;
+              setShortfallConfirmOpen(false);
+              handleSave();
+            }}
           />
         )}
       </div>
