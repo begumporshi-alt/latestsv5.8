@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { printNode } from '@/lib/print';
@@ -38,6 +39,7 @@ interface Layer {
   pair_positive_value: number;
   pair_net_qty: number;
   counter_qty: number;
+  invoice_numbers: string | null;
 }
 
 interface DriftAccount {
@@ -468,6 +470,7 @@ export default function InventoryAuditPage() {
                   <th className="px-3 py-2.5">Warehouse</th>
                   <th className="px-3 py-2.5">Kind</th>
                   <th className="px-3 py-2.5 hidden lg:table-cell">Batch</th>
+                  <th className="px-3 py-2.5 hidden lg:table-cell">Invoice(s)</th>
                   <th className="px-3 py-2.5 text-right">Qty</th>
                   <th className="px-3 py-2.5 text-right hidden md:table-cell">Unit Cost</th>
                   <th className="px-3 py-2.5 text-right">Value</th>
@@ -505,6 +508,26 @@ export default function InventoryAuditPage() {
                         <span className="font-mono text-[11px] text-muted-foreground" title={l.batch_number || '(no batch number)'}>
                           {(l.batch_number || '(unnamed)').length > 22 ? (l.batch_number || '(unnamed)').slice(0, 21) + '…' : (l.batch_number || '(unnamed)')}
                         </span>
+                      </td>
+                      <td className="px-3 py-2 hidden lg:table-cell">
+                        {l.invoice_numbers ? (
+                          <span className="whitespace-nowrap">
+                            {l.invoice_numbers.split(', ').map((num, i) => (
+                              <span key={num}>
+                                {i > 0 && <span className="text-muted-foreground">, </span>}
+                                <Link
+                                  href={`/sales?search=${encodeURIComponent(num)}`}
+                                  title={`Open ${num} on the Invoices page`}
+                                  className="font-mono text-[11px] text-blue-600 hover:underline"
+                                >
+                                  {num}
+                                </Link>
+                              </span>
+                            ))}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground" title="No invoice consumed from this layer (reduction or unattributed)">—</span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-right font-mono text-red-600">
                         {Number(l.quantity_remaining).toLocaleString()}

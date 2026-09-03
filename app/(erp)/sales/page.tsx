@@ -98,6 +98,17 @@ export default function SalesPage() {
 
   useEffect(() => { loadData(); }, [period, filterDateFrom, filterDateTo]);
 
+  // Deep-link support: /sales?search=INV-940620 pre-fills the search box
+  // (used by the Inventory Audit page's invoice links). The period filter can
+  // hide older invoices, so widen to "all" when a search arrives via URL.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get('search');
+    if (q) {
+      setSearch(q);
+      setPeriod('all');
+    }
+  }, []);
+
   function getPeriodRange() {
     const today = new Date().toISOString().split('T')[0];
     if (period === 'today') return { from: today, to: today };
