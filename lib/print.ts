@@ -60,6 +60,16 @@ ${headHtml}
     background: #fff !important;
     z-index: auto !important;
   }
+  /* The copied app stylesheets above can hide everything for print —
+     globals.css sets `body * { visibility: hidden !important }` for in-page
+     modal printing (only .print-modal descendants are re-shown), and the
+     cloned node does not carry that class, so every print would come out
+     blank. This popup exists solely to print the clone, so re-enable
+     visibility document-wide; this rule sits after the copied sheets in
+     source order and wins the !important tie. */
+  @media print {
+    body, body * { visibility: visible !important; }
+  }
   @page {
     size: A4 portrait;
     margin: 10mm;
