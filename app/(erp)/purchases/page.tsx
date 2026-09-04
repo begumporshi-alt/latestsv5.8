@@ -905,6 +905,15 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
   const amountPaid = form.payment_type === 'full' ? totalAmount : (form.payment_type === 'partial' ? form.amount_paid : 0);
 
+  // Credit-limit watch: warn (never block) when this order pushes the
+  // supplier past their limit. outstanding_balance is GL-maintained.
+  const selectedSup = supplierList.find(s => s.id === form.supplier_id);
+  const creditLimit = Number(selectedSup?.credit_limit || 0);
+  const creditOutstanding = Number(selectedSup?.outstanding_balance || 0);
+  const creditOverBy = creditLimit > 0 && totalAmount > 0 && creditOutstanding + totalAmount > creditLimit
+    ? creditOutstanding + totalAmount - creditLimit
+    : null;
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!form.supplier_id) { setError('Please select a supplier'); return; }
@@ -1123,6 +1132,11 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                 <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>
               )}
               <div className="flex justify-between items-center pt-1 border-t border-border"><p className="text-xs font-medium text-muted-foreground">Total</p><p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p></div>
+              {creditOverBy !== null && (
+                <div className="mt-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
+                  Over the supplier's credit limit by {formatCurrency(creditOverBy)} — outstanding {formatCurrency(creditOutstanding)} + this order {formatCurrency(totalAmount)} vs limit {formatCurrency(creditLimit)}.
+                </div>
+              )}
             </div>
           </div>
 
