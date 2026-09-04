@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { formatCurrency, formatRelativeTime } from '@/lib/format';
+import { formatCurrency, formatRelativeTime, formatDate } from '@/lib/format';
+import { toast } from '@/hooks/use-toast';
 import { getInventoryValue } from '@/lib/inventory-value';
 import {
   AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
@@ -59,6 +60,7 @@ export default function DashboardPage() {
   const [recentActivities, setRecentActivities] = useState<any[]>([]);
   const [reconChecks, setReconChecks] = useState<any[]>([]);
   const [showReceivablesModal, setShowReceivablesModal] = useState(false);
+  const [showPayablesModal, setShowPayablesModal] = useState(false);
   const [showExpensesModal, setShowExpensesModal] = useState(false);
 
   useEffect(() => {
@@ -244,7 +246,7 @@ export default function DashboardPage() {
     { label: 'Inventory Value', value: formatCurrency(stats.inventoryValue), icon: Package, bg: 'bg-purple-50', color: 'text-purple-500' },
     { label: 'Pending Deliveries', value: String(stats.deliveryPending + stats.deliveryInTransit), icon: Truck, bg: 'bg-orange-50', color: 'text-orange-500' },
     { label: 'Receivables', value: formatCurrency(stats.receivables), icon: Receipt, bg: 'bg-red-50', color: 'text-red-500', clickable: true, modal: 'receivables' as const },
-    { label: 'Payables', value: formatCurrency(stats.payables), icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500' },
+    { label: 'Payables', value: formatCurrency(stats.payables), icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500', clickable: true, modal: 'payables' as const },
     { label: 'Total Expenses', value: formatCurrency(stats.totalExpenses), icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500', clickable: true, modal: 'expenses' as const },
   ];
 
@@ -275,7 +277,7 @@ export default function DashboardPage() {
         {kpis.map((kpi) => (
           <div
             key={kpi.label}
-            onClick={(kpi as any).clickable ? () => (kpi as any).modal === 'receivables' ? setShowReceivablesModal(true) : setShowExpensesModal(true) : undefined}
+            onClick={(kpi as any).clickable ? () => (kpi as any).modal === 'receivables' ? setShowReceivablesModal(true) : (kpi as any).modal === 'payables' ? setShowPayablesModal(true) : setShowExpensesModal(true) : undefined}
             className={`stat-card group ${(kpi as any).clickable ? 'cursor-pointer hover:ring-2 hover:ring-blue-500/20 hover:shadow-md transition-all' : 'cursor-default'}`}
           >
             <div className="flex items-start justify-between mb-2">
@@ -538,9 +540,121 @@ export default function DashboardPage() {
       {showReceivablesModal && (
         <ReceivablesBreakdownModal totalReceivables={stats.receivables} onClose={() => setShowReceivablesModal(false)} />
       )}
+      {showPayablesModal && (
+        <PayablesAgingModal totalPayables={stats.payables} onClose={() => setShowPayablesModal(false)} />
+      )}
       {showExpensesModal && (
         <ExpensesBreakdownModal onClose={() => setShowExpensesModal(false)} />
       )}
+    </div>
+  );
+}
+
+function PayablesAgingModal({ totalPayables, onClose }: { totalPayables: number; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<any[]>([]);
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    supabase.rpc('get_payables_aging').then(({ data, error }) => {
+      if (error) {
+        toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      }
+      setRows((data || []) as any[]);
+      setLoading(false);
+    });
+  }, []);
+
+  const q = search.toLowerCase();
+  const filtered = rows.filter((r: any) =>
+    !q || r.supplier_name?.toLowerCase().includes(q));
+  const sum = (key: string) => filtered.reduce((s: number, r: any) => s + Number(r[key] || 0), 0);
+
+  const BUCKETS = [
+    { key: 'bucket_current', label: 'Current (0–30d)' },
+    { key: 'bucket_31_60', label: '31–60 days' },
+    { key: 'bucket_61_90', label: '61–90 days' },
+    { key: 'bucket_90_plus', label: '90+ days' },
+  ];
+
+  return (
+    <div className="fixed inset-0 bg-black/50 items-center justify-center z-[100] p-4 flex">
+      <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
+          <h2 className="text-base font-bold flex items-center gap-2">
+            <CreditCard className="w-5 h-5 text-amber-500" />
+            Payables Aging
+          </h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="px-6 py-4 border-b border-border shrink-0 space-y-3">
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-muted-foreground">
+              Total payables <span className="font-bold text-foreground">{formatCurrency(totalPayables)}</span>
+              <span className="text-muted-foreground"> · {rows.length} supplier{rows.length === 1 ? '' : 's'} with dues</span>
+            </p>
+            <div className="relative ml-auto">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search supplier..."
+                className="pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 w-56" />
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Payments and credits are applied to the oldest payables first, so each bucket shows the part of the
+            balance that has been open for that long. Click a supplier to see their full history.
+          </p>
+        </div>
+
+        <div className="overflow-y-auto px-6 py-4">
+          {loading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-10 bg-muted rounded animate-pulse" />)}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground text-sm">No suppliers with dues</div>
+          ) : (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-2 py-2">Supplier</th>
+                  <th className="text-left text-xs font-semibold text-muted-foreground px-2 py-2">Oldest Open</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-2">Current (0–30d)</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-2">31–60</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-2">61–90</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-2">90+</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-2 py-2">Total Due</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filtered.map((r: any) => (
+                  <tr key={r.supplier_id} className="hover:bg-muted/30">
+                    <td className="px-2 py-2.5 text-sm">
+                      <Link href={`/suppliers/${r.supplier_id}`} className="font-semibold text-blue-600 hover:underline">{r.supplier_name}</Link>
+                    </td>
+                    <td className="px-2 py-2.5 text-sm text-muted-foreground">{r.oldest_open_date ? formatDate(r.oldest_open_date) : '—'}</td>
+                    {BUCKETS.map(b => (
+                      <td key={b.key} className={`px-2 py-2.5 text-sm text-right font-mono ${Number(r[b.key]) > 0 && b.key !== 'bucket_current' ? 'text-amber-600 font-semibold' : 'text-foreground'}`}>
+                        {Number(r[b.key]) > 0 ? formatCurrency(r[b.key]) : '—'}
+                      </td>
+                    ))}
+                    <td className="px-2 py-2.5 text-sm text-right font-bold text-red-600">{formatCurrency(r.total_due)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-border">
+                  <td className="px-2 py-2.5 text-sm font-bold" colSpan={2}>Total{filtered.length !== rows.length ? ` (${filtered.length} shown)` : ''}</td>
+                  {BUCKETS.map(b => (
+                    <td key={b.key} className="px-2 py-2.5 text-sm text-right font-mono font-semibold">{formatCurrency(sum(b.key))}</td>
+                  ))}
+                  <td className="px-2 py-2.5 text-sm text-right font-bold text-red-600">{formatCurrency(sum('total_due'))}</td>
+                </tr>
+              </tfoot>
+            </table>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
