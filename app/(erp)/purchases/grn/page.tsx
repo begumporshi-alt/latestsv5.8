@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, Printer, TrendingUp } from 'lucide-react';
+import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, Printer, TrendingUp, Truck } from 'lucide-react';
 import type { Supplier, Warehouse } from '@/lib/types';
 
 interface PurchaseOrder {
@@ -56,7 +56,7 @@ export default function GRNPage() {
   const [showModal, setShowModal] = useState(false);
   const [viewingGRN, setViewingGRN] = useState<GRN | null>(null);
   const [grnItems, setGrnItems] = useState<GRNItem[]>([]);
-  const [stats, setStats] = useState({ total: 0, posted: 0, verified: 0, totalValue: 0 });
+  const [stats, setStats] = useState({ total: 0, posted: 0, thisMonth: 0, totalValue: 0 });
 
   useEffect(() => {
     loadGRNs();
@@ -89,10 +89,14 @@ export default function GRNPage() {
       totalValue = (movements || []).reduce((s: number, m: any) => s + Math.abs(Number(m.quantity)) * Number(m.unit_cost || 0), 0);
     }
 
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
     setStats({
       total: all.length,
       posted: all.filter((g: any) => g.status === 'posted').length,
-      verified: all.filter((g: any) => g.status === 'verified').length,
+      thisMonth: all.filter((g: any) => new Date(g.received_date) >= monthStart).length,
       totalValue,
     });
     setLoading(false);
@@ -139,7 +143,7 @@ export default function GRNPage() {
         {[
           { label: 'Total GRNs', value: stats.total, icon: Package, color: 'text-blue-500 bg-blue-50' },
           { label: 'Posted', value: stats.posted, icon: CheckCircle, color: 'text-green-500 bg-green-50' },
-          { label: 'Verified', value: stats.verified, icon: CheckCircle, color: 'text-teal-500 bg-teal-50' },
+          { label: 'This Month', value: stats.thisMonth, icon: Truck, color: 'text-teal-500 bg-teal-50' },
           { label: 'Total Value', value: formatCurrency(stats.totalValue), icon: TrendingUp, color: 'text-purple-500 bg-purple-50' },
         ].map(s => (
           <div key={s.label} className="stat-card flex items-center gap-3">
@@ -203,7 +207,7 @@ export default function GRNPage() {
                   <td className="px-4 py-3 text-sm text-foreground">{g.warehouse?.name || '—'}</td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">{formatDate(g.received_date)}</td>
                   <td className="px-4 py-3">
-                    <span className={`badge-status ${g.status === 'posted' ? 'bg-green-50 text-green-600' : g.status === 'verified' ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'}`}>
+                    <span className={`badge-status ${g.status === 'posted' ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-600'}`}>
                       {g.status}
                     </span>
                   </td>
@@ -266,7 +270,7 @@ function ViewGRNModal({ grn, items, onClose }: { grn: GRN; items: GRNItem[]; onC
             <div className="space-y-2">
               <div className="flex justify-between"><span className="text-muted-foreground">Received Date</span><span className="font-medium text-foreground">{formatDate(grn.received_date)}</span></div>
               <div className="flex justify-between"><span className="text-muted-foreground">Status</span>
-                <span className={`badge-status ${grn.status === 'posted' ? 'bg-green-50 text-green-600' : grn.status === 'verified' ? 'bg-blue-50 text-blue-600' : 'bg-gray-100 text-gray-600'}`}>{grn.status}</span>
+                <span className={`badge-status ${grn.status === 'posted' ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-600'}`}>{grn.status}</span>
               </div>
               {grn.notes && <div className="flex justify-between"><span className="text-muted-foreground">Notes</span><span className="font-medium text-foreground text-right">{grn.notes}</span></div>}
             </div>
