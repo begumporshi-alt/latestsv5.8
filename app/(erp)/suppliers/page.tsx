@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, CircleAlert as AlertCircle } from 'lucide-react';
+import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, FileDown, CircleAlert as AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import type { Supplier } from '@/lib/types';
 import RecordButton from '@/components/RecordButton';
@@ -69,6 +69,29 @@ export default function SuppliersPage() {
     setDeletingSupplier(null);
   }
 
+  function exportCsv() {
+    const header = ['Name', 'Code', 'Company', 'Phone', 'Email', 'City', 'Credit Limit', 'Total Purchases', 'Outstanding', 'Active'];
+    const escape = (v: any) => {
+      const s = v === null || v === undefined ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [
+      header.join(','),
+      ...filtered.map(s => [
+        escape(s.name), escape(s.code), escape(s.company_name), escape(s.phone), escape(s.email), escape(s.city),
+        s.credit_limit ?? 0, s.total_purchases ?? 0, s.outstanding_balance ?? 0, s.is_active ? 'yes' : 'no',
+      ].join(',')),
+    ];
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `suppliers-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: 'Exported', description: `${filtered.length} supplier(s) exported to CSV` });
+  }
+
   return (
     <div className="space-y-5 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -111,6 +134,10 @@ export default function SuppliersPage() {
           <option value="active">Active Only</option>
           <option value="inactive">Inactive Only</option>
         </select>
+        <button onClick={exportCsv} disabled={filtered.length === 0}
+          className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50">
+          <FileDown className="w-4 h-4" />Export CSV
+        </button>
       </div>
 
       <div className="table-wrapper">
@@ -208,11 +235,33 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // Set when a same-name/same-phone supplier already exists — shown as a
+  // warning the user can override, not a hard block.
+  const [dupWarning, setDupWarning] = useState<string | null>(null);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
     setError('');
+    setSaving(true);
+
+    // Duplicate check on create only: same name (case-insensitive) or phone
+    if (!isEdit && !dupWarning) {
+      const { data: existing } = await supabase
+        .from('suppliers')
+        .select('name, phone, is_active')
+        .ilike('name', form.name.trim());
+      const dupByName = (existing || []).filter(s => s.name.trim().toLowerCase() === form.name.trim().toLowerCase());
+      const dupByPhone = form.phone
+        ? await supabase.from('suppliers').select('name').eq('phone', form.phone.trim())
+        : { data: [] as any[] };
+      const phoneDups = (dupByPhone.data || []).filter((s: any) => s.name.trim().toLowerCase() !== form.name.trim().toLowerCase());
+      if (dupByName.length > 0 || phoneDups.length > 0) {
+        const names = new Set([...dupByName.map(s => s.name), ...phoneDups.map((s: any) => s.name)]);
+        setDupWarning(`A supplier already exists with this ${dupByName.length > 0 ? 'name' : 'phone number'}: ${Array.from(names).join(', ')}. Save anyway if they are really different.`);
+        setSaving(false);
+        return;
+      }
+    }
 
     const data = {
       name: form.name,
@@ -250,6 +299,12 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
         </div>
         <form onSubmit={handleSave} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          {dupWarning && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
+              {dupWarning}
+              <button type="button" onClick={() => setDupWarning(null)} className="ml-2 underline">Dismiss</button>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-xs font-medium mb-1">Supplier Name *</label><input required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
             <div><label className="block text-xs font-medium mb-1">Code *</label><input required value={form.code} onChange={e => setForm({ ...form, code: e.target.value })} placeholder="SUP-XXX" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
@@ -278,7 +333,7 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
           <div className="flex items-center justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
             <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
-              {saving ? 'Saving...' : isEdit ? 'Update Supplier' : 'Save Supplier'}
+              {saving ? 'Saving...' : !isEdit && dupWarning ? 'Save Anyway' : isEdit ? 'Update Supplier' : 'Save Supplier'}
             </button>
           </div>
         </form>
