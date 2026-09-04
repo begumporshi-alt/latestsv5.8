@@ -240,7 +240,7 @@ export default function AccountingPage() {
 
     // Manual payables within period
     const { data: payableEntries } = await supabase.from('journal_entries')
-      .select('id, entry_number, entry_date, description, total_credit')
+      .select('id, entry_number, entry_date, description, total_credit, supplier_id')
       .eq('is_posted', true)
       .eq('reference_type', 'payable')
       .gte('entry_date', start)
@@ -272,6 +272,7 @@ export default function AccountingPage() {
           paid_amount: paidAmount,
           outstanding_balance: outstanding,
           party_name: lineData?.description?.replace('Payable to ', '') || entry.description || 'Supplier',
+          party_id: (entry as any).supplier_id || undefined,
         });
       }
     }
@@ -1147,11 +1148,8 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
       const debitDelta = (debitAcc?.account_type === 'asset' || debitAcc?.account_type === 'expense') ? amount : -amount;
       await supabase.rpc('increment_account_balance', { p_account_id: form.debit_account_id, p_delta: debitDelta });
       await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: amount });
-
-      if (supplier) {
-        const { data: current } = await supabase.from('suppliers').select('outstanding_balance').eq('id', supplier.id).maybeSingle();
-        await supabase.from('suppliers').update({ outstanding_balance: (current?.outstanding_balance || 0) + amount }).eq('id', supplier.id);
-      }
+      // Supplier outstanding_balance is maintained by the journal_lines
+      // recompute trigger (DB) — no client-side write.
 
       toast({ title: 'Success', description: `Payable of ${formatCurrency(amount)} recorded` });
       setForm({ supplier_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0], debit_account_id: accounts.find(a => a.code === '1200')?.id || '' });
@@ -1442,6 +1440,7 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
         payment_type: 'made',
         reference_type: 'payable',
         reference_id: payable.id,
+        supplier_id: payable.party_id || null,
         amount,
         payment_method: form.payment_method,
         payment_date: form.payment_date,
@@ -1459,6 +1458,7 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
         total_debit: amount,
         total_credit: amount,
         is_posted: true,
+        supplier_id: payable.party_id || null,
       }).select().single();
       if (entryError) throw entryError;
 

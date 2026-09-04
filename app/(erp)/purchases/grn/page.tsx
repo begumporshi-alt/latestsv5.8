@@ -60,8 +60,10 @@ export default function GRNPage() {
 
   useEffect(() => {
     loadGRNs();
-    // Auto-open the create modal if redirected with ?poId= (from PO page "Mark as Received")
-    if (searchParams.get('poId')) {
+    // Auto-open the create modal if redirected with ?poId= (from PO page
+    // "Mark as Received") or ?new=1 (from the supplier profile's New GRN
+    // button, which also passes ?supplier= for direct-mode prefill)
+    if (searchParams.get('poId') || searchParams.get('new')) {
       setShowModal(true);
     }
   }, []);
@@ -379,6 +381,15 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
           };
           await selectPO(po as PurchaseOrder);
         }
+        return;
+      }
+
+      // Pre-fill from ?supplier= (redirected from supplier profile's New GRN
+      // button with ?new=1) — start in direct-receive mode for that supplier
+      const prefillSupplierId = searchParams.get('supplier');
+      if (prefillSupplierId) {
+        setDirectMode(true);
+        setDirectSupplier(prefillSupplierId);
       }
     }
     load();

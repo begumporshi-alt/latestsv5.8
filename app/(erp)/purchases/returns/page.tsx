@@ -396,19 +396,9 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
       // Insert return items
       await supabase.from('purchase_return_items').insert(returnItemRows);
 
-      // Adjust supplier outstanding balance (return creates a credit with supplier)
-      // Do NOT reduce amount_paid — that was actual cash paid. The return reduces what we OWE.
-      const { data: supplier } = await supabase
-        .from('suppliers')
-        .select('outstanding_balance')
-        .eq('id', selectedPO.supplier_id)
-        .maybeSingle();
-      if (supplier) {
-        await supabase.from('suppliers').update({
-          outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) - totalRefund),
-          updated_at: new Date().toISOString(),
-        }).eq('id', selectedPO.supplier_id);
-      }
+      // The return's journal entry (Dr AP) maintains supplier outstanding via
+      // the journal_lines recompute trigger. Do NOT reduce amount_paid — that
+      // was actual cash paid. The return reduces what we OWE.
 
       toast({ title: 'Success', description: `Return processed. Credit Note: ${formatCurrency(totalRefund)}` });
       onSaved();

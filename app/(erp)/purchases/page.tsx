@@ -58,6 +58,20 @@ export default function PurchasesPage() {
 
   useEffect(() => { loadData(); }, []);
 
+  // Deep-links from the supplier profile: /purchases?new=1&supplier=<id>
+  // opens the create modal pre-filled; /purchases?view=<poId> is consumed in
+  // loadData once the orders are available.
+  const [prefillSupplierId, setPrefillSupplierId] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('new') === '1') {
+      setPrefillSupplierId(params.get('supplier'));
+      setShowCreateModal(true);
+      window.history.replaceState({}, '', '/purchases');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function loadData() {
     setLoading(true);
     const [poRes, supRes, prodRes, returnsRes] = await Promise.all([
@@ -69,6 +83,14 @@ export default function PurchasesPage() {
     setOrders(poRes.data || []);
     setSuppliers(supRes.data || []);
     setProducts(prodRes.data || []);
+
+    // Deep-link from the supplier profile: /purchases?view=<poId>
+    const viewId = new URLSearchParams(window.location.search).get('view');
+    if (viewId) {
+      const target = (poRes.data || []).find((o: any) => o.id === viewId);
+      if (target) viewOrderDetails(target as PurchaseOrderWithSupplier);
+      window.history.replaceState({}, '', '/purchases');
+    }
 
     // Build a map of PO ID -> returns for quick lookup
     const returnsMap: Record<string, { return_number: string; total_amount: number }[]> = {};
@@ -220,24 +242,8 @@ export default function PurchasesPage() {
     // - Reversing the receipt journal entry (Dr AP / Cr Inventory) using NET total
     // - Reversing all payment journal entries (Dr Cash / Cr AP)
     // - Reversing account balances
-    // We only handle stock and supplier balance here.
-
-    // Reverse supplier outstanding balance and total_purchases
-    const { data: supplier } = await supabase
-      .from('suppliers')
-      .select('outstanding_balance, total_purchases')
-      .eq('id', order.supplier_id)
-      .single();
-    if (supplier) {
-      await supabase
-        .from('suppliers')
-        .update({
-          outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) - Number(order.total_amount)),
-          total_purchases: Math.max(0, (supplier.total_purchases || 0) - Number(order.total_amount)),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', order.supplier_id);
-    }
+    // Supplier outstanding_balance is maintained by the recompute trigger on
+    // journal_lines — no client-side write.
 
     // Mark any payments for this PO as reversed
     if (Number(order.amount_paid) > 0) {
@@ -676,7 +682,8 @@ export default function PurchasesPage() {
         <CreatePOModal
           suppliers={suppliers}
           products={products}
-          onClose={() => setShowCreateModal(false)}
+          prefillSupplierId={prefillSupplierId || undefined}
+          onClose={() => { setShowCreateModal(false); setPrefillSupplierId(null); }}
           onSaved={loadData}
         />
       )}
@@ -723,14 +730,15 @@ export default function PurchasesPage() {
   );
 }
 
-function CreatePOModal({ suppliers, products, onClose, onSaved }: {
+function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSaved }: {
   suppliers: Supplier[];
   products: Product[];
+  prefillSupplierId?: string;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [form, setForm] = useState({
-    supplier_id: '',
+    supplier_id: prefillSupplierId || '',
     order_date: new Date().toISOString().split('T')[0],
     expected_date: '',
     notes: '',
@@ -954,23 +962,8 @@ function CreatePOModal({ suppliers, products, onClose, onSaved }: {
         notes: form.payment_type === 'full' ? 'Full payment at order time' : 'Partial payment at order time',
         payment_for: 'supplier_payment',
       });
-
-      const { data: currentSupplier } = await supabase
-        .from('suppliers')
-        .select('outstanding_balance, total_purchases')
-        .eq('id', form.supplier_id)
-        .single();
-
-      if (currentSupplier) {
-        await supabase
-          .from('suppliers')
-          .update({
-            outstanding_balance: (currentSupplier.outstanding_balance || 0) + (totalAmount - amountPaid),
-            total_purchases: (currentSupplier.total_purchases || 0) + totalAmount,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', form.supplier_id);
-      }
+      // Supplier outstanding_balance/total_purchases are maintained by the
+      // recompute trigger on journal_lines (DB) — no client-side write.
     }
 
     toast({ title: 'Success', description: 'Purchase order created successfully' });
@@ -1486,24 +1479,9 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
 
     if (payError) { setError(payError.message); setSaving(false); return; }
 
-    // amount_paid is updated automatically by the payment_po_amount_paid_trigger
-
-    // Update supplier outstanding balance
-    const { data: currentSupplier } = await supabase
-      .from('suppliers')
-      .select('outstanding_balance, total_purchases')
-      .eq('id', order.supplier_id)
-      .single();
-
-    if (currentSupplier) {
-      await supabase
-        .from('suppliers')
-        .update({
-          outstanding_balance: Math.max(0, (currentSupplier.outstanding_balance || 0) - form.amount),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', order.supplier_id);
-    }
+    // amount_paid is updated automatically by the payment_po_amount_paid_trigger;
+    // supplier outstanding_balance by the journal_lines recompute trigger.
+    // No client-side balance write.
 
     toast({ title: 'Success', description: `Payment of ${formatCurrency(form.amount)} recorded` });
     onSaved();
@@ -1749,10 +1727,6 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
       const cappedPaid = Math.min(oldPaid, totalAmount);
       const overpaymentRefund = oldPaid - cappedPaid;
 
-      const newUnpaid = totalAmount - cappedPaid;
-      const oldUnpaid = oldTotal - oldPaid;
-      const balanceAdjustment = newUnpaid - oldUnpaid;
-
       // Update PO amount_paid if it needs capping
       if (overpaymentRefund > 0) {
         await supabase
@@ -1760,23 +1734,9 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           .update({ amount_paid: cappedPaid })
           .eq('id', order.id);
       }
-
-      const { data: supplier } = await supabase
-        .from('suppliers')
-        .select('outstanding_balance, total_purchases')
-        .eq('id', form.supplier_id)
-        .single();
-
-      if (supplier) {
-        await supabase
-          .from('suppliers')
-          .update({
-            outstanding_balance: Math.max(0, (supplier.outstanding_balance || 0) + balanceAdjustment - overpaymentRefund),
-            total_purchases: Math.max(0, (supplier.total_purchases || 0) + totalDiff),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', form.supplier_id);
-      }
+      // Supplier outstanding_balance/total_purchases stay GL-true via the
+      // journal_lines recompute trigger — PO edits don't touch AP until the
+      // goods are re-received, so no client-side write belongs here.
     }
 
     toast({ title: 'Success', description: `Purchase order ${order.po_number} updated` });

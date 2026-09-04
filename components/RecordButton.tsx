@@ -267,8 +267,8 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
       const debitDelta = (debitAcc?.account_type === 'asset' || debitAcc?.account_type === 'expense') ? amount : -amount;
       await supabase.rpc('increment_account_balance', { p_account_id: form.debit_account_id, p_delta: debitDelta });
       await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: amount });
-      const { data: current } = await supabase.from('suppliers').select('outstanding_balance').eq('id', selectedSupplier.id).maybeSingle();
-      await supabase.from('suppliers').update({ outstanding_balance: (current?.outstanding_balance || 0) + amount }).eq('id', selectedSupplier.id);
+      // Supplier outstanding_balance is maintained by the journal_lines
+      // recompute trigger (DB) — no client-side write.
       toast({ title: 'Success', description: `Payable of ${formatCurrency(amount)} recorded` });
       onSaved?.(); onClose();
     } catch (err: any) { setError(err.message || 'Failed to record payable'); }
