@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
+import { printNode } from '@/lib/print';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt } from 'lucide-react';
+import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt, Printer, BookOpen, HandCoins, X } from 'lucide-react';
 import type { Supplier, PurchaseOrder } from '@/lib/types';
 
 interface ManualPayable {
@@ -48,6 +49,10 @@ export default function SupplierDetailPage() {
   const [grns, setGrns] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'purchase_orders' | 'payables' | 'returns' | 'grns' | 'payments'>('purchase_orders');
+  const [payTarget, setPayTarget] = useState<{ kind: 'po' | 'payable'; id: string; label: string; balance: number } | null>(null);
+  const [statement, setStatement] = useState<any[] | null>(null);
+  const [printing, setPrinting] = useState(false);
+  const statementRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { loadSupplierData(); }, [supplierId]);
 
@@ -147,6 +152,25 @@ export default function SupplierDetailPage() {
     setLoading(false);
   }
 
+  async function handlePrintStatement() {
+    setPrinting(true);
+    try {
+      if (!statement) {
+        const { data, error } = await supabase.rpc('get_supplier_ap_statement', { p_supplier_id: supplierId });
+        if (error) throw error;
+        setStatement((data || []) as any[]);
+        // Wait for the off-screen statement to render before printing it
+        setTimeout(() => printNode(statementRef.current), 150);
+      } else {
+        printNode(statementRef.current);
+      }
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message || 'Failed to build statement', variant: 'destructive' });
+    } finally {
+      setPrinting(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="p-8 flex items-center justify-center">
@@ -182,6 +206,17 @@ export default function SupplierDetailPage() {
           </Link>
           <Link href={`/purchases/grn?new=1&supplier=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">
             <Package className="w-4 h-4" />New GRN
+          </Link>
+          <button
+            onClick={handlePrintStatement}
+            disabled={printing}
+            className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50"
+            title="Print the payable statement for this supplier"
+          >
+            <Printer className="w-4 h-4" />Statement
+          </button>
+          <Link href={`/accounting/journal?supplier=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition" title="This supplier's journal entries">
+            <BookOpen className="w-4 h-4" />Journal
           </Link>
           <Link href={`/suppliers?edit=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">
             <Edit className="w-4 h-4" />Edit
@@ -237,6 +272,27 @@ export default function SupplierDetailPage() {
                 <span className="text-muted-foreground flex items-center gap-2"><CreditCard className="w-4 h-4" />Credit Limit</span>
                 <span className="font-semibold text-foreground">{formatCurrency(supplier.credit_limit)}</span>
               </div>
+              {Number(supplier.credit_limit) > 0 && (() => {
+                const used = Number(supplier.outstanding_balance);
+                const limit = Number(supplier.credit_limit);
+                const pct = Math.round((used / limit) * 100);
+                return (
+                  <div>
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Credit used</span>
+                      <span className={pct > 100 ? 'font-semibold text-red-600' : pct > 80 ? 'font-semibold text-amber-600' : ''}>
+                        {formatCurrency(used)} of {formatCurrency(limit)} ({pct}%)
+                      </span>
+                    </div>
+                    <div className="h-2 bg-muted rounded-full overflow-hidden mt-1">
+                      <div
+                        className={`h-full ${pct > 100 ? 'bg-red-500' : pct > 80 ? 'bg-amber-500' : 'bg-green-500'}`}
+                        style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground flex items-center gap-2"><Calendar className="w-4 h-4" />Credit Days</span>
                 <span className="font-semibold text-foreground">{supplier.credit_days} days</span>
@@ -368,9 +424,20 @@ export default function SupplierDetailPage() {
                                 <span className={`badge-status ${cfg.color}`}>{cfg.label}</span>
                               </td>
                               <td className="px-3 py-2 text-right">
-                                <Link href={`/purchases?view=${po.id}`} className="w-7 h-7 inline-flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600">
-                                  <Eye className="w-3.5 h-3.5" />
-                                </Link>
+                                <div className="flex items-center justify-end gap-1">
+                                  {balance > 0.005 && po.status !== 'cancelled' && (
+                                    <button
+                                      onClick={() => setPayTarget({ kind: 'po', id: po.id, label: po.po_number, balance })}
+                                      className="w-7 h-7 inline-flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition"
+                                      title="Record payment"
+                                    >
+                                      <HandCoins className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                  <Link href={`/purchases?view=${po.id}`} className="w-7 h-7 inline-flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600">
+                                    <Eye className="w-3.5 h-3.5" />
+                                  </Link>
+                                </div>
                               </td>
                             </tr>
                           );
@@ -398,6 +465,7 @@ export default function SupplierDetailPage() {
                           <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Amount</th>
                           <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Paid</th>
                           <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Outstanding</th>
+                          <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2"></th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
@@ -409,6 +477,16 @@ export default function SupplierDetailPage() {
                             <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(pay.total_credit)}</td>
                             <td className="px-3 py-2 text-sm text-right text-green-600">{formatCurrency(pay.paid_amount)}</td>
                             <td className="px-3 py-2 text-sm text-right text-red-600 font-bold">{formatCurrency(pay.outstanding_balance)}</td>
+                            <td className="px-3 py-2 text-right">
+                              {pay.outstanding_balance > 0.005 && (
+                                <button
+                                  onClick={() => setPayTarget({ kind: 'payable', id: pay.id, label: pay.entry_number, balance: pay.outstanding_balance })}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition"
+                                >
+                                  <HandCoins className="w-3.5 h-3.5" />Pay
+                                </button>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -445,7 +523,7 @@ export default function SupplierDetailPage() {
                             <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(r.return_date)}</td>
                             <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(r.total_amount)}</td>
                             <td className="px-3 py-2">
-                              <span className={`badge-status ${r.status === 'completed' ? 'bg-green-100 text-green-700' : r.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>{r.status}</span>
+                              <span className={`badge-status ${r.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{r.status}</span>
                             </td>
                           </tr>
                         ))}
@@ -530,6 +608,236 @@ export default function SupplierDetailPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      {payTarget && (
+        <SupplierPaymentModal
+          supplierId={supplierId}
+          target={payTarget}
+          onClose={() => setPayTarget(null)}
+          onSaved={() => { setPayTarget(null); loadSupplierData(); }}
+        />
+      )}
+
+      {/* Off-screen printable AP statement */}
+      {statement && (
+        <div className="absolute -left-[9999px] top-0" aria-hidden="true">
+          <div ref={statementRef} className="bg-white p-6 text-black" style={{ width: '760px' }}>
+            <div className="flex items-baseline justify-between border-b-2 border-black pb-2 mb-3">
+              <div>
+                <h1 className="text-lg font-bold">Supplier Statement</h1>
+                <p className="text-sm">{supplier.name} ({supplier.code}){supplier.company_name ? ` — ${supplier.company_name}` : ''}</p>
+                {supplier.phone && <p className="text-xs">{supplier.phone}</p>}
+              </div>
+              <div className="text-right text-xs">
+                <p className="font-semibold">{new Date().toLocaleDateString()}</p>
+                <p>Credit terms: {supplier.credit_days} days</p>
+                {Number(supplier.credit_limit) > 0 && <p>Limit: {formatCurrency(supplier.credit_limit)}</p>}
+              </div>
+            </div>
+
+            <div className="flex gap-4 mb-3 text-xs">
+              <div className="flex-1 border border-black p-2">
+                <p className="font-semibold border-b border-black pb-1 mb-1">Summary</p>
+                <div className="flex justify-between"><span>Total received (lifetime)</span><span className="font-mono">{formatCurrency(supplier.total_purchases)}</span></div>
+                <div className="flex justify-between"><span>Total paid</span><span className="font-mono">{formatCurrency(stats.totalPaid)}</span></div>
+                <div className="flex justify-between font-bold"><span>Balance due</span><span className="font-mono">{formatCurrency(supplier.outstanding_balance)}</span></div>
+              </div>
+            </div>
+
+            <table className="w-full border-collapse text-[11px]" style={{ tableLayout: 'fixed' }}>
+              <thead>
+                <tr>
+                  {['Date', 'Entry #', 'Type', 'Description', 'Debit', 'Credit', 'Balance'].map(h => (
+                    <th key={h} className="border border-black px-1.5 py-1.5 text-left bg-gray-100">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {statement.length === 0 ? (
+                  <tr><td className="border border-black px-1.5 py-3 text-center" colSpan={7}>No payable activity</td></tr>
+                ) : statement.map((row: any, i: number) => (
+                  <tr key={i}>
+                    <td className="border border-black px-1.5 py-1.5">{formatDate(row.entry_date)}</td>
+                    <td className="border border-black px-1.5 py-1.5">{row.entry_number}</td>
+                    <td className="border border-black px-1.5 py-1.5">{row.doc_type}</td>
+                    <td className="border border-black px-1.5 py-1.5 truncate">{row.description}</td>
+                    <td className="border border-black px-1.5 py-1.5 text-right font-mono">{Number(row.debit) > 0 ? formatCurrency(row.debit) : ''}</td>
+                    <td className="border border-black px-1.5 py-1.5 text-right font-mono">{Number(row.credit) > 0 ? formatCurrency(row.credit) : ''}</td>
+                    <td className="border border-black px-1.5 py-1.5 text-right font-mono">{formatCurrency(row.balance)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-[10px] mt-2 text-gray-600">
+              Debit reduces what is owed (payments, returns). Credit increases it (goods received, payables).
+              Generated by the supplier profile · {statement.length} entr{statement.length === 1 ? 'y' : 'ies'}.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
+  supplierId: string;
+  target: { kind: 'po' | 'payable'; id: string; label: string; balance: number };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    amount: target.balance,
+    payment_date: new Date().toISOString().split('T')[0],
+    payment_method: 'cash',
+    reference_number: '',
+  });
+  const [methods, setMethods] = useState<{ code: string; name: string }[]>([]);
+  const [accounts, setAccounts] = useState<{ id: string; code: string; name: string; is_cash: boolean; is_bank: boolean }[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
+      .then(({ data }) => { if (data && data.length > 0) setMethods(data); });
+    supabase.from('accounts').select('id, code, name, is_cash, is_bank').eq('is_active', true).order('code')
+      .then(({ data }) => setAccounts((data || []) as any[]));
+  }, []);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    const amount = Number(form.amount);
+    if (!amount || amount <= 0) { setError('Enter a valid amount'); return; }
+    if (amount > target.balance + 0.005) { setError(`Amount cannot exceed the outstanding balance (${formatCurrency(target.balance)})`); return; }
+
+    setSaving(true);
+    try {
+      if (target.kind === 'po') {
+        // The DB triggers do the rest: payment JE, PO amount_paid and the
+        // supplier balance recompute all fire off this one insert.
+        const { error: payError } = await supabase.from('payments').insert({
+          payment_number: `POPAY-${Date.now().toString().slice(-6)}`,
+          payment_type: 'made',
+          reference_type: 'purchase_order',
+          reference_id: target.id,
+          supplier_id: supplierId,
+          amount,
+          payment_method: form.payment_method,
+          payment_date: form.payment_date,
+          reference_number: form.reference_number || null,
+          payment_for: 'supplier_payment',
+        });
+        if (payError) throw payError;
+      } else {
+        // Manual payable: payment row + journal entry (Dr AP / Cr cash),
+        // mirroring the accounting page's Pay Payable flow, with the
+        // supplier id on both so the balance and profile pick them up.
+        const apAccount = accounts.find(a => a.code === '2000');
+        if (!apAccount) throw new Error('Accounts Payable account (2000) not found');
+        let creditAccount = accounts.find(a => a.is_cash || a.is_bank);
+        const methodAccount = methods.length > 0
+          ? await supabase.from('payment_methods').select('account_id').eq('code', form.payment_method).eq('is_active', true).maybeSingle()
+          : null;
+        if (methodAccount && methodAccount.data && methodAccount.data.account_id) {
+          creditAccount = accounts.find(a => a.id === methodAccount.data!.account_id) || creditAccount;
+        }
+        if (!creditAccount) throw new Error('No cash/bank account found to pay from');
+
+        const { error: payError } = await supabase.from('payments').insert({
+          payment_number: `PAY-${Date.now().toString().slice(-6)}`,
+          payment_type: 'made',
+          reference_type: 'payable',
+          reference_id: target.id,
+          supplier_id: supplierId,
+          amount,
+          payment_method: form.payment_method,
+          payment_date: form.payment_date,
+          reference_number: form.reference_number || null,
+          payment_for: 'supplier_payment',
+        });
+        if (payError) throw payError;
+
+        const { data: jeNum } = await supabase.rpc('get_next_journal_number');
+        const desc = `Payment made for ${target.label}`;
+        const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
+          entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
+          entry_date: form.payment_date,
+          description: desc,
+          reference_type: 'payment',
+          total_debit: amount,
+          total_credit: amount,
+          is_posted: true,
+          supplier_id: supplierId,
+        }).select().single();
+        if (entryError) throw entryError;
+
+        await supabase.from('journal_lines').insert([
+          { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
+          { journal_entry_id: entry.id, account_id: creditAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
+        ]);
+        await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: -amount });
+        await supabase.rpc('increment_account_balance', { p_account_id: creditAccount.id, p_delta: -amount });
+      }
+
+      toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded for ${target.label}` });
+      onSaved();
+    } catch (err: any) {
+      setError(err.message || 'Failed to record payment');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold flex items-center gap-2"><HandCoins className="w-4 h-4 text-green-600" />Pay {target.label}</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div className="bg-muted/30 rounded-lg p-3 flex justify-between text-sm">
+            <span className="text-muted-foreground">Outstanding</span>
+            <span className="font-bold text-red-600">{formatCurrency(target.balance)}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount *</label>
+              <input type="number" required min="0.01" step="0.01" max={target.balance} value={form.amount}
+                onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Date *</label>
+              <input type="date" required value={form.payment_date} onChange={e => setForm({ ...form, payment_date: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Method *</label>
+              <select value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+                {(methods.length > 0 ? methods : [{ code: 'cash', name: 'Cash' }, { code: 'bank_transfer', name: 'Bank Transfer' }]).map(m => (
+                  <option key={m.code} value={m.code}>{m.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Reference #</label>
+              <input value={form.reference_number} onChange={e => setForm({ ...form, reference_number: e.target.value })} placeholder="Cheque / txn #"
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+              {saving ? 'Recording…' : 'Record Payment'}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );
