@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
@@ -62,15 +62,29 @@ export default function PurchasesPage() {
   // opens the create modal pre-filled; /purchases?view=<poId> is consumed in
   // loadData once the orders are available.
   const [prefillSupplierId, setPrefillSupplierId] = useState<string | null>(null);
+  const prefillOpenedRef = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('new') === '1') {
-      setPrefillSupplierId(params.get('supplier'));
-      setShowCreateModal(true);
+      const sid = params.get('supplier');
+      if (sid) {
+        // Open after loadData supplies the list — the modal resolves the
+        // supplier name from props at mount, so an early mount shows blank.
+        setPrefillSupplierId(sid);
+      } else {
+        setShowCreateModal(true);
+      }
       window.history.replaceState({}, '', '/purchases');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (prefillSupplierId && !prefillOpenedRef.current && suppliers.length > 0) {
+      prefillOpenedRef.current = true;
+      setShowCreateModal(true);
+    }
+  }, [prefillSupplierId, suppliers]);
 
   async function loadData() {
     setLoading(true);
