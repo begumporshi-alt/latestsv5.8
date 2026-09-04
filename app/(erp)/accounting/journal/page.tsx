@@ -197,6 +197,8 @@ export default function JournalPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [filterType, setFilterType] = useState('');
+  const [filterSupplier, setFilterSupplier] = useState('');
+  const [supplierOptions, setSupplierOptions] = useState<{ id: string; name: string }[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [period, setPeriod] = useState<'today' | 'last7' | 'last30' | 'all'>('today');
   const [editingEntry, setEditingEntry] = useState<JournalEntry | null>(null);
@@ -205,7 +207,18 @@ export default function JournalPage() {
   const [pageSize, setPageSize] = useState(25);
 
 
-  useEffect(() => { loadData(); }, [period]);
+  useEffect(() => { loadData(); }, [period, filterSupplier]);
+
+  // Deep-link from the supplier profile: /accounting/journal?supplier=<id> —
+  // widen to all periods, otherwise today's window usually hides everything.
+  useEffect(() => {
+    const sid = new URLSearchParams(window.location.search).get('supplier');
+    if (sid) {
+      setFilterSupplier(sid);
+      setPeriod('all');
+      window.history.replaceState({}, '', '/accounting/journal');
+    }
+  }, []);
 
   function getDateRange() {
     const today = new Date().toISOString().split('T')[0];
@@ -234,12 +247,27 @@ export default function JournalPage() {
       .order('created_at', { ascending: false });
     if (from) query = query.gte('entry_date', from);
     if (to) query = query.lte('entry_date', to);
-    const [entriesRes, accountsRes] = await Promise.all([
+    // Supplier filter must run server-side: the newest-500 window would
+    // otherwise hide this supplier's older entries. GRN JEs carry no
+    // supplier_id, so they're matched through the supplier's GRN ids.
+    if (filterSupplier) {
+      const { data: supplierGrns } = await supabase
+        .from('goods_receipt_notes')
+        .select('id')
+        .eq('supplier_id', filterSupplier);
+      const grnIds = (supplierGrns || []).map((g: any) => g.id);
+      query = grnIds.length > 0
+        ? query.or(`supplier_id.eq.${filterSupplier},and(reference_type.eq.grn,reference_id.in.(${grnIds.join(',')}))`)
+        : query.eq('supplier_id', filterSupplier);
+    }
+    const [entriesRes, accountsRes, suppliersRes] = await Promise.all([
       query.limit(500),
       supabase.from('accounts').select('*').eq('is_active', true).order('code'),
+      supabase.from('suppliers').select('id, name').order('name'),
     ]);
     setEntries(entriesRes.data || []);
     setAccounts(accountsRes.data || []);
+    setSupplierOptions((suppliersRes.data || []) as any[]);
     setLoading(false);
   }
 
@@ -342,7 +370,7 @@ export default function JournalPage() {
           ))}
         </div>
 
-        {/* Search */}
+        {/* Search + supplier filter */}
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2 flex-1 min-w-[200px]">
             <Search className="w-4 h-4 text-muted-foreground" />
@@ -359,6 +387,14 @@ export default function JournalPage() {
               </button>
             )}
           </div>
+          <select
+            value={filterSupplier}
+            onChange={e => { setFilterSupplier(e.target.value); setPage(1); }}
+            className="border border-border rounded-lg px-3 py-1.5 text-sm bg-white min-w-[180px] focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="">All suppliers</option>
+            {supplierOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
         </div>
         <div className="flex flex-wrap gap-2">
           {[
@@ -662,6 +698,21 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
   ]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [suppliers, setSuppliers] = useState<{ id: string; name: string }[]>([]);
+  const [supplierId, setSupplierId] = useState('');
+
+  useEffect(() => {
+    supabase.from('suppliers').select('id, name').eq('is_active', true).order('name')
+      .then(({ data }) => setSuppliers(data || []));
+  }, []);
+
+  // Any line posting to Accounts Payable (2000) must name the supplier —
+  // otherwise the entry is unattributable and supplier balances drift from
+  // the GL (they only recompute for attributed entries).
+  const apAccountId = accounts.find(a => a.code === '2000')?.id;
+  const touchesAp =
+    (mode === 'custom' && lines.some(l => l.accountId && l.accountId === apAccountId)) ||
+    (mode === 'templates' && !!selectedTemplate?.lines.some(l => l.accountCode === '2000'));
 
   function applyTemplate(tmpl: JournalTemplate) {
     setSelectedTemplate(tmpl);
@@ -738,6 +789,11 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
 
     if (!description.trim()) { setError('Description is required'); return; }
 
+    if (finalLines.some(l => l.accountId === apAccountId) && !supplierId) {
+      setError('This entry posts to Accounts Payable (2000) — select which supplier it belongs to so their balance stays correct.');
+      return;
+    }
+
     setSaving(true);
     try {
       const totalAmt = finalLines.reduce((s, l) => s + l.debit, 0);
@@ -754,6 +810,7 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
           total_debit: totalAmt,
           total_credit: totalAmt,
           is_posted: true,
+          supplier_id: supplierId || null,
         })
         .select()
         .single();
@@ -936,6 +993,16 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
                   <input required value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g. Monthly rent payment" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                 </div>
               </div>
+
+              {touchesAp && (
+                <div>
+                  <label className="block text-xs font-medium mb-1">Supplier * <span className="text-amber-600">(entry touches Accounts Payable)</span></label>
+                  <select required value={supplierId} onChange={e => setSupplierId(e.target.value)} className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+                    <option value="">Select supplier…</option>
+                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <div className="flex items-center justify-between mb-2">
