@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt } from 'lucide-react';
@@ -21,9 +22,9 @@ interface ManualPayable {
 }
 
 interface SupplierStats {
-  totalPOs: number;
   totalPaid: number;
-  totalOutstanding: number;
+  totalDue: number;
+  openPOBalance: number;
   totalPurchases: number;
   pendingPOs: number;
   manualPayables: number;
@@ -38,7 +39,7 @@ export default function SupplierDetailPage() {
   const [supplier, setSupplier] = useState<Supplier | null>(null);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState<SupplierStats>({
-    totalPOs: 0, totalPaid: 0, totalOutstanding: 0, totalPurchases: 0, pendingPOs: 0,
+    totalPaid: 0, totalDue: 0, openPOBalance: 0, totalPurchases: 0, pendingPOs: 0,
     manualPayables: 0, manualPayablesOutstanding: 0
   });
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
@@ -53,38 +54,54 @@ export default function SupplierDetailPage() {
   async function loadSupplierData() {
     setLoading(true);
 
-    const { data: supData } = await supabase
+    const { data: supData, error: supError } = await supabase
       .from('suppliers')
       .select('*')
       .eq('id', supplierId)
       .single();
 
-    if (!supData) {
+    if (supError || !supData) {
       toast({ title: 'Error', description: 'Supplier not found', variant: 'destructive' });
       router.push('/suppliers');
       return;
     }
     setSupplier(supData);
 
-    const [poRes, payableRes, payablePaymentsRes, returnsRes, grnRes, paymentsRes] = await Promise.all([
-      supabase.from('purchase_orders').select('*').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
-      supabase.from('journal_entries').select('id, entry_number, entry_date, description, total_credit, created_at').eq('supplier_id', supplierId).eq('reference_type', 'payable').eq('is_posted', true).order('entry_date', { ascending: false }),
-      supabase.from('payments').select('reference_id, amount').eq('reference_type', 'payable'),
-      supabase.from('purchase_returns').select('*, purchase_order:purchase_orders(po_number), warehouse:warehouses(name)').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
-      supabase.from('goods_receipt_notes').select('*, warehouse:warehouses(name), purchase_order:purchase_orders(po_number)').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
-      supabase.from('payments').select('id, amount, payment_date, payment_method, reference_number, reference_type, created_at').eq('supplier_id', supplierId).order('created_at', { ascending: false }).limit(50),
+    // Full history (no 50-row windows) — stats must aggregate everything,
+    // paginating past Supabase's row cap with an .order('id') tiebreaker.
+    const [poList, payableEntries, returnsRes, grnRes, paymentList] = await Promise.all([
+      fetchAll(() => supabase.from('purchase_orders').select('*').eq('supplier_id', supplierId)
+        .order('created_at', { ascending: false }).order('id', { ascending: false })),
+      fetchAll(() => supabase.from('journal_entries')
+        .select('id, entry_number, entry_date, description, total_credit, created_at')
+        .eq('supplier_id', supplierId).eq('reference_type', 'payable').eq('is_posted', true)
+        .order('entry_date', { ascending: false }).order('id', { ascending: false })),
+      fetchAll(() => supabase.from('purchase_returns').select('*, purchase_order:purchase_orders(po_number), warehouse:warehouses(name)')
+        .eq('supplier_id', supplierId).order('created_at', { ascending: false }).order('id', { ascending: false })),
+      fetchAll(() => supabase.from('goods_receipt_notes').select('*, warehouse:warehouses(name), purchase_order:purchase_orders(po_number)')
+        .eq('supplier_id', supplierId).order('created_at', { ascending: false }).order('id', { ascending: false })),
+      fetchAll(() => supabase.from('payments')
+        .select('id, amount, payment_date, payment_method, reference_number, reference_type, is_reversed, created_at')
+        .eq('supplier_id', supplierId).order('created_at', { ascending: false }).order('id', { ascending: false })),
     ]);
 
-    setPurchaseOrders(poRes.data || []);
+    setPurchaseOrders(poList);
 
-    // Calculate manual payables with payments
+    // Payments made against this supplier's manual payables (matched by the
+    // payable JE id, so legacy payment rows without supplier_id still count)
     const payablePaymentsMap = new Map<string, number>();
-    (payablePaymentsRes.data || []).forEach((p: any) => {
-      const current = payablePaymentsMap.get(p.reference_id) || 0;
-      payablePaymentsMap.set(p.reference_id, current + Number(p.amount));
-    });
+    const payableIds = payableEntries.map(e => e.id);
+    if (payableIds.length > 0) {
+      const payablePayments = await fetchAll(() => supabase
+        .from('payments').select('reference_id, amount')
+        .eq('reference_type', 'payable').in('reference_id', payableIds));
+      (payablePayments || []).forEach((p: any) => {
+        const current = payablePaymentsMap.get(p.reference_id) || 0;
+        payablePaymentsMap.set(p.reference_id, current + Number(p.amount));
+      });
+    }
 
-    const payablesWithPayments: ManualPayable[] = (payableRes.data || []).map((p: any) => {
+    const payablesWithPayments: ManualPayable[] = (payableEntries || []).map((p: any) => {
       const paidAmount = payablePaymentsMap.get(p.id) || 0;
       return {
         ...p,
@@ -95,29 +112,33 @@ export default function SupplierDetailPage() {
 
     setManualPayables(payablesWithPayments);
 
-    setPurchaseReturns((returnsRes.data || []).map((r: any) => ({
+    setPurchaseReturns((returnsRes || []).map((r: any) => ({
       ...r,
       purchase_order: Array.isArray(r.purchase_order) ? r.purchase_order[0] : r.purchase_order,
       warehouse: Array.isArray(r.warehouse) ? r.warehouse[0] : r.warehouse,
     })));
-    setGrns((grnRes.data || []).map((g: any) => ({
+    setGrns((grnRes || []).map((g: any) => ({
       ...g,
       purchase_order: Array.isArray(g.purchase_order) ? g.purchase_order[0] : g.purchase_order,
       warehouse: Array.isArray(g.warehouse) ? g.warehouse[0] : g.warehouse,
     })));
-    setPayments(paymentsRes.data || []);
+    setPayments(paymentList || []);
 
-    const poList = poRes.data || [];
-    const totalPaid = poList.reduce((s, po) => s + Number(po.amount_paid), 0);
-    const totalOut = poList.reduce((s, po) => s + Number(po.total_amount) - Number(po.amount_paid), 0);
+    // totalDue is GL truth (maintained by the journal_lines recompute
+    // trigger): GRN value + manual payables - payments - returns. The open
+    // PO balance is the commitment view and can differ when goods were
+    // received above the PO value.
+    const activePOs = poList.filter(po => po.status !== 'cancelled');
+    const totalPaid = (paymentList || []).filter(p => !p.is_reversed).reduce((s, p) => s + Number(p.amount), 0);
+    const openPOBalance = activePOs.reduce((s, po) => s + Number(po.total_amount) - Number(po.amount_paid), 0);
     const pendingPOs = poList.filter(po => po.status === 'pending_approval' || po.status === 'draft').length;
     const manualPayablesOutstanding = payablesWithPayments.reduce((s, p) => s + p.outstanding_balance, 0);
 
     setStats({
-      totalPOs: poList.length,
       totalPaid,
-      totalOutstanding: totalOut,
-      totalPurchases: supData.total_purchases,
+      totalDue: Number(supData.outstanding_balance || 0),
+      openPOBalance,
+      totalPurchases: Number(supData.total_purchases || 0),
       pendingPOs,
       manualPayables: payablesWithPayments.length,
       manualPayablesOutstanding,
@@ -222,7 +243,11 @@ export default function SupplierDetailPage() {
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground flex items-center gap-2"><DollarSign className="w-4 h-4" />Outstanding</span>
-                <span className="font-semibold text-red-600">{formatCurrency(supplier.outstanding_balance)}</span>
+                {Number(supplier.outstanding_balance) < 0 ? (
+                  <span className="font-semibold text-green-600">{formatCurrency(-Number(supplier.outstanding_balance))} advance</span>
+                ) : (
+                  <span className="font-semibold text-red-600">{formatCurrency(supplier.outstanding_balance)}</span>
+                )}
               </div>
               {supplier.rating && supplier.rating > 0 && (
                 <div className="flex items-center justify-between text-sm">
@@ -240,27 +265,36 @@ export default function SupplierDetailPage() {
           <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
             <h3 className="text-sm font-semibold mb-4 text-foreground">Quick Stats</h3>
             <div className="grid grid-cols-2 gap-3">
-              <div className="bg-blue-50 rounded-lg p-3 text-center">
-                <p className="text-xl font-bold text-blue-600">{stats.totalPOs}</p>
-                <p className="text-xs text-blue-700">Purchase Orders</p>
+              <div className="bg-red-50 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-red-600">{formatCurrency(stats.totalDue)}</p>
+                <p className="text-xs text-red-700">Total Due</p>
+              </div>
+              <div className="bg-amber-50 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-amber-600">{formatCurrency(stats.openPOBalance)}</p>
+                <p className="text-xs text-amber-700">Open PO Balance</p>
+              </div>
+              <div className="bg-purple-50 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-purple-600">{formatCurrency(stats.totalPurchases)}</p>
+                <p className="text-xs text-purple-700">Total Purchases</p>
               </div>
               <div className="bg-green-50 rounded-lg p-3 text-center">
                 <p className="text-xl font-bold text-green-600">{formatCurrency(stats.totalPaid)}</p>
                 <p className="text-xs text-green-700">Total Paid</p>
               </div>
-              <div className="bg-red-50 rounded-lg p-3 text-center">
-                <p className="text-xl font-bold text-red-600">{formatCurrency(stats.totalOutstanding)}</p>
-                <p className="text-xs text-red-700">PO Payables</p>
+              <div className="bg-blue-50 rounded-lg p-3 text-center">
+                <p className="text-xl font-bold text-blue-600">{formatCurrency(stats.manualPayablesOutstanding)}</p>
+                <p className="text-xs text-blue-700">Manual Payables</p>
               </div>
-              <div className="bg-purple-50 rounded-lg p-3 text-center">
-                <p className="text-xl font-bold text-purple-600">{formatCurrency(stats.manualPayablesOutstanding)}</p>
-                <p className="text-xs text-purple-700">Manual Payables</p>
-              </div>
-              <div className="bg-amber-50 rounded-lg p-3 text-center col-span-2">
+              <div className="bg-amber-50 rounded-lg p-3 text-center">
                 <p className="text-xl font-bold text-amber-600">{stats.pendingPOs}</p>
                 <p className="text-xs text-amber-700">Pending POs</p>
               </div>
             </div>
+            <p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+              Total Due is the book value (goods received + manual payables − payments − returns). Open PO
+              Balance is the commitment view on non-cancelled orders; it differs when goods were received
+              above the PO value.
+            </p>
           </div>
 
           {supplier.notes && (
@@ -275,7 +309,7 @@ export default function SupplierDetailPage() {
           <div className="bg-white rounded-xl border border-border shadow-sm">
             <div className="flex border-b border-border">
               {[
-                { key: 'purchase_orders', label: 'Purchase Orders', icon: Package },
+                { key: 'purchase_orders', label: `Purchase Orders (${purchaseOrders.length})`, icon: Package },
                 { key: 'payables', label: 'Manual Payables', icon: Building2 },
                 { key: 'returns', label: 'Returns', icon: RotateCcw },
                 { key: 'grns', label: 'GRNs', icon: Truck },
@@ -477,9 +511,12 @@ export default function SupplierDetailPage() {
                       </thead>
                       <tbody className="divide-y divide-border">
                         {payments.map((p: any) => (
-                          <tr key={p.id} className="hover:bg-muted/30">
+                          <tr key={p.id} className={`hover:bg-muted/30 ${p.is_reversed ? 'opacity-50' : ''}`}>
                             <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(p.payment_date || p.created_at)}</td>
-                            <td className="px-3 py-2 text-sm text-right font-semibold text-green-600">{formatCurrency(p.amount)}</td>
+                            <td className="px-3 py-2 text-sm text-right font-semibold text-green-600">
+                              {formatCurrency(p.amount)}
+                              {p.is_reversed && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(reversed)</span>}
+                            </td>
                             <td className="px-3 py-2 text-sm text-foreground capitalize">{p.payment_method?.replace(/_/g, ' ') || '—'}</td>
                             <td className="px-3 py-2 text-sm text-muted-foreground">{p.reference_number || '—'}</td>
                             <td className="px-3 py-2 text-sm text-foreground capitalize">{p.reference_type?.replace(/_/g, ' ') || '—'}</td>

@@ -22,9 +22,21 @@ export default function SuppliersPage() {
 
   async function loadData() {
     setLoading(true);
-    const { data } = await supabase.from('suppliers').select('*').order('name');
+    const { data, error } = await supabase.from('suppliers').select('*').order('name');
+    if (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
     setSuppliers(data || []);
     setLoading(false);
+
+    // Deep-link from the supplier profile's Edit button: /suppliers?edit=<id>
+    const editId = new URLSearchParams(window.location.search).get('edit');
+    if (editId) {
+      const target = (data || []).find(s => s.id === editId);
+      if (target) setEditingSupplier(target);
+      // Strip the param so a refresh doesn't reopen the modal
+      window.history.replaceState({}, '', '/suppliers');
+    }
   }
 
   const filtered = suppliers.filter(s =>
@@ -40,9 +52,10 @@ export default function SuppliersPage() {
 
   const activeSuppliers = suppliers.filter(s => s.is_active);
   const inactiveCount = suppliers.filter(s => !s.is_active).length;
-  const totalOutstanding = activeSuppliers.reduce((sum, s) => sum + s.outstanding_balance, 0);
-  const totalPurchases = activeSuppliers.reduce((sum, s) => sum + s.total_purchases, 0);
-  const overdueCount = activeSuppliers.filter(s => s.outstanding_balance > 0).length;
+  // Money cards include inactive suppliers too — deactivating an account
+  // doesn't forgive what's still owed.
+  const totalOutstanding = suppliers.reduce((sum, s) => sum + s.outstanding_balance, 0);
+  const totalPurchases = suppliers.reduce((sum, s) => sum + s.total_purchases, 0);
 
   async function handleDelete() {
     if (!deletingSupplier) return;
@@ -140,7 +153,13 @@ export default function SuppliersPage() {
                   <td className="px-4 py-3 text-sm text-foreground">{s.city || '-'}</td>
                   <td className="px-4 py-3 text-right text-sm text-foreground">{formatCurrency(s.credit_limit)}</td>
                   <td className="px-4 py-3 text-right text-sm font-semibold text-foreground">{formatCurrency(s.total_purchases)}</td>
-                  <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{s.outstanding_balance > 0 ? formatCurrency(s.outstanding_balance) : '-'}</td>
+                  <td className="px-4 py-3 text-right text-sm font-bold">
+                    {s.outstanding_balance > 0 ? (
+                      <span className="text-red-600">{formatCurrency(s.outstanding_balance)}</span>
+                    ) : s.outstanding_balance < 0 ? (
+                      <span className="text-green-600" title="We overpaid — supplier holds an advance">{formatCurrency(-s.outstanding_balance)} adv</span>
+                    ) : '-'}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-0.5">
                       {Array.from({ length: 5 }).map((_, i) => (
