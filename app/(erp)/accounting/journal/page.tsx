@@ -1,12 +1,14 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, ChevronDown, ChevronRight, FileText, Receipt, CreditCard, Package, ArrowRightLeft, ShoppingBag, X, Trash2, Lightbulb, Banknote, Building2, Zap, Truck, Users, RotateCcw, Search, Filter, Pencil as Edit2, TriangleAlert as AlertTriangle, Info, User, Calendar, Link as LinkIcon, Ban, Scale } from 'lucide-react';
+import { Plus, ChevronDown, ChevronRight, FileText, Receipt, CreditCard, Package, PackagePlus, Boxes, ArrowRightLeft, ShoppingBag, X, Trash2, Lightbulb, Banknote, Building2, Zap, Truck, Users, RotateCcw, Search, Filter, Pencil as Edit2, TriangleAlert as AlertTriangle, Info, User, Calendar, Link as LinkIcon, Ban, Scale, Download, Printer, HandCoins, Wallet, Undo2, Wrench, FlaskConical, SlidersHorizontal, Eraser } from 'lucide-react';
 import type { Account } from '@/lib/types';
 import AppPagination from '@/components/ui/AppPagination';
+import { fetchAll } from '@/lib/fetch-all';
 
 interface JournalLine {
   id: string;
@@ -46,9 +48,20 @@ const refIcons: Record<string, React.ElementType> = {
   manual: FileText,
   opening_balance: Building2,
   receivable: User,
+  payable: HandCoins,
   invoice_edit: RotateCcw,
   invoice_cancel: Ban,
   cutover_adjustment: Scale,
+  stock_adjustment: PackagePlus,
+  product_creation: Boxes,
+  advance: Wallet,
+  advance_refund: Undo2,
+  cleanup: Wrench,
+  cogs_repair: Wrench,
+  cogs_correction: Wrench,
+  balance_adjustment: SlidersHorizontal,
+  inventory_purge: Eraser,
+  test_batch: FlaskConical,
 };
 
 const refLabels: Record<string, string> = {
@@ -62,9 +75,20 @@ const refLabels: Record<string, string> = {
   manual: 'Manual Entry',
   opening_balance: 'Opening Balance',
   receivable: 'Receivable',
+  payable: 'Payable',
   invoice_edit: 'Invoice Edit Reversal',
   invoice_cancel: 'Invoice Cancellation',
   cutover_adjustment: 'Cutover Adjustment',
+  stock_adjustment: 'Stock Adjustment',
+  product_creation: 'Opening Stock',
+  advance: 'Customer Advance',
+  advance_refund: 'Advance Refund',
+  cleanup: 'COGS Cleanup',
+  cogs_repair: 'COGS Repair',
+  cogs_correction: 'COGS Correction',
+  balance_adjustment: 'Balance Adjustment',
+  inventory_purge: 'Inventory Purge',
+  test_batch: 'Test Batch',
 };
 
 const refColors: Record<string, string> = {
@@ -78,9 +102,20 @@ const refColors: Record<string, string> = {
   manual: 'bg-gray-50 text-gray-600',
   opening_balance: 'bg-purple-50 text-purple-600',
   receivable: 'bg-indigo-50 text-indigo-600',
+  payable: 'bg-emerald-50 text-emerald-600',
   invoice_edit: 'bg-rose-50 text-rose-600',
   invoice_cancel: 'bg-rose-50 text-rose-600',
   cutover_adjustment: 'bg-cyan-50 text-cyan-600',
+  stock_adjustment: 'bg-lime-50 text-lime-600',
+  product_creation: 'bg-slate-50 text-slate-600',
+  advance: 'bg-violet-50 text-violet-600',
+  advance_refund: 'bg-purple-50 text-purple-600',
+  cleanup: 'bg-orange-50 text-orange-600',
+  cogs_repair: 'bg-amber-50 text-amber-600',
+  cogs_correction: 'bg-amber-50 text-amber-600',
+  balance_adjustment: 'bg-teal-50 text-teal-600',
+  inventory_purge: 'bg-fuchsia-50 text-fuchsia-600',
+  test_batch: 'bg-gray-50 text-gray-500',
 };
 
 // Where a grouped entry's reference_id points, to resolve the source document
@@ -95,7 +130,29 @@ const DOC_SOURCES: Record<string, { table: string; numberField: string; label: s
   purchase_cancellation: { table: 'purchase_orders', numberField: 'po_number', label: 'PO' },
   purchase_return: { table: 'purchase_returns', numberField: 'return_number', label: 'Purchase Return' },
   sales_return: { table: 'sales_returns', numberField: 'return_number', label: 'Sales Return' },
+  stock_adjustment: { table: 'products', numberField: 'name', label: 'Stock Adjustment' },
+  product_creation: { table: 'inventory_batches', numberField: 'batch_number', label: 'Opening Stock' },
+  advance: { table: 'customer_advances', numberField: 'advance_number', label: 'Advance' },
+  advance_refund: { table: 'customer_advances', numberField: 'advance_number', label: 'Advance' },
 };
+
+// Where a grouped entry's source document lives in the app, for clickable
+// group headers. highlight params follow the existing account-statement
+// convention (the list pages may not consume them yet, but the route is right).
+function docHref(refType: string, refId: string): string | null {
+  if (['invoice', 'invoice_edit', 'invoice_cancel'].includes(refType)) return `/sales?highlight=${refId}`;
+  if (refType === 'grn') return `/purchases/grn?highlight=${refId}`;
+  if (['purchase_receipt', 'purchase_cancellation'].includes(refType)) return `/purchases?highlight=${refId}`;
+  if (refType === 'purchase_return') return `/purchases/returns?highlight=${refId}`;
+  if (refType === 'sales_return') return `/sales/returns?highlight=${refId}`;
+  return null;
+}
+
+function partyNameOf(e: JournalEntry): string | undefined {
+  const c: any = Array.isArray(e.customer) ? e.customer[0] : e.customer;
+  const s: any = Array.isArray(e.supplier) ? e.supplier[0] : e.supplier;
+  return c?.name || s?.name;
+}
 
 // Plain-English templates for non-accountants
 interface JournalTemplate {
@@ -211,7 +268,8 @@ export default function JournalPage() {
   const [entries, setEntries] = useState<JournalEntry[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [showModal, setShowModal] = useState(false);
   const [filterType, setFilterType] = useState('');
   const [filterSupplier, setFilterSupplier] = useState('');
@@ -226,83 +284,108 @@ export default function JournalPage() {
 
   useEffect(() => { loadData(); }, [period, filterSupplier]);
 
-  // Deep-link from the supplier profile: /accounting/journal?supplier=<id> —
-  // widen to all periods, otherwise today's window usually hides everything.
+  // Deep links: ?supplier=<id> from the supplier profile, ?highlight=<je id>
+  // from the account statement and sales returns. Both widen to all periods —
+  // today's window usually hides the target. highlight also narrows the search
+  // to the entry's number so the row is impossible to miss.
   useEffect(() => {
-    const sid = new URLSearchParams(window.location.search).get('supplier');
+    const params = new URLSearchParams(window.location.search);
+    const sid = params.get('supplier');
+    const hid = params.get('highlight');
     if (sid) {
       setFilterSupplier(sid);
       setPeriod('all');
-      window.history.replaceState({}, '', '/accounting/journal');
+      setPage(1);
     }
+    if (hid) {
+      setPeriod('all');
+      setFilterSupplier('');
+      setFilterType('');
+      setPage(1);
+      supabase.from('journal_entries').select('entry_number').eq('id', hid).maybeSingle()
+        .then(({ data }) => {
+          if (data?.entry_number) {
+            setSearchQuery(data.entry_number);
+            setExpandedIds(prev => new Set(prev).add(hid));
+          }
+        });
+    }
+    if (sid || hid) window.history.replaceState({}, '', '/accounting/journal');
   }, []);
 
+  // Local dates, not UTC — new Date().toISOString() is UTC, so between local
+  // midnight and 06:00 (UTC+6) the "Today" preset used to filter the wrong day.
   function getDateRange() {
-    const today = new Date().toISOString().split('T')[0];
+    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const now = new Date();
+    const today = ymd(now);
     if (period === 'today') return { from: today, to: today };
-    if (period === 'last7') {
-      const d = new Date(); d.setDate(d.getDate() - 6);
-      return { from: d.toISOString().split('T')[0], to: today };
-    }
-    if (period === 'last30') {
-      const d = new Date(); d.setDate(d.getDate() - 29);
-      return { from: d.toISOString().split('T')[0], to: today };
-    }
+    if (period === 'last7') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)), to: today };
+    if (period === 'last30') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)), to: today };
     return { from: '', to: '' };
   }
 
   async function loadData() {
     setLoading(true);
-    const { from, to } = getDateRange();
-    let query = supabase.from('journal_entries')
-      .select(`
-        id, entry_number, entry_date, description, reference_type, reference_id,
-        total_debit, total_credit, is_posted, created_at, customer_id, supplier_id,
-        customer:customers(name), supplier:suppliers(name)
-      `)
-      .order('entry_date', { ascending: false })
-      .order('created_at', { ascending: false })
-      // id tiebreaker: same-transaction entries share created_at to the microsecond,
-      // so without it the row order (and the 500-row window) is non-deterministic
-      .order('id', { ascending: false });
-    if (from) query = query.gte('entry_date', from);
-    if (to) query = query.lte('entry_date', to);
-    // Supplier filter must run server-side: the newest-500 window would
-    // otherwise hide this supplier's older entries. GRN JEs carry no
-    // supplier_id, so they're matched through the supplier's GRN ids.
-    if (filterSupplier) {
-      const { data: supplierGrns } = await supabase
-        .from('goods_receipt_notes')
-        .select('id')
-        .eq('supplier_id', filterSupplier);
-      const grnIds = (supplierGrns || []).map((g: any) => g.id);
-      query = grnIds.length > 0
-        ? query.or(`supplier_id.eq.${filterSupplier},and(reference_type.eq.grn,reference_id.in.(${grnIds.join(',')}))`)
-        : query.eq('supplier_id', filterSupplier);
+    setLoadError(null);
+    try {
+      const { from, to } = getDateRange();
+      // GRN JEs carry no supplier_id, so a supplier filter must also match
+      // them through the supplier's GRN ids.
+      let grnIds: string[] = [];
+      if (filterSupplier) {
+        const { data: supplierGrns, error: grnError } = await supabase
+          .from('goods_receipt_notes')
+          .select('id')
+          .eq('supplier_id', filterSupplier);
+        if (grnError) throw grnError;
+        grnIds = (supplierGrns || []).map((g: any) => g.id);
+      }
+      // fetchAll pages past the row cap — a .limit(500) window silently hid
+      // older entries on wide date ranges.
+      const build = () => {
+        let query = supabase.from('journal_entries')
+          .select(`
+            id, entry_number, entry_date, description, reference_type, reference_id,
+            total_debit, total_credit, is_posted, created_at, customer_id, supplier_id,
+            customer:customers(name), supplier:suppliers(name)
+          `)
+          .order('entry_date', { ascending: false })
+          .order('created_at', { ascending: false })
+          // id tiebreaker: same-transaction entries share created_at to the microsecond,
+          // so without it the row order is non-deterministic
+          .order('id', { ascending: false });
+        if (from) query = query.gte('entry_date', from);
+        if (to) query = query.lte('entry_date', to);
+        if (filterSupplier) {
+          query = grnIds.length > 0
+            ? query.or(`supplier_id.eq.${filterSupplier},and(reference_type.eq.grn,reference_id.in.(${grnIds.join(',')}))`)
+            : query.eq('supplier_id', filterSupplier);
+        }
+        return query;
+      };
+      const [entriesData, accountsRes, suppliersRes] = await Promise.all([
+        fetchAll(build),
+        supabase.from('accounts').select('*').eq('is_active', true).order('code'),
+        supabase.from('suppliers').select('id, name').order('name'),
+      ]);
+      setEntries(entriesData as JournalEntry[]);
+      setAccounts(accountsRes.data || []);
+      setSupplierOptions((suppliersRes.data || []) as any[]);
+    } catch (err: any) {
+      setEntries([]);
+      setLoadError(err.message || 'Failed to load journal entries');
+    } finally {
+      setLoading(false);
     }
-    const [entriesRes, accountsRes, suppliersRes] = await Promise.all([
-      query.limit(500),
-      supabase.from('accounts').select('*').eq('is_active', true).order('code'),
-      supabase.from('suppliers').select('id, name').order('name'),
-    ]);
-    setEntries(entriesRes.data || []);
-    setAccounts(accountsRes.data || []);
-    setSupplierOptions((suppliersRes.data || []) as any[]);
-    setLoading(false);
   }
 
-  async function toggleExpand(id: string) {
-    if (expandedId === id) { setExpandedId(null); return; }
-    const entry = entries.find(e => e.id === id);
-    if (!entry?.lines) {
-      const { data: lines } = await supabase
-        .from('journal_lines')
-        .select('id, account_id, description, debit, credit, account:accounts(code, name, account_type)')
-        .eq('journal_entry_id', id)
-        .order('sort_order');
-      setEntries(prev => prev.map(e => e.id === id ? { ...e, lines: lines || [] } : e));
-    }
-    setExpandedId(id);
+  function toggleExpand(id: string) {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   }
 
   // Filter entries
@@ -363,26 +446,72 @@ export default function JournalPage() {
     return () => { cancelled = true; };
   }, [groupSignature]);
 
-  const autoCount = entries.filter(e => e.reference_type !== 'manual').length;
-  const manualCount = entries.filter(e => e.reference_type === 'manual').length;
+  // KPIs reflect the active filters (and the full, un-capped data set)
+  const autoCount = filtered.filter(e => e.reference_type !== 'manual').length;
+  const manualCount = filtered.length - autoCount;
+
+  function exportCsv() {
+    const escape = (v: any) => {
+      const s = v === null || v === undefined ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [
+      ['Entry #', 'Date', 'Description', 'Type', 'Party', 'Debit', 'Credit', 'Status'].join(','),
+      ...filtered.map(e => [
+        escape(e.entry_number),
+        e.entry_date,
+        escape(e.description),
+        escape(refLabels[e.reference_type || 'manual'] || e.reference_type || ''),
+        escape(partyNameOf(e) || ''),
+        e.total_debit ?? 0,
+        e.total_credit ?? 0,
+        e.is_posted ? 'posted' : 'draft',
+      ].join(',')),
+    ];
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `journal-entries-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: 'Exported', description: `${filtered.length} journal entries exported to CSV` });
+  }
 
   return (
-    <div className="space-y-5 animate-fade-in">
-      <div className="flex items-center justify-between">
+    <div className="space-y-5 animate-fade-in print-modal">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Journal Entries</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Sales, purchases and payments are posted automatically</p>
         </div>
-        <button
-          onClick={() => setShowModal(true)}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
-        >
-          <Plus className="w-4 h-4" />Record Expense / Entry
-        </button>
+        <div className="flex items-center gap-2 flex-wrap print:hidden">
+          <button
+            onClick={exportCsv}
+            className="flex items-center gap-2 border border-border hover:bg-muted px-4 py-2 rounded-lg text-sm font-semibold transition"
+          >
+            <Download className="w-4 h-4" />Export CSV
+          </button>
+          <button
+            onClick={() => window.print()}
+            className="flex items-center gap-2 border border-border hover:bg-muted px-4 py-2 rounded-lg text-sm font-semibold transition"
+          >
+            <Printer className="w-4 h-4" />Print
+          </button>
+          <button
+            onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
+          >
+            <Plus className="w-4 h-4" />Record Expense / Entry
+          </button>
+        </div>
+      </div>
+      <div className="hidden print:block text-xs text-gray-600 border-b border-gray-200 pb-2">
+        Journal register — {filtered.length} entr{filtered.length === 1 ? 'y' : 'ies'}, generated {formatDate(new Date().toISOString().split('T')[0])}
       </div>
 
       {/* Explanation banner */}
-      <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex gap-3">
+      <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 flex gap-3 print:hidden">
         <Lightbulb className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
         <div className="text-sm text-blue-700 space-y-1">
           <p className="font-medium">How this works</p>
@@ -396,7 +525,7 @@ export default function JournalPage() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="stat-card">
           <p className="text-xs text-muted-foreground">Total Entries</p>
-          <p className="text-xl font-bold text-foreground">{entries.length}</p>
+          <p className="text-xl font-bold text-foreground">{filtered.length}</p>
         </div>
         <div className="stat-card">
           <p className="text-xs text-muted-foreground">Auto-Posted</p>
@@ -407,13 +536,13 @@ export default function JournalPage() {
           <p className="text-xl font-bold text-blue-600">{manualCount}</p>
         </div>
         <div className="stat-card">
-          <p className="text-xs text-muted-foreground">Total Posted</p>
-          <p className="text-xl font-bold text-foreground">{formatCurrency(entries.reduce((s, e) => s + Number(e.total_debit), 0))}</p>
+          <p className="text-xs text-muted-foreground">Total Debits</p>
+          <p className="text-xl font-bold text-foreground">{formatCurrency(filtered.reduce((s, e) => s + Number(e.total_debit), 0))}</p>
         </div>
       </div>
 
       {/* Filter bar */}
-      <div className="bg-white rounded-xl border border-border p-4 shadow-sm space-y-3">
+      <div className="bg-white rounded-xl border border-border p-4 shadow-sm space-y-3 print:hidden">
         {/* Period selector */}
         <div className="flex flex-wrap items-center gap-2">
           <Calendar className="w-4 h-4 text-muted-foreground shrink-0" />
@@ -425,7 +554,8 @@ export default function JournalPage() {
           ] as const).map(opt => (
             <button
               key={opt.value}
-              onClick={() => setPeriod(opt.value)}
+              onClick={() => { setPeriod(opt.value); setPage(1); }}
+              aria-pressed={period === opt.value}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${period === opt.value ? 'bg-blue-600 text-white' : 'bg-muted/50 text-muted-foreground hover:bg-muted'}`}
             >
               {opt.label}
@@ -440,8 +570,9 @@ export default function JournalPage() {
             <input
               type="text"
               value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
+              onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
               placeholder="Search by entry #, description, invoice #..."
+              aria-label="Search journal entries"
               className="flex-1 border border-border rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
             />
             {searchQuery && (
@@ -464,17 +595,23 @@ export default function JournalPage() {
             { value: '', label: 'All Entries' },
             { value: 'invoice', label: 'Invoices' },
             { value: 'payment', label: 'Payments' },
-            { value: 'grn', label: 'Goods Receipt' },
-            { value: 'purchase_receipt', label: 'Purchase Receipt' },
-            { value: 'purchase_return', label: 'Purchase Return' },
-            { value: 'purchase_cancellation', label: 'PO Cancellation' },
-            { value: 'manual', label: 'Manual' },
-            { value: 'opening_balance', label: 'Opening' },
+            { value: 'stock_adjustment', label: 'Stock Adj.' },
+            { value: 'invoice_cancel', label: 'Cancellations' },
             { value: 'invoice_edit', label: 'Invoice Edits' },
+            { value: 'manual', label: 'Manual' },
+            { value: 'grn', label: 'Goods Receipt' },
+            { value: 'receivable', label: 'Receivables' },
+            { value: 'payable', label: 'Payables' },
+            { value: 'sales_return', label: 'Sales Returns' },
+            { value: 'purchase_return', label: 'Purchase Return' },
+            { value: 'purchase_receipt', label: 'Purchase Receipt' },
+            { value: 'purchase_cancellation', label: 'PO Cancellation' },
+            { value: 'opening_balance', label: 'Opening' },
           ].map(f => (
             <button
               key={f.value}
-              onClick={() => setFilterType(f.value)}
+              onClick={() => { setFilterType(f.value); setPage(1); }}
+              aria-pressed={filterType === f.value}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${filterType === f.value ? 'bg-blue-600 text-white' : 'bg-muted/50 text-muted-foreground hover:bg-muted'}`}
             >
               {f.label}
@@ -485,7 +622,8 @@ export default function JournalPage() {
       </div>
 
       <div className="table-wrapper">
-        <table className="w-full">
+        <div className="overflow-x-auto print:overflow-visible">
+        <table className="w-full min-w-[900px] print:min-w-0">
           <thead>
             <tr className="bg-muted/40 border-b border-border">
               <th className="w-8"></th>
@@ -507,6 +645,15 @@ export default function JournalPage() {
                   ))}
                 </tr>
               ))
+            ) : loadError ? (
+              <tr>
+                <td colSpan={8} className="px-4 py-12 text-center text-sm">
+                  <AlertTriangle className="w-10 h-10 mx-auto mb-3 text-red-300" />
+                  <p className="font-medium text-red-600">Failed to load journal entries</p>
+                  <p className="text-xs mt-1 text-muted-foreground">{loadError}</p>
+                  <button onClick={() => loadData()} className="mt-3 px-3 py-1.5 border border-border rounded-lg text-xs hover:bg-muted">Retry</button>
+                </td>
+              </tr>
             ) : filtered.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-12 text-center text-muted-foreground text-sm">
@@ -522,8 +669,7 @@ export default function JournalPage() {
                 <JournalEntryRow
                   key={entry.id}
                   entry={entry}
-                  accounts={accounts}
-                  isExpanded={expandedId === entry.id}
+                  isExpanded={expandedIds.has(entry.id)}
                   onToggle={() => toggleExpand(entry.id)}
                   onEdit={() => setEditingEntry(entry)}
                   onDelete={() => setShowDeleteConfirm(entry)}
@@ -535,21 +681,28 @@ export default function JournalPage() {
               const HeaderIcon = refIcons[group.refType] || FileText;
               const docNum = group.refId ? docNumbers[group.refId] : undefined;
               const docLabel = DOC_SOURCES[group.refType]?.label || refLabels[group.refType] || 'Document';
-              const partyName = (e: JournalEntry) => {
-                const c: any = Array.isArray(e.customer) ? e.customer[0] : e.customer;
-                const s: any = Array.isArray(e.supplier) ? e.supplier[0] : e.supplier;
-                return c?.name || s?.name;
-              };
-              const party = partyName(first);
+              const party = partyNameOf(first);
+              const href = group.refId ? docHref(group.refType, group.refId) : null;
               const typeSet = [...new Set(group.rows.map(r => r.reference_type || 'manual'))];
+              const docTitle = (
+                <>
+                  {docLabel}{docNum ? ` ${docNum}` : ''}
+                </>
+              );
               return [
                 <tr key={`grp-${first.id}`} className="bg-muted/40">
                   <td colSpan={8} className="px-4 py-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <HeaderIcon className="w-3.5 h-3.5 text-blue-600 shrink-0" />
-                      <span className="text-sm font-semibold font-mono text-foreground">
-                        {docLabel}{docNum ? ` ${docNum}` : ''}
-                      </span>
+                      {href ? (
+                        <Link href={href} className="text-sm font-semibold font-mono text-foreground hover:text-blue-600 hover:underline" title="Open source document">
+                          {docTitle}
+                        </Link>
+                      ) : (
+                        <span className="text-sm font-semibold font-mono text-foreground">
+                          {docTitle}
+                        </span>
+                      )}
                       {party && <span className="text-xs text-muted-foreground">· {party}</span>}
                       {typeSet.map(t => (
                         <span key={t} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${refColors[t] || 'bg-gray-50 text-gray-600'}`}>
@@ -569,13 +722,16 @@ export default function JournalPage() {
             }
           </tbody>
         </table>
-        <AppPagination
-          page={page}
-          pageSize={pageSize}
-          total={filtered.length}
-          onPageChange={setPage}
-          onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
-        />
+        </div>
+        <div className="print:hidden">
+          <AppPagination
+            page={page}
+            pageSize={pageSize}
+            total={filtered.length}
+            onPageChange={setPage}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+          />
+        </div>
       </div>
 
       {showModal && (
@@ -606,9 +762,8 @@ export default function JournalPage() {
   );
 }
 
-function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDelete }: {
+function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete }: {
   entry: JournalEntry;
-  accounts: Account[];
   isExpanded: boolean;
   onToggle: () => void;
   onEdit: () => void;
@@ -621,7 +776,7 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
   const isAuto = entry.reference_type !== 'manual' && entry.reference_type !== null;
   const isReversal = entry.description?.toLowerCase().includes('reverse') || entry.reference_type === 'invoice_edit';
   const [pairedEntry, setPairedEntry] = useState<JournalEntry | null>(null);
-  const [impactPreview, setImpactPreview] = useState<{ account: string; current: number; proposed: number; change: number }[]>([]);
+  const party = partyNameOf(entry);
 
   useEffect(() => {
     if (isExpanded) {
@@ -635,15 +790,18 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
           .then(({ data }) => setLines(data || []));
       }
 
-      // Find paired entry if this is part of an invoice edit
+      // Find paired entry if this is part of an invoice edit. Include the
+      // lines in the embed — the panel below renders them.
       if (!pairedEntry && entry.reference_type === 'invoice_edit' && entry.reference_id) {
         supabase
           .from('journal_entries')
-          .select('*')
+          .select(`id, entry_number, entry_date, description, total_debit, total_credit,
+                   lines:journal_lines(id, account_id, description, debit, credit, account:accounts(code, name, account_type))`)
           .eq('reference_id', entry.reference_id)
           .eq('reference_type', 'invoice')
           .eq('entry_date', entry.entry_date)
           .neq('id', entry.id)
+          .order('sort_order', { referencedTable: 'lines' })
           .maybeSingle()
           .then(({ data }) => {
             if (data) setPairedEntry(data as JournalEntry);
@@ -656,7 +814,7 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
     <>
       <tr className="hover:bg-muted/30 transition-colors">
         <td className="px-2 py-3">
-          <button onClick={onToggle} className="cursor-pointer">
+          <button onClick={onToggle} aria-expanded={isExpanded} aria-label={isExpanded ? 'Collapse lines' : 'Expand lines'} className="cursor-pointer">
             {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
           </button>
         </td>
@@ -664,35 +822,38 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
           {entry.entry_number}
         </td>
         <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">{formatDate(entry.entry_date)}</td>
-          <td className="px-4 py-3 text-sm text-foreground max-w-xs truncate">
+        <td className="px-4 py-3 text-sm text-foreground max-w-xs">
+          <div className="truncate">
             {isReversal && (
               <span className="inline-flex items-center gap-0.5 px-1 py-0.5 bg-red-100 text-red-600 text-[9px] font-medium rounded mr-1">
                 ↶
               </span>
             )}
             {entry.description}
-          </td>
-          <td className="px-4 py-3">
-            <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ${colorClass}`}>
-              <Icon className="w-3 h-3" />
-              {refLabels[refType] || refType}
-              {isReversal && (
-                <span className="text-[8px] opacity-70">↶</span>
-              )}
-            </span>
-          </td>
+          </div>
+          {party && <div className="text-[11px] text-muted-foreground truncate">{party}</div>}
+        </td>
+        <td className="px-4 py-3">
+          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ${colorClass}`}>
+            <Icon className="w-3 h-3" />
+            {refLabels[refType] || refType}
+            {isReversal && (
+              <span className="text-[8px] opacity-70">↶</span>
+            )}
+          </span>
+        </td>
         <td className="px-4 py-3 text-sm font-semibold text-foreground text-right">{formatCurrency(entry.total_debit)}</td>
         <td className="px-4 py-3">
           <span className={`badge-status ${entry.is_posted ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-500'}`}>
             {entry.is_posted ? 'Posted' : 'Draft'}
           </span>
         </td>
-        <td className="px-4 py-3 text-center">
+        <td className="px-4 py-3 text-center print:hidden">
           <div className="flex items-center justify-center gap-1">
-            <button onClick={onEdit} className="w-7 h-7 flex items-center justify-center rounded hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title={isAuto ? 'Edit auto-posted entry (with impact preview)' : 'Edit entry'}>
+            <button onClick={onEdit} aria-label={isAuto ? 'Edit auto-posted entry (with impact preview)' : 'Edit entry'} className="w-7 h-7 flex items-center justify-center rounded hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title={isAuto ? 'Edit auto-posted entry (with impact preview)' : 'Edit entry'}>
               <Edit2 className="w-3.5 h-3.5" />
             </button>
-            <button onClick={onDelete} className="w-7 h-7 flex items-center justify-center rounded hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title={isAuto ? 'Delete auto-posted entry (with impact preview)' : 'Delete entry'}>
+            <button onClick={onDelete} aria-label={isAuto ? 'Delete auto-posted entry (with impact preview)' : 'Delete entry'} className="w-7 h-7 flex items-center justify-center rounded hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title={isAuto ? 'Delete auto-posted entry (with impact preview)' : 'Delete entry'}>
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -720,8 +881,10 @@ function JournalEntryRow({ entry, accounts, isExpanded, onToggle, onEdit, onDele
                       return (
                         <tr key={line.id} className="border-b border-border/30 last:border-0">
                           <td className="py-1.5">
-                            <span className="font-mono text-muted-foreground mr-2 text-[10px]">{acc?.code}</span>
-                            <span className="font-medium text-foreground">{acc?.name}</span>
+                            <Link href={`/accounting/accounts/${line.account_id}`} className="hover:underline" title="Open account statement">
+                              <span className="font-mono text-muted-foreground mr-2 text-[10px]">{acc?.code}</span>
+                              <span className="font-medium text-foreground">{acc?.name}</span>
+                            </Link>
                           </td>
                           <td className="py-1.5 text-muted-foreground">{line.description || '—'}</td>
                           <td className="py-1.5 text-right font-semibold text-green-700">{Number(line.debit) > 0 ? formatCurrency(line.debit) : '—'}</td>
@@ -801,19 +964,32 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
   const [error, setError] = useState('');
   const [suppliers, setSuppliers] = useState<{ id: string; name: string }[]>([]);
   const [supplierId, setSupplierId] = useState('');
+  const [customers, setCustomers] = useState<{ id: string; name: string }[]>([]);
+  const [customerId, setCustomerId] = useState('');
 
   useEffect(() => {
     supabase.from('suppliers').select('id, name').eq('is_active', true).order('name')
       .then(({ data }) => setSuppliers(data || []));
+    supabase.from('customers').select('id, name').eq('is_active', true).order('name')
+      .then(({ data }) => setCustomers(data || []));
   }, []);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   // Any line posting to Accounts Payable (2000) must name the supplier —
   // otherwise the entry is unattributable and supplier balances drift from
-  // the GL (they only recompute for attributed entries).
+  // the GL (they only recompute for attributed entries). Mirror rule for
+  // receivables accounts (1100 AR / 1300 Manual Receivable) + customer.
   const apAccountId = accounts.find(a => a.code === '2000')?.id;
+  const arAccountIds = ['1100', '1300'].map(c => accounts.find(a => a.code === c)?.id).filter(Boolean) as string[];
   const touchesAp =
     (mode === 'custom' && lines.some(l => l.accountId && l.accountId === apAccountId)) ||
     (mode === 'templates' && !!selectedTemplate?.lines.some(l => l.accountCode === '2000'));
+  const touchesAr = mode === 'custom' && lines.some(l => l.accountId && arAccountIds.includes(l.accountId));
 
   function applyTemplate(tmpl: JournalTemplate) {
     setSelectedTemplate(tmpl);
@@ -895,6 +1071,11 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
       return;
     }
 
+    if (finalLines.some(l => arAccountIds.includes(l.accountId)) && !customerId) {
+      setError('This entry posts to a receivables account (1100/1300) — select which customer it belongs to so their dues stay correct.');
+      return;
+    }
+
     setSaving(true);
     try {
       const totalAmt = finalLines.reduce((s, l) => s + l.debit, 0);
@@ -912,6 +1093,7 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
           total_credit: totalAmt,
           is_posted: true,
           supplier_id: supplierId || null,
+          customer_id: customerId || null,
         })
         .select()
         .single();
@@ -948,7 +1130,7 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div role="dialog" aria-modal="true" className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
           <div>
@@ -1105,6 +1287,16 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
                 </div>
               )}
 
+              {touchesAr && (
+                <div>
+                  <label className="block text-xs font-medium mb-1">Customer * <span className="text-amber-600">(entry touches a receivables account)</span></label>
+                  <select required value={customerId} onChange={e => setCustomerId(e.target.value)} className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+                    <option value="">Select customer…</option>
+                    {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+              )}
+
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-xs font-medium">Line Items</label>
@@ -1204,6 +1396,12 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
   const [linkedRecords, setLinkedRecords] = useState<{ type: string; label: string; detail: string }[]>([]);
   const isAuto = entry.reference_type !== 'manual' && entry.reference_type !== null;
   const isInvoiceEdit = entry.reference_type === 'invoice_edit';
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   useEffect(() => {
     async function loadLines() {
@@ -1351,7 +1549,7 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div role="dialog" aria-modal="true" className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
           <div>
@@ -1571,6 +1769,12 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
   const isAuto = entry.reference_type !== 'manual' && entry.reference_type !== null;
 
   useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
     async function loadImpact() {
       const { data: lines } = await supabase
         .from('journal_lines')
@@ -1657,7 +1861,7 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+    <div role="dialog" aria-modal="true" className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
           <div>
