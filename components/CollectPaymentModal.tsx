@@ -208,9 +208,9 @@ export default function CollectPaymentModal({
       const payForThis = Math.min(amountRemaining, entry.outstanding);
       const badDebtForThis = Math.min(badDebtRemaining, entry.outstanding - payForThis);
 
-      if (payForThis > 0) {
+      if (payForThis > 0 || badDebtForThis > 0) {
         const { data: payNum } = await supabase.rpc('generate_payment_number');
-        const { error: payError } = await supabase.from('payments').insert({
+        const { data: payRow, error: payError } = await supabase.from('payments').insert({
           payment_number: payNum || `PAY-${Date.now().toString().slice(-6)}`,
           payment_type: 'received',
           reference_type: 'receivable',
@@ -223,36 +223,63 @@ export default function CollectPaymentModal({
           reference_number: form.reference_number || null,
           notes: form.notes || null,
           payment_for: form.payment_for,
-        });
+        }).select().single();
         if (payError) throw payError;
 
-        // Journal entry: Dr. Cash/Bank / Cr. Manual Receivable (1300)
         const { data: manualReceivableAccount } = await supabase.from('accounts').select('id').eq('code', '1300').maybeSingle();
-        const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-        const { data: jeRow, error: jeError } = await supabase.from('journal_entries').insert({
-          entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-          entry_date: form.payment_date,
-          description: `Payment received for ${entry.entry_number}`,
-          reference_type: 'payment',
-          customer_id: customerId,
-          total_debit: payForThis,
-          total_credit: payForThis,
-          is_posted: true,
-        }).select().single();
-        if (jeError) throw jeError;
-
-        if (manualReceivableAccount) {
-          await supabase.from('journal_lines').insert([
-            { journal_entry_id: jeRow.id, account_id: form.account_id, description: `Payment from ${customerName}`, debit: payForThis, credit: 0, sort_order: 0 },
-            { journal_entry_id: jeRow.id, account_id: manualReceivableAccount.id, description: `Manual Receivable reduction - ${customerName}`, debit: 0, credit: payForThis, sort_order: 1 },
-          ]);
-          await supabase.rpc('increment_account_balance', { p_account_id: form.account_id, p_delta: payForThis });
-          await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: -payForThis });
+        if (!manualReceivableAccount) {
+          await supabase.from('payments').delete().eq('id', payRow.id);
+          throw new Error('Manual Receivable account (1300) not found');
         }
-      }
 
-      if (badDebtForThis > 0) {
-        await postBadDebtJournal(badDebtForThis, form.payment_date, `Bad debt write-off for ${entry.entry_number}`, customerId);
+        try {
+          // Journal entries go through the post_journal_entry RPC: entry
+          // number, lines and account balances are handled atomically
+          // server-side, and the JE references the payment row. (On
+          // 2026-09-02 a client-side posting failed silently after the
+          // payment insert and left 1300 overstated by the unjournaled
+          // collection.)
+          if (payForThis > 0) {
+            const { error: jeError } = await supabase.rpc('post_journal_entry', {
+              p_description: `Payment received for ${entry.entry_number}`,
+              p_entry_date: form.payment_date,
+              p_reference_type: 'payment',
+              p_reference_id: payRow.id,
+              p_lines: [
+                { account_id: form.account_id, debit: payForThis, credit: 0, description: `Payment from ${customerName}` },
+                { account_id: manualReceivableAccount.id, debit: 0, credit: payForThis, description: `Manual Receivable reduction - ${customerName}` },
+              ],
+              p_customer_id: customerId,
+            });
+            if (jeError) throw jeError;
+          }
+
+          if (badDebtForThis > 0) {
+            const { data: badDebtAccount } = await supabase.from('accounts').select('id').eq('code', '5600').maybeSingle();
+            const { error: bdError } = await supabase.rpc('post_journal_entry', {
+              p_description: `Bad debt write-off for ${entry.entry_number}`,
+              p_entry_date: form.payment_date,
+              p_reference_type: 'payment',
+              p_reference_id: payRow.id,
+              p_lines: [
+                { account_id: badDebtAccount?.id, debit: badDebtForThis, credit: 0, description: `Bad debt write-off - ${customerName}` },
+                { account_id: manualReceivableAccount.id, debit: 0, credit: badDebtForThis, description: `Manual Receivable reduction (bad debt) - ${customerName}` },
+              ],
+              p_customer_id: customerId,
+            });
+            if (bdError) {
+              // Keep the (consistent) payment leg; drop the unposted bad-debt
+              // amount from the row so the subledger doesn't count it.
+              await supabase.from('payments').update({ bad_debt_amount: 0 }).eq('id', payRow.id);
+              throw bdError;
+            }
+          }
+        } catch (e) {
+          // No payment row without its journal entry — remove the row so a
+          // retry starts clean.
+          await supabase.from('payments').delete().eq('id', payRow.id);
+          throw e;
+        }
       }
 
       amountRemaining -= payForThis;
@@ -268,37 +295,6 @@ export default function CollectPaymentModal({
     toast({ title: 'Success', description: descParts.join(', ') });
     onSaved();
     onClose();
-  }
-
-  async function postBadDebtJournal(amount: number, date: string, description: string, custId: string) {
-    const { data: badDebtAccount } = await supabase.from('accounts').select('id').eq('code', '5600').maybeSingle();
-    const { data: manualReceivableAccount } = await supabase.from('accounts').select('id').eq('code', '1300').maybeSingle();
-    const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-
-    const { data: jeRow, error: jeError } = await supabase.from('journal_entries').insert({
-      entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-      entry_date: date,
-      description,
-      reference_type: 'payment',
-      customer_id: custId,
-      total_debit: amount,
-      total_credit: amount,
-      is_posted: true,
-    }).select().single();
-    if (jeError) throw jeError;
-
-    const lines: any[] = [];
-    if (badDebtAccount) {
-      lines.push({ journal_entry_id: jeRow.id, account_id: badDebtAccount.id, description, debit: amount, credit: 0, sort_order: 0 });
-    }
-    if (manualReceivableAccount) {
-      lines.push({ journal_entry_id: jeRow.id, account_id: manualReceivableAccount.id, description, debit: 0, credit: amount, sort_order: 1 });
-    }
-    if (lines.length > 0) {
-      await supabase.from('journal_lines').insert(lines);
-      if (badDebtAccount) await supabase.rpc('increment_account_balance', { p_account_id: badDebtAccount.id, p_delta: amount });
-      if (manualReceivableAccount) await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: -amount });
-    }
   }
 
   async function updateCustomerOutstanding(custId: string, reduction: number, purchasesIncrease: number) {
