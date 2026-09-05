@@ -791,7 +791,9 @@ function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete }: {
       }
 
       // Find paired entry if this is part of an invoice edit. Include the
-      // lines in the embed — the panel below renders them.
+      // lines in the embed — the panel below renders them. limit(1) not
+      // maybeSingle: twice-edited invoices have several same-date reposts
+      // and maybeSingle() errors out on multiple rows (panel never showed).
       if (!pairedEntry && entry.reference_type === 'invoice_edit' && entry.reference_id) {
         supabase
           .from('journal_entries')
@@ -801,10 +803,11 @@ function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete }: {
           .eq('reference_type', 'invoice')
           .eq('entry_date', entry.entry_date)
           .neq('id', entry.id)
+          .order('created_at', { ascending: false })
           .order('sort_order', { referencedTable: 'lines' })
-          .maybeSingle()
+          .limit(1)
           .then(({ data }) => {
-            if (data) setPairedEntry(data as JournalEntry);
+            if (data && data.length > 0) setPairedEntry(data[0] as JournalEntry);
           });
       }
     }
