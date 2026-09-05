@@ -733,7 +733,7 @@ export default function AccountingPage() {
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-mono text-muted-foreground">{entry.entry_number}</span>
                       <span className="badge-status bg-gray-100 text-gray-600 text-[10px] capitalize">
-                        {entry.reference_type?.replace('_', ' ') || 'manual'}
+                        {entry.reference_type?.replace(/_/g, ' ') || 'manual'}
                       </span>
                     </div>
                     <span className="text-xs text-muted-foreground">{formatDate(entry.entry_date)}</span>

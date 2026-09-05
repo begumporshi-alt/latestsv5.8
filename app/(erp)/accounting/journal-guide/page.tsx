@@ -603,7 +603,7 @@ export default function JournalGuidePage() {
       {/* Footer Note */}
       <div className="bg-muted/30 rounded-xl p-4 text-center">
         <p className="text-xs text-muted-foreground">
-          All journal entries are posted automatically by database triggers. You can view posted entries in the <span className="font-semibold text-foreground">Journal Entries</span> page under Accounting.
+          Most journal entries are posted automatically by database triggers when you invoice, receive payments, or receive goods. Entries for rent, salaries, utilities and other manual items are posted from the <span className="font-semibold text-foreground">Journal Entries</span> page under Accounting.
         </p>
       </div>
     </div>

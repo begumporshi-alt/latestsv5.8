@@ -849,7 +849,7 @@ function ViewReturnModal({ returnData, onClose }: {
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs text-muted-foreground">Journal Entry</p>
                 <Link
-                  href={`/accounting/journal`}
+                  href={`/accounting/journal?highlight=${journalEntry.id}`}
                   className="text-xs text-blue-600 hover:underline flex items-center gap-1"
                 >
                   View in Journal <ExternalLink className="w-3 h-3" />

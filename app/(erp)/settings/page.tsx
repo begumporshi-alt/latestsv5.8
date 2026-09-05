@@ -202,6 +202,12 @@ export default function SettingsPage() {
     for (const table of tables) {
       await supabase.from(table as any).delete().neq('id', '00000000-0000-0000-0000-000000000000');
     }
+    if (target.key === 'journal') {
+      // Deleting every JE would otherwise leave accounts.balance at its old
+      // value — recompute from the (now empty) ledger so the chart of
+      // accounts zeroes out too.
+      await supabase.rpc('recompute_account_balances', { p_username: 'settings-mass-delete' });
+    }
     await loadDeleteCounts();
     toast({ title: 'Deleted', description: `All ${target.label} have been deleted` });
   }
@@ -819,7 +825,7 @@ export default function SettingsPage() {
                       {
                         key: 'journal',
                         label: 'All Journal Entries',
-                        description: 'Deletes all journal entries and journal lines. Account balances will NOT be recalculated automatically.',
+                        description: 'Deletes all journal entries and journal lines, then recomputes account balances from the emptied ledger.',
                         tables: ['journal_entries'],
                         icon: BookOpen,
                         color: 'text-purple-600',

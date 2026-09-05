@@ -757,7 +757,7 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
                                 {Number(line.credit) > 0 ? <span className="text-red-600">{formatCurrency(Number(line.credit))}</span> : <span className="text-muted-foreground">—</span>}
                               </td>
                               <td className="px-4 py-3 text-center">
-                                <Link href="/accounting/journal" className="text-muted-foreground hover:text-blue-600 transition" title="View in journal">
+                                <Link href={`/accounting/journal?highlight=${je.id}`} className="text-muted-foreground hover:text-blue-600 transition" title="View in journal">
                                   <ExternalLink className="w-3.5 h-3.5 mx-auto" />
                                 </Link>
                               </td>
