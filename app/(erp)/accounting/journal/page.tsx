@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
@@ -47,6 +47,7 @@ const refIcons: Record<string, React.ElementType> = {
   opening_balance: Building2,
   receivable: User,
   invoice_edit: RotateCcw,
+  invoice_cancel: Ban,
   cutover_adjustment: Scale,
 };
 
@@ -62,6 +63,7 @@ const refLabels: Record<string, string> = {
   opening_balance: 'Opening Balance',
   receivable: 'Receivable',
   invoice_edit: 'Invoice Edit Reversal',
+  invoice_cancel: 'Invoice Cancellation',
   cutover_adjustment: 'Cutover Adjustment',
 };
 
@@ -77,7 +79,22 @@ const refColors: Record<string, string> = {
   opening_balance: 'bg-purple-50 text-purple-600',
   receivable: 'bg-indigo-50 text-indigo-600',
   invoice_edit: 'bg-rose-50 text-rose-600',
+  invoice_cancel: 'bg-rose-50 text-rose-600',
   cutover_adjustment: 'bg-cyan-50 text-cyan-600',
+};
+
+// Where a grouped entry's reference_id points, to resolve the source document
+// number for group headers (same mapping the Edit modal uses for linked docs)
+const DOC_SOURCES: Record<string, { table: string; numberField: string; label: string }> = {
+  invoice: { table: 'invoices', numberField: 'invoice_number', label: 'Invoice' },
+  invoice_edit: { table: 'invoices', numberField: 'invoice_number', label: 'Invoice' },
+  invoice_cancel: { table: 'invoices', numberField: 'invoice_number', label: 'Invoice' },
+  payment: { table: 'payments', numberField: 'payment_number', label: 'Payment' },
+  grn: { table: 'goods_receipt_notes', numberField: 'grn_number', label: 'GRN' },
+  purchase_receipt: { table: 'purchase_orders', numberField: 'po_number', label: 'PO' },
+  purchase_cancellation: { table: 'purchase_orders', numberField: 'po_number', label: 'PO' },
+  purchase_return: { table: 'purchase_returns', numberField: 'return_number', label: 'Purchase Return' },
+  sales_return: { table: 'sales_returns', numberField: 'return_number', label: 'Sales Return' },
 };
 
 // Plain-English templates for non-accountants
@@ -244,7 +261,10 @@ export default function JournalPage() {
         customer:customers(name), supplier:suppliers(name)
       `)
       .order('entry_date', { ascending: false })
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      // id tiebreaker: same-transaction entries share created_at to the microsecond,
+      // so without it the row order (and the 500-row window) is non-deterministic
+      .order('id', { ascending: false });
     if (from) query = query.gte('entry_date', from);
     if (to) query = query.lte('entry_date', to);
     // Supplier filter must run server-side: the newest-500 window would
@@ -299,6 +319,49 @@ export default function JournalPage() {
   });
 
   const pagedEntries = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+  // Group consecutive entries that share a reference_id — one invoice/GRN posts
+  // several journal entries in the same transaction (AR + COGS, reversals + new
+  // entries on edits). Manual entries and rows without a reference stay standalone.
+  const entryGroups = useMemo(() => {
+    const groups: { refId: string; refType: string; rows: JournalEntry[] }[] = [];
+    for (const e of pagedEntries) {
+      const groupable = !!e.reference_id && e.reference_type !== 'manual';
+      const last = groups[groups.length - 1];
+      if (groupable && last && last.refId === e.reference_id) {
+        last.rows.push(e);
+      } else {
+        groups.push({ refId: e.reference_id || '', refType: e.reference_type || '', rows: [e] });
+      }
+    }
+    return groups;
+  }, [pagedEntries]);
+
+  // Resolve source document numbers (invoice #, GRN #, ...) for multi-row groups
+  // so group headers can name the document. One small query per source table.
+  const [docNumbers, setDocNumbers] = useState<Record<string, string>>({});
+  const groupSignature = entryGroups.filter(g => g.rows.length > 1).map(g => g.refId).join(',');
+  useEffect(() => {
+    if (!groupSignature) { setDocNumbers({}); return; }
+    let cancelled = false;
+    async function resolve() {
+      const byTable: Record<string, { ids: Set<string>; numberField: string }> = {};
+      for (const g of entryGroups) {
+        if (g.rows.length < 2 || !g.refId) continue;
+        const src = DOC_SOURCES[g.refType];
+        if (!src) continue;
+        if (!byTable[src.table]) byTable[src.table] = { ids: new Set(), numberField: src.numberField };
+        byTable[src.table].ids.add(g.refId);
+      }
+      const results = await Promise.all(Object.entries(byTable).map(async ([table, { ids, numberField }]) => {
+        const { data } = await supabase.from(table).select(`id, ${numberField}`).in('id', [...ids]);
+        return (data || []).map((d: any) => [d.id, d[numberField]] as [string, string]);
+      }));
+      if (!cancelled) setDocNumbers(Object.fromEntries(results.flat()));
+    }
+    resolve();
+    return () => { cancelled = true; };
+  }, [groupSignature]);
 
   const autoCount = entries.filter(e => e.reference_type !== 'manual').length;
   const manualCount = entries.filter(e => e.reference_type === 'manual').length;
@@ -454,7 +517,8 @@ export default function JournalPage() {
                   </p>
                 </td>
               </tr>
-            ) : (                pagedEntries.map((entry) => (
+            ) : (entryGroups.map((group) => {
+              const renderRow = (entry: JournalEntry) => (
                 <JournalEntryRow
                   key={entry.id}
                   entry={entry}
@@ -464,8 +528,45 @@ export default function JournalPage() {
                   onEdit={() => setEditingEntry(entry)}
                   onDelete={() => setShowDeleteConfirm(entry)}
                 />
-              ))
-            )}
+              );
+              if (group.rows.length < 2) return renderRow(group.rows[0]);
+
+              const first = group.rows[0];
+              const HeaderIcon = refIcons[group.refType] || FileText;
+              const docNum = group.refId ? docNumbers[group.refId] : undefined;
+              const docLabel = DOC_SOURCES[group.refType]?.label || refLabels[group.refType] || 'Document';
+              const partyName = (e: JournalEntry) => {
+                const c: any = Array.isArray(e.customer) ? e.customer[0] : e.customer;
+                const s: any = Array.isArray(e.supplier) ? e.supplier[0] : e.supplier;
+                return c?.name || s?.name;
+              };
+              const party = partyName(first);
+              const typeSet = [...new Set(group.rows.map(r => r.reference_type || 'manual'))];
+              return [
+                <tr key={`grp-${first.id}`} className="bg-muted/40">
+                  <td colSpan={8} className="px-4 py-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <HeaderIcon className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                      <span className="text-sm font-semibold font-mono text-foreground">
+                        {docLabel}{docNum ? ` ${docNum}` : ''}
+                      </span>
+                      {party && <span className="text-xs text-muted-foreground">· {party}</span>}
+                      {typeSet.map(t => (
+                        <span key={t} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${refColors[t] || 'bg-gray-50 text-gray-600'}`}>
+                          {refLabels[t] || t}
+                        </span>
+                      ))}
+                      <span className="text-xs text-muted-foreground">{group.rows.length} entries</span>
+                      <div className="ml-auto flex items-center">
+                        <span className="text-xs text-muted-foreground">{formatDate(first.entry_date)}</span>
+                      </div>
+                    </div>
+                  </td>
+                </tr>,
+                ...group.rows.map(renderRow),
+              ];
+            }))
+            }
           </tbody>
         </table>
         <AppPagination
