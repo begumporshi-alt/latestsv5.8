@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatRelativeTime } from '@/lib/format';
-import { ArrowUpDown, TrendingUp, TrendingDown, Package, Search, X, Filter, ChevronLeft, ChevronRight, Calendar, Download } from 'lucide-react';
+import { ArrowUpDown, TrendingUp, TrendingDown, Package, Search, X, Filter, ChevronLeft, ChevronRight, Calendar, Download, FileText } from 'lucide-react';
 import Link from 'next/link';
 
 const typeConfig: Record<string, { label: string; color: string; bg: string; sign: string }> = {
@@ -107,7 +107,8 @@ export default function StockMovementsPage() {
 
     const from = (currentPage - 1) * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
-    dataQuery = dataQuery.order('created_at', { ascending: false }).range(from, to);
+    // id tiebreaker keeps pagination stable: many movements share the same created_at
+    dataQuery = dataQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).range(from, to);
 
     const [countRes, dataRes] = await Promise.all([countQuery, dataQuery]);
 
@@ -182,6 +183,65 @@ export default function StockMovementsPage() {
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
+  // Group consecutive movements that share a non-empty reference (one invoice/GRN
+  // produces one row per product, all written in the same transaction). Rows with
+  // an empty reference (e.g. adjustments) always stay standalone.
+  const movementGroups = useMemo(() => {
+    const groups: { ref: string; rows: any[] }[] = [];
+    for (const m of movements) {
+      const ref = (m.reference_number || '').trim();
+      const last = groups[groups.length - 1];
+      if (ref && last && last.ref === ref) {
+        last.rows.push(m);
+      } else {
+        groups.push({ ref, rows: [m] });
+      }
+    }
+    return groups;
+  }, [movements]);
+
+  const renderMovementRow = (m: any, grouped: boolean) => {
+    const cfg = typeConfig[m.movement_type] || typeConfig.adjustment;
+    const qty = Number(m.quantity);
+    const showTooltip = TOOLTIP_TYPES.has(m.movement_type) && m.notes;
+    return (
+      <tr key={m.id} className="hover:bg-muted/30 transition-colors">
+        <td className={`py-3 text-sm font-medium text-foreground ${grouped ? 'pl-9 pr-4' : 'px-4'}`}>
+          {m.product_id ? (
+            <Link href={`/inventory/${m.product_id}`} className="text-blue-600 hover:text-blue-800 hover:underline">
+              {m.product?.name || '—'}
+            </Link>
+          ) : (
+            <span>{m.product?.name || '—'}</span>
+          )}
+          {productStocks[m.product_id] && productStocks[m.product_id].length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {productStocks[m.product_id].map((s, si) => (
+                <span key={si} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${s.qty > 0 ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`} title={`${s.warehouse_name}: ${s.qty} on hand`}>
+                  {s.warehouse_name}: {s.qty}
+                </span>
+              ))}
+            </div>
+          )}
+        </td>
+        <td className="px-4 py-3 text-xs font-mono text-muted-foreground">{m.product?.sku || '—'}</td>
+        <td className="px-4 py-3 text-sm text-foreground">{m.warehouse?.name || '—'}</td>
+        <td className="px-4 py-3">
+          <span
+            className={`badge-status ${cfg.bg} ${cfg.color} ${showTooltip ? 'cursor-help border border-dashed border-current/30' : ''}`}
+            title={showTooltip ? `${cfg.label}: ${m.notes}` : undefined}
+          >
+            {cfg.label}
+          </span>
+        </td>
+        <td className="px-4 py-3 text-sm font-bold"><span className={qty > 0 ? 'text-green-600' : 'text-red-600'}>{qty > 0 ? '+' : qty < 0 ? '-' : '±'}{Math.abs(qty)}</span></td>
+        {/* reference and time live on the group header for grouped rows */}
+        <td className="px-4 py-3 text-xs text-muted-foreground">{grouped ? '' : (m.reference_number || '—')}</td>
+        <td className="px-4 py-3 text-xs text-muted-foreground">{grouped ? '' : formatRelativeTime(m.created_at)}</td>
+      </tr>
+    );
+  };
+
   const activeFilterCount = useMemo(() => {
     let count = 0;
     if (filters.search) count++;
@@ -221,7 +281,7 @@ export default function StockMovementsPage() {
         }
       }
     }
-    q = q.order('created_at', { ascending: false }).limit(10000);
+    q = q.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(10000);
     const { data } = await q;
     const rows = (data || []).map((m: any) => {
       const cfg = typeConfig[m.movement_type] || typeConfig.adjustment;
@@ -440,45 +500,33 @@ export default function StockMovementsPage() {
               <tr><td colSpan={7} className="px-4 py-12 text-center text-muted-foreground text-sm">
                 {activeFilterCount > 0 ? 'No stock movements match your filters' : 'No stock movements recorded yet'}
               </td></tr>
-            ) : movements.map((m: any) => {
-              const cfg = typeConfig[m.movement_type] || typeConfig.adjustment;
-              const qty = Number(m.quantity);
-              const showTooltip = TOOLTIP_TYPES.has(m.movement_type) && m.notes;
-              return (
-                <tr key={m.id} className="hover:bg-muted/30 transition-colors">
-                  <td className="px-4 py-3 text-sm font-medium text-foreground">
-                    {m.product_id ? (
-                      <Link href={`/inventory/${m.product_id}`} className="text-blue-600 hover:text-blue-800 hover:underline">
-                        {m.product?.name || '—'}
-                      </Link>
-                    ) : (
-                      <span>{m.product?.name || '—'}</span>
-                    )}
-                    {productStocks[m.product_id] && productStocks[m.product_id].length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {productStocks[m.product_id].map((s, si) => (
-                          <span key={si} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${s.qty > 0 ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`} title={`${s.warehouse_name}: ${s.qty} on hand`}>
-                        {s.warehouse_name}: {s.qty}
-                      </span>
-                    ))}
-                  </div>
-                )}
+            ) : movementGroups.map((group) => {
+              if (group.rows.length < 2) return renderMovementRow(group.rows[0], false);
+
+              const cfgs = [...new Set(group.rows.map((m: any) => m.movement_type))].map((t) => typeConfig[t] || typeConfig.adjustment);
+              const netQty = group.rows.reduce((s: number, m: any) => s + Number(m.quantity), 0);
+              const first = group.rows[0];
+              return [
+                <tr key={`grp-${first.id}`} className="bg-muted/40">
+                  <td colSpan={7} className="px-4 py-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <FileText className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                      <span className="text-sm font-semibold font-mono text-foreground">{group.ref}</span>
+                      {cfgs.map((c, ci) => (
+                        <span key={ci} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${c.bg} ${c.color}`}>{c.label}</span>
+                      ))}
+                      <span className="text-xs text-muted-foreground">{group.rows.length} movements</span>
+                      <div className="ml-auto flex items-center gap-3">
+                        <span className={`text-sm font-bold ${netQty > 0 ? 'text-green-600' : netQty < 0 ? 'text-red-600' : 'text-muted-foreground'}`}>
+                          Net {netQty > 0 ? '+' : netQty < 0 ? '-' : ''}{Math.abs(netQty)}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{formatRelativeTime(first.created_at)}</span>
+                      </div>
+                    </div>
                   </td>
-                  <td className="px-4 py-3 text-xs font-mono text-muted-foreground">{m.product?.sku || '—'}</td>
-                  <td className="px-4 py-3 text-sm text-foreground">{m.warehouse?.name || '—'}</td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`badge-status ${cfg.bg} ${cfg.color} ${showTooltip ? 'cursor-help border border-dashed border-current/30' : ''}`}
-                      title={showTooltip ? `${cfg.label}: ${m.notes}` : undefined}
-                    >
-                      {cfg.label}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm font-bold"><span className={qty > 0 ? 'text-green-600' : 'text-red-600'}>{qty > 0 ? '+' : qty < 0 ? '-' : '±'}{Math.abs(qty)}</span></td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{m.reference_number || '—'}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{formatRelativeTime(m.created_at)}</td>
-                </tr>
-              );
+                </tr>,
+                ...group.rows.map((m: any) => renderMovementRow(m, true)),
+              ];
             })}
           </tbody>
         </table>
