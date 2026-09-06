@@ -290,12 +290,11 @@ export default function AccountingPage() {
       const { start, end } = dateRange;
       const COGS_RETURN_CODES = new Set(['4050', '4100', '4200', '5000']);
 
-      const assets = accounts.filter(a => a.account_type === 'asset');
-      const liabilities = accounts.filter(a => a.account_type === 'liability');
       const revenue = accounts.filter(a => a.account_type === 'revenue');
       const expenses = accounts.filter(a => a.account_type === 'expense');
 
-      // For assets/liabilities, period net = sum of (debit - credit) for assets, (credit - debit) for liabilities
+      // Revenue/expense figures: period nets from the ledger. No clamping —
+      // credit balances on expense accounts are contras that net the section.
       async function periodNet(accountId: string, normalSide: 'debit' | 'credit'): Promise<number> {
         const { data } = await supabase.rpc('period_net_debit', {
           p_account_id: accountId,
@@ -306,11 +305,16 @@ export default function AccountingPage() {
         return normalSide === 'debit' ? netDebit : -netDebit;
       }
 
+      // Assets/liabilities: true BALANCES as of the period end (not the
+      // period's movement) — one call to the balance-sheet RPC instead of
+      // per-account loops.
       let totalAssets = 0;
-      for (const a of assets) totalAssets += await periodNet(a.id, 'debit');
-
       let totalLiabilities = 0;
-      for (const a of liabilities) totalLiabilities += await periodNet(a.id, 'credit');
+      const { data: bs } = await supabase.rpc('get_balance_sheet', { p_as_of: end });
+      (bs || []).forEach((row: any) => {
+        if (row.section === 'summary' && row.code === 'TOTAL_ASSETS') totalAssets = Number(row.balance || 0);
+        if (row.section === 'summary' && row.code === 'TOTAL_LIABILITIES') totalLiabilities = Number(row.balance || 0);
+      });
 
       let netRevenue = 0;
       for (const a of revenue) netRevenue += await periodNet(a.id, 'credit');
@@ -321,11 +325,11 @@ export default function AccountingPage() {
       for (const a of expenses) {
         const netDebit = await periodNet(a.id, 'debit');
         if (a.code === '5000') {
-          cogs = Math.max(0, netDebit);
+          cogs = netDebit;
         } else if (COGS_RETURN_CODES.has(a.code)) {
-          salesReturns += Math.max(0, netDebit);
+          salesReturns += netDebit;
         } else {
-          operatingExpenses += Math.max(0, netDebit);
+          operatingExpenses += netDebit;
         }
       }
 

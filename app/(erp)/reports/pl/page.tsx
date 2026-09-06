@@ -21,7 +21,9 @@ interface PnLData {
 
 export default function PLPage() {
   const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState<'month' | 'quarter' | 'year'>('month');
+  const [period, setPeriod] = useState<'this_month' | 'last_month' | 'this_quarter' | 'last_quarter' | 'this_year' | 'last_year' | 'custom'>('this_month');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
   const [periodLabel, setPeriodLabel] = useState('');
 
   const [data, setData] = useState<PnLData>({
@@ -40,7 +42,7 @@ export default function PLPage() {
 
   const [companySettings, setCompanySettings] = useState({ name: 'SI Building Solutions.', address: '' });
 
-  useEffect(() => { loadData(); loadSettings(); }, [period]);
+  useEffect(() => { loadData(); loadSettings(); }, [period, customFrom, customTo]);
 
   async function loadSettings() {
     const { data } = await supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle();
@@ -51,23 +53,46 @@ export default function PLPage() {
     setLoading(true);
 
     const now = new Date();
+    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const monthName = (d: Date) => d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
     let startDate: string;
     let endDate: string;
     let label: string;
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const qs = Math.floor(m / 3) * 3;
 
-    if (period === 'month') {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
-      endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
-      label = `For the Month Ended ${new Date(now.getFullYear(), now.getMonth() + 1, 0).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
-    } else if (period === 'quarter') {
-      const qs = Math.floor(now.getMonth() / 3) * 3;
-      startDate = new Date(now.getFullYear(), qs, 1).toISOString().split('T')[0];
-      endDate = new Date(now.getFullYear(), qs + 3, 0).toISOString().split('T')[0];
-      label = `For the Quarter Ended ${new Date(now.getFullYear(), qs + 3, 0).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}`;
+    if (period === 'this_month') {
+      startDate = ymd(new Date(y, m, 1));
+      endDate = ymd(new Date(y, m + 1, 0));
+      label = `For the Month Ended ${monthName(new Date(y, m + 1, 0))}`;
+    } else if (period === 'last_month') {
+      startDate = ymd(new Date(y, m - 1, 1));
+      endDate = ymd(new Date(y, m, 0));
+      label = `For the Month Ended ${monthName(new Date(y, m, 0))}`;
+    } else if (period === 'this_quarter') {
+      startDate = ymd(new Date(y, qs, 1));
+      endDate = ymd(new Date(y, qs + 3, 0));
+      label = `For the Quarter Ended ${monthName(new Date(y, qs + 3, 0))}`;
+    } else if (period === 'last_quarter') {
+      const lqs = qs - 3;
+      startDate = ymd(new Date(y, lqs, 1));
+      endDate = ymd(new Date(y, lqs + 3, 0));
+      label = `For the Quarter Ended ${monthName(new Date(y, lqs + 3, 0))}`;
+    } else if (period === 'this_year') {
+      startDate = ymd(new Date(y, 0, 1));
+      endDate = ymd(new Date(y, 11, 31));
+      label = `For the Year Ended December 31, ${y}`;
+    } else if (period === 'last_year') {
+      startDate = ymd(new Date(y - 1, 0, 1));
+      endDate = ymd(new Date(y - 1, 11, 31));
+      label = `For the Year Ended December 31, ${y - 1}`;
     } else {
-      startDate = new Date(now.getFullYear(), 0, 1).toISOString().split('T')[0];
-      endDate = new Date(now.getFullYear(), 11, 31).toISOString().split('T')[0];
-      label = `For the Year Ended December 31, ${now.getFullYear()}`;
+      // custom — wait for both bounds
+      if (!customFrom || !customTo) { setLoading(false); return; }
+      startDate = customFrom;
+      endDate = customTo;
+      label = `From ${startDate} to ${endDate}`;
     }
 
     setPeriodLabel(label);
@@ -103,20 +128,22 @@ export default function PLPage() {
 
     const allAccounts = accountsRes.data || [];
 
+    // Net per account (no clamping): a credit balance on an expense account is a
+    // contra that REDUCES the section, not something to hide — clamping made a
+    // Tk 7.3M credit on Inventory Adjustment invisible instead of netting it.
     // Sales Returns & Allowances (contra-revenue, code 4050) — deduct from revenue
     const returnsAccount = allAccounts.find(a => a.code === '4050');
-    const salesReturns = returnsAccount ? Math.max(0, await periodNetDebit(returnsAccount.id)) : 0;
+    const salesReturns = returnsAccount ? await periodNetDebit(returnsAccount.id) : 0;
 
     // COGS (code 5000) — expense account, positive balance = cost incurred
     const cogsAccount = allAccounts.find(a => a.code === '5000');
-    const costOfGoodsSold = cogsAccount ? Math.max(0, await periodNetDebit(cogsAccount.id)) : 0;
+    const costOfGoodsSold = cogsAccount ? await periodNetDebit(cogsAccount.id) : 0;
 
     // Service revenue (revenue accounts other than 4000 and 4100 if desired)
     let serviceRevenue = 0;
     const serviceRevenueAccounts = allAccounts.filter(a => a.account_type === 'revenue' && a.code !== '4000');
     for (const acc of serviceRevenueAccounts) {
-      const net = await periodNetCredit(acc.id);
-      if (net > 0) serviceRevenue += net;
+      serviceRevenue += await periodNetCredit(acc.id);
     }
 
     const netSalesRevenue = salesRevenue - salesReturns;
@@ -132,11 +159,13 @@ export default function PLPage() {
     let totalOperatingExpenses = 0;
     for (const acc of expenseAccounts) {
       const netDebit = await periodNetDebit(acc.id);
-      if (netDebit > 0) {
+      // include credit-balance accounts as negative (contra) rows — they net the section
+      if (netDebit !== 0) {
         operatingExpenses.push({ name: acc.name, amount: netDebit });
         totalOperatingExpenses += netDebit;
       }
     }
+    operatingExpenses.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 
     const operatingProfit = grossProfit - totalOperatingExpenses;
     const netProfit = operatingProfit;
@@ -248,11 +277,22 @@ export default function PLPage() {
         </div>
         <div className="flex items-center gap-2">
           <Calendar className="w-4 h-4 text-muted-foreground" />
-          <select value={period} onChange={e => setPeriod(e.target.value as 'month' | 'quarter' | 'year')} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white">
-            <option value="month">This Month</option>
-            <option value="quarter">This Quarter</option>
-            <option value="year">This Year</option>
+          <select value={period} onChange={e => setPeriod(e.target.value as typeof period)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white">
+            <option value="this_month">This Month</option>
+            <option value="last_month">Last Month</option>
+            <option value="this_quarter">This Quarter</option>
+            <option value="last_quarter">Last Quarter</option>
+            <option value="this_year">This Year</option>
+            <option value="last_year">Last Year</option>
+            <option value="custom">Custom Range</option>
           </select>
+          {period === 'custom' && (
+            <div className="flex items-center gap-1">
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className="border border-border rounded-lg px-2 py-1.5 text-sm" />
+              <span className="text-xs text-muted-foreground">to</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} className="border border-border rounded-lg px-2 py-1.5 text-sm" />
+            </div>
+          )}
           <button onClick={loadData} className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition">
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
