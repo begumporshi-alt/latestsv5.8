@@ -76,6 +76,7 @@ const navItems: NavItem[] = [
       { title: 'Chart of Accounts', href: '/accounting/accounts' },
       { title: 'Journal Entries', href: '/accounting/journal' },
       { title: 'Trial Balance', href: '/accounting/trial-balance' },
+      { title: 'Balance Sheet', href: '/accounting/balance-sheet' },
       { title: 'Expenses', href: '/expenses' },
       { title: 'Payment Methods', href: '/accounting/payment-methods' },
       { title: 'JE Guide', href: '/accounting/journal-guide' },
