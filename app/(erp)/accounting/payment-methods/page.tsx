@@ -80,6 +80,18 @@ export default function PaymentMethodsPage() {
     loadMethods();
   }
 
+  const [usageCount, setUsageCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (deletingMethod) {
+      setUsageCount(null);
+      supabase.from('payments')
+        .select('id', { count: 'exact', head: true })
+        .eq('payment_method', deletingMethod.code)
+        .then(({ count }) => setUsageCount(count || 0));
+    }
+  }, [deletingMethod]);
+
   async function handleDelete() {
     if (!deletingMethod) return;
     const { error } = await supabase.from('payment_methods').delete().eq('id', deletingMethod.id);
@@ -228,9 +240,19 @@ export default function PaymentMethodsPage() {
               <Trash2 className="w-6 h-6 text-red-600" />
             </div>
             <h2 className="text-lg font-bold text-center mb-2">Delete Payment Method?</h2>
-            <p className="text-sm text-muted-foreground text-center mb-6">
+            <p className="text-sm text-muted-foreground text-center mb-4">
               Are you sure you want to delete <strong className="text-foreground">{deletingMethod.name}</strong>?
             </p>
+            {usageCount !== null && usageCount > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800">
+                <strong>{usageCount} payment{usageCount === 1 ? '' : 's'} used this method.</strong> Deleting it
+                doesn't change those records, but any future payment recorded with this method name will post to
+                Cash in Hand (1001) by fallback. Prefer deactivating instead.
+              </div>
+            )}
+            {usageCount === null && (
+              <p className="text-xs text-muted-foreground text-center mb-4">Checking usage…</p>
+            )}
             <div className="flex gap-3">
               <button onClick={() => setDeletingMethod(null)} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
               <button onClick={handleDelete} className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition">Delete</button>

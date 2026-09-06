@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, X, Pencil, Trash2, ExternalLink, Search, AlertTriangle, ToggleLeft, ToggleRight, Info } from 'lucide-react';
+import { Plus, X, Pencil, Trash2, ExternalLink, Search, AlertTriangle, ToggleLeft, ToggleRight, Info, Lock } from 'lucide-react';
 import type { Account } from '@/lib/types';
 import Link from 'next/link';
 
@@ -17,6 +17,11 @@ const typeColors: Record<string, string> = {
 };
 
 const accountTypes = ['asset', 'liability', 'equity', 'revenue', 'expense'] as const;
+
+// Accounts the posting triggers hardcode — editing their type/code or
+// deactivating them breaks every automatic entry. Frontend guard; the audit
+// trail records any manual SQL changes.
+const SYSTEM_ACCOUNT_CODES = new Set(['1001', '1100', '1200', '1300', '2000', '2100', '2110', '2200', '2300', '3900', '4000', '4001', '4050', '4200', '5000', '5600', '5900']);
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -212,18 +217,27 @@ export default function AccountsPage() {
                       <button
                         onClick={() => setEditingAccount(a)}
                         className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition"
-                        title="Edit account"
+                        title={SYSTEM_ACCOUNT_CODES.has(a.code) ? 'Edit account (system account — keep the type unchanged)' : 'Edit account'}
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                       {a.is_active ? (
-                        <button
-                          onClick={() => setDeactivatingAccount(a)}
-                          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition"
-                          title="Deactivate account"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        SYSTEM_ACCOUNT_CODES.has(a.code) ? (
+                          <span
+                            className="w-7 h-7 flex items-center justify-center text-gray-300"
+                            title="System account — the posting triggers depend on it and cannot be deactivated"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setDeactivatingAccount(a)}
+                            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition"
+                            title="Deactivate account"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )
                       ) : (
                         <button
                           onClick={() => handleReactivate(a)}

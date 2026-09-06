@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetch-all';
+import AppPagination from '@/components/ui/AppPagination';
 import { formatCurrency } from '@/lib/format';
 import { History, Download, Search, Calendar, User, FileText, ArrowRight, Filter } from 'lucide-react';
 
@@ -28,27 +30,35 @@ export default function EditHistoryReportPage() {
   const [changeTypeFilter, setChangeTypeFilter] = useState('all');
   const [editorFilter, setEditorFilter] = useState('all');
   const [editors, setEditors] = useState<string[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   useEffect(() => { loadHistory(); }, []);
 
   async function loadHistory() {
     setLoading(true);
-    let query = supabase
-      .from('invoice_edit_history')
-      .select('*, invoice:invoices(reference)')
-      .order('edited_at', { ascending: false });
+    // fetchAll pages past the 1000-row cap — the old .limit(500) silently
+    // dropped older edits and undercounted every stat card. The .order('id')
+    // tiebreaker keeps pages stable when edits share a timestamp.
+    const build = () => {
+      let query = supabase
+        .from('invoice_edit_history')
+        .select('*, invoice:invoices(reference)')
+        .order('edited_at', { ascending: false })
+        .order('id', { ascending: false });
+      if (dateFrom) query = query.gte('edited_at', dateFrom);
+      if (dateTo) query = query.lte('edited_at', dateTo + 'T23:59:59');
+      return query;
+    };
 
-    if (dateFrom) query = query.gte('edited_at', dateFrom);
-    if (dateTo) query = query.lte('edited_at', dateTo + 'T23:59:59');
-
-    const { data, error } = await query.limit(500);
-    if (error) {
+    try {
+      const data = await fetchAll<EditHistoryEntry>(build);
+      setHistory(data);
+      const uniqueEditors = [...new Set(data.map((e: any) => e.edited_by_name).filter(Boolean))] as string[];
+      setEditors(uniqueEditors);
+    } catch (error) {
       console.error('Error loading edit history:', error);
       setHistory([]);
-    } else {
-      setHistory((data || []) as EditHistoryEntry[]);
-      const uniqueEditors = [...new Set((data || []).map((e: any) => e.edited_by_name).filter(Boolean))] as string[];
-      setEditors(uniqueEditors);
     }
     setLoading(false);
   }
@@ -66,8 +76,8 @@ export default function EditHistoryReportPage() {
       e.change_type,
       e.field_changed || '—',
       e.reason || '—',
-      e.snapshot_before ? JSON.stringify(e.snapshot_before).slice(0, 200) : '—',
-      e.snapshot_after ? JSON.stringify(e.snapshot_after).slice(0, 200) : '—',
+      e.snapshot_before ? JSON.stringify(e.snapshot_before) : '—',
+      e.snapshot_after ? JSON.stringify(e.snapshot_after) : '—',
     ]);
     const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -85,6 +95,9 @@ export default function EditHistoryReportPage() {
     if (editorFilter !== 'all' && e.edited_by_name !== editorFilter) return false;
     return true;
   });
+  const totalPages = Math.max(1, Math.ceil(filteredHistory.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedHistory = filteredHistory.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   function formatValue(val: unknown): string {
     if (val === null || val === undefined) return '—';
@@ -147,7 +160,10 @@ export default function EditHistoryReportPage() {
             <select value={changeTypeFilter} onChange={e => setChangeTypeFilter(e.target.value)} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
               <option value="all">All Changes</option>
               <option value="header_edit">Header Edit</option>
-              <option value="full_edit">Item Changes</option>
+              <option value="item_added">Item Added</option>
+              <option value="item_removed">Item Removed</option>
+              <option value="item_modified">Item Modified</option>
+              <option value="full_edit">Full Edit / Item Changes</option>
             </select>
           </div>
           <div>
@@ -196,6 +212,7 @@ export default function EditHistoryReportPage() {
             <p className="text-sm text-muted-foreground">No edit history found for the selected filters</p>
           </div>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="bg-muted/40">
@@ -209,7 +226,7 @@ export default function EditHistoryReportPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {filteredHistory.map(entry => {
+                {pagedHistory.map(entry => {
                   const changes = diffFields(entry.snapshot_before || undefined, entry.snapshot_after || undefined);
                   return (
                     <tr key={entry.id} className="hover:bg-muted/20 transition">
@@ -267,6 +284,16 @@ export default function EditHistoryReportPage() {
               </tbody>
             </table>
           </div>
+          {!loading && filteredHistory.length > 0 && (
+            <AppPagination
+              page={currentPage}
+              pageSize={pageSize}
+              total={filteredHistory.length}
+              onPageChange={setPage}
+              onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+            />
+          )}
+          </>
         )}
       </div>
     </div>

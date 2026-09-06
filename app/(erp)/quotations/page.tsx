@@ -6,6 +6,7 @@ import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock } from 'lucide-react';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
+import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
@@ -510,6 +511,14 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   onSaved: () => void;
 }) {
   const [customers, setCustomers] = useState<Customer[]>(initialCustomers);
+  const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
+  const [applyVat, setApplyVat] = useState(false);
+  useEffect(() => {
+    loadVatSettings(supabase).then(s => {
+      setVatSettings(s);
+      setApplyVat(s.enabled && s.default_on);
+    });
+  }, []);
   const [form, setForm] = useState({
     customer_id: '',
     issue_date: new Date().toISOString().split('T')[0],
@@ -675,6 +684,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   }, 0);
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
+  const quoteVat = computeVat(totalAmount, vatSettings, applyVat);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -699,8 +709,8 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
         cart_discount_percent: form.cart_discount_percent || 0,
         extra_discount: form.extra_discount || 0,
         discount_amount: cartDiscountAmount,
-        tax_amount: 0,
-        total_amount: totalAmount,
+        tax_amount: quoteVat.taxAmount,
+        total_amount: quoteVat.total,
         status: 'draft',
         notes: form.notes || null,
         reference: form.reference || null,
@@ -1033,8 +1043,24 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                   </div>
                 )}
                 <div className="flex justify-between items-center pt-1 border-t border-border">
-                  <p className="text-xs font-medium text-muted-foreground">Total</p>
-                  <p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p>
+                  {vatSettings.enabled && (
+                    <div className="flex justify-between items-center pt-1 border-t border-border">
+                      <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={applyVat}
+                          onChange={e => setApplyVat(e.target.checked)}
+                          className="w-3.5 h-3.5 accent-blue-600"
+                        />
+                        VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
+                      </label>
+                      {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(quoteVat.taxAmount)}</span>}
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center pt-1 border-t border-border">
+                    <p className="text-xs font-medium text-muted-foreground">Total</p>
+                    <p className="text-lg font-bold text-foreground">{formatCurrency(quoteVat.total)}</p>
+                  </div>
                 </div>
               </div>
             </div>

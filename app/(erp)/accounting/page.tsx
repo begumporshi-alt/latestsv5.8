@@ -126,19 +126,24 @@ export default function AccountingPage() {
 
     const entries = (entriesData as JournalEntry[]) || [];
 
-    // For balance-before/after display, fetch ordered entries in period
+    // For balance-before/after display, fetch ordered entries in period.
+    // Wide ranges (All Time = every entry + every line in 30+ batches) make
+    // the dashboard take seconds to load for a nicety on 10 recent rows —
+    // cap it: beyond 300 entries the before/after columns are skipped.
     const { data: orderedEntries } = await supabase.from('journal_entries')
       .select('id')
       .eq('is_posted', true)
       .gte('entry_date', start)
       .lte('entry_date', end)
       .order('entry_date', { ascending: true })
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .limit(301);
 
     const orderedEntryIds = (orderedEntries || []).map(e => e.id);
 
     let allLines: any[] = [];
-    if (orderedEntryIds.length > 0) {
+    const computeBeforeAfter = orderedEntryIds.length > 0 && orderedEntryIds.length <= 300;
+    if (computeBeforeAfter) {
       const batchSize = 100;
       for (let i = 0; i < orderedEntryIds.length; i += batchSize) {
         const batchIds = orderedEntryIds.slice(i, i + batchSize);

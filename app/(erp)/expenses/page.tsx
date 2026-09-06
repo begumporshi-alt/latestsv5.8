@@ -101,8 +101,15 @@ export default function ExpensesPage() {
   const expenseAccounts = accounts.filter(a => a.account_type === 'expense');
   const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank || a.code === '1000' || a.code === '1010');
 
+  // Only entries that actually debit an expense account are expenses — the
+  // 'manual' bucket also holds journal-page custom entries (owner withdrawal,
+  // bank deposit…) which must not count toward Total Expenses.
+  const expenseOnly = expenses.filter(e =>
+    e.lines?.some(l => Number(l.debit) > 0 && l.account?.account_type === 'expense')
+  );
+
   // Apply type filter and search
-  let filtered = expenses;
+  let filtered = expenseOnly;
   if (filterType) {
     filtered = filtered.filter(e => e.lines?.some(l => l.account_id === filterType && Number(l.debit) > 0));
   }

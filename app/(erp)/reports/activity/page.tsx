@@ -91,6 +91,7 @@ export default function ActivityPage() {
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [search, setSearch] = useState('');
+  const [searchDebounced, setSearchDebounced] = useState('');
   const [period, setPeriod] = useState<PeriodKey>('today');
   const [actionFilter, setActionFilter] = useState('all');
 
@@ -102,12 +103,24 @@ export default function ActivityPage() {
   }, [logs]);
 
   useEffect(() => {
+    const h = setTimeout(() => setSearchDebounced(search), 350);
+    return () => clearTimeout(h);
+  }, [search]);
+
+  useEffect(() => {
     loadActivities();
-  }, [period, actionFilter, page]);
+  }, [period, actionFilter, page, searchDebounced]);
 
   useEffect(() => {
     if (page !== 0) setPage(0);
-  }, [period, actionFilter]);
+  }, [period, actionFilter, searchDebounced]);
+
+  // Local midnight expressed in UTC — comparing a local date string against
+  // timestamptz columns treats it as UTC and shifts the day boundary by the
+  // timezone offset (UTC+6 here).
+  function localMidnightUtc(d: Date) {
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString();
+  }
 
   async function loadActivities() {
     setLoading(true);
@@ -116,14 +129,11 @@ export default function ActivityPage() {
 
     // Period filter
     if (period === 'today') {
-      const todayStr = new Date().toISOString().split('T')[0];
-      query = query.gte('created_at', `${todayStr}T00:00:00`);
+      query = query.gte('created_at', localMidnightUtc(new Date()));
     } else if (period === 'yesterday') {
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
-      const yStr = yesterday.toISOString().split('T')[0];
-      const todayStr = new Date().toISOString().split('T')[0];
-      query = query.gte('created_at', `${yStr}T00:00:00`).lt('created_at', `${todayStr}T00:00:00`);
+      query = query.gte('created_at', localMidnightUtc(yesterday)).lt('created_at', localMidnightUtc(new Date()));
     } else if (period === 'week' || period === 'month') {
       const days = periodConfig[period].days!;
       const start = new Date();
@@ -134,6 +144,12 @@ export default function ActivityPage() {
     // Action type filter
     if (actionFilter !== 'all') {
       query = query.eq('action', actionFilter);
+    }
+
+    // Server-side search — searching only the loaded page silently hid older
+    // matches (a user searching for an old event wrongly concluded it didn't exist).
+    if (search.trim()) {
+      query = query.or(`entity_label.ilike.%${search.trim()}%,entity_type.ilike.%${search.trim()}%`);
     }
 
     query = query.order('created_at', { ascending: false }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
@@ -150,29 +166,18 @@ export default function ActivityPage() {
     setLoading(false);
   }
 
-  const filteredLogs = useMemo(() => {
-    if (!search) return logs;
-    const s = search.toLowerCase();
-    return logs.filter(l =>
-      l.action.toLowerCase().includes(s) ||
-      (l.entity_label || '').toLowerCase().includes(s) ||
-      l.entity_type.toLowerCase().includes(s)
-    );
-  }, [logs, search]);
+  const filteredLogs = logs;
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
 
-  const stats = useMemo(() => {
-    const todayLogs = logs.filter(l => {
-      const d = new Date(l.created_at);
-      const today = new Date();
-      return d.toDateString() === today.toDateString();
-    });
-    return {
-      total: totalCount,
-      today: todayLogs.length,
-    };
-  }, [logs, totalCount]);
+  // Today's count comes from the server (the loaded page holds at most 20 rows)
+  const [todayCount, setTodayCount] = useState(0);
+  useEffect(() => {
+    supabase.from('activity_logs').select('id', { count: 'exact', head: true })
+      .gte('created_at', localMidnightUtc(new Date()))
+      .then(({ count }) => setTodayCount(count || 0));
+  }, [logs]);
+  const stats = { total: totalCount, today: todayCount };
 
   return (
     <div className="space-y-5 animate-fade-in">
