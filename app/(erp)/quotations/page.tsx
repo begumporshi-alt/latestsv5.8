@@ -1658,23 +1658,6 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
       });
     }
 
-    const { data: customer } = await supabase
-      .from('customers')
-      .select('outstanding_balance, total_purchases')
-      .eq('id', quotation.customer_id)
-      .single();
-
-    if (customer) {
-      await supabase
-        .from('customers')
-        .update({
-          outstanding_balance: (customer.outstanding_balance || 0) + balanceDue,
-          total_purchases: (customer.total_purchases || 0) + totalAmount,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', quotation.customer_id);
-    }
-
     await supabase.from('quotations').update({ status: 'converted' }).eq('id', quotation.id);
 
     toast({ title: 'Success', description: `Invoice ${invoiceNumber} created from quotation` });

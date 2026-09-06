@@ -286,26 +286,11 @@ export default function CollectPaymentModal({
       badDebtRemaining -= badDebtForThis;
     }
 
-    // Update customer outstanding balance for manual receivables
-    // (the DB trigger only recalculates for invoice payments, not receivable type)
-    await updateCustomerOutstanding(customerId, form.amount + form.bad_debt_amount, form.amount);
-
     const descParts = [`Manual payment of ${formatCurrency(form.amount)} recorded`];
     if (form.bad_debt_amount > 0) descParts.push(`bad debt write-off of ${formatCurrency(form.bad_debt_amount)}`);
     toast({ title: 'Success', description: descParts.join(', ') });
     onSaved();
     onClose();
-  }
-
-  async function updateCustomerOutstanding(custId: string, reduction: number, purchasesIncrease: number) {
-    const { data: customer } = await supabase.from('customers').select('outstanding_balance, total_purchases').eq('id', custId).single();
-    if (customer) {
-      await supabase.from('customers').update({
-        outstanding_balance: Math.max(0, (customer.outstanding_balance || 0) - reduction),
-        total_purchases: (customer.total_purchases || 0) + purchasesIncrease,
-        updated_at: new Date().toISOString(),
-      }).eq('id', custId);
-    }
   }
 
   const noOutstanding = totalOutstanding <= 0;

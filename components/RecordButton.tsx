@@ -177,14 +177,6 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
       ]);
       await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: amount });
       await supabase.rpc('increment_account_balance', { p_account_id: offsetAcc.id, p_delta: amount });
-      // Fetch fresh customer balance to avoid stale state
-      const { data: currentCust } = await supabase.from('customers').select('outstanding_balance, total_purchases').eq('id', selectedCustomer.id).maybeSingle();
-      if (currentCust) {
-        await supabase.from('customers').update({
-          outstanding_balance: (currentCust.outstanding_balance || 0) + amount,
-          total_purchases: (currentCust.total_purchases || 0) + amount,
-        }).eq('id', selectedCustomer.id);
-      }
       toast({ title: 'Success', description: `Receivable of ${formatCurrency(amount)} recorded` });
       onSaved?.(); onClose();
     } catch (err: any) { setError(err.message || 'Failed to record receivable'); }

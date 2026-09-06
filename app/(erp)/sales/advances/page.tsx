@@ -727,15 +727,6 @@ function ApplyAdvanceModal({ advance, onClose, onApplied }: {
         status: newStatus,
       }).eq('id', selectedInvoice);
 
-      // 5. Update customer outstanding balance
-      const { data: customer } = await supabase.from('customers').select('outstanding_balance').eq('id', advance.customer_id).maybeSingle();
-      if (customer) {
-        await supabase.from('customers').update({
-          outstanding_balance: Math.max(0, (customer.outstanding_balance || 0) - amount),
-          updated_at: new Date().toISOString(),
-        }).eq('id', advance.customer_id);
-      }
-
       toast({ title: 'Success', description: `Advance applied to invoice successfully` });
       onApplied();
     } catch (err: any) {

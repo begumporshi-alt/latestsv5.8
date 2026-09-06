@@ -1008,13 +1008,6 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
       await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: amount });
       await supabase.rpc('increment_account_balance', { p_account_id: offsetAcc.id, p_delta: amount });
 
-      if (customer) {
-        await supabase.from('customers').update({
-          outstanding_balance: (customer.outstanding_balance || 0) + amount,
-          total_purchases: (customer.total_purchases || 0) + amount,
-        }).eq('id', customer.id);
-      }
-
       toast({ title: 'Success', description: `Receivable of ${formatCurrency(amount)} recorded` });
       setForm({ customer_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0], offset_account_id: '' });
       onSaved();
@@ -1309,16 +1302,6 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
           ]);
         }
         await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: -badDebt });
-      }
-
-      if (receivable.party_id) {
-        const { data: customer } = await supabase.from('customers').select('outstanding_balance, total_purchases').eq('id', receivable.party_id).single();
-        if (customer) {
-          await supabase.from('customers').update({
-            outstanding_balance: Math.max(0, (customer.outstanding_balance || 0) - amount - badDebt),
-            total_purchases: (customer.total_purchases || 0) + amount,
-          }).eq('id', receivable.party_id);
-        }
       }
 
       const descParts = [`Payment of ${formatCurrency(amount)} recorded`];

@@ -62,6 +62,17 @@ export default function CRMPage() {
 
   useEffect(() => { loadData(); }, []);
 
+  // Honor /crm?edit=<id> deep links from the customer detail page
+  useEffect(() => {
+    if (customers.length === 0) return;
+    const editId = new URLSearchParams(window.location.search).get('edit');
+    if (editId) {
+      const target = customers.find(c => c.id === editId);
+      if (target) setEditingCustomer(target);
+      window.history.replaceState({}, '', '/crm');
+    }
+  }, [customers]);
+
   async function loadData() {
     setLoading(true);
     const [{ data: custData }, { data: invoiceData }, { data: returnsData }] = await Promise.all([
@@ -153,6 +164,7 @@ export default function CRMPage() {
       }
       if (filterType && c.type !== filterType) return false;
       if (filterCity && c.city !== filterCity) return false;
+      if (periodCutoff && c.created_at && new Date(c.created_at) < new Date(periodCutoff)) return false;
 
       // Outstanding type filter
       const outstandingVal = filterOutstandingType === 'invoice'
@@ -509,10 +521,8 @@ function CustomerModal({ customer, onClose, onSaved }: { customer?: Customer | n
       credit_days: Number(form.credit_days),
       is_active: form.is_active,
       country: (customer?.country || 'Bangladesh'),
-      loyalty_points: customer?.loyalty_points || 0,
-      discount_percent: customer?.discount_percent || 0,
-      total_purchases: customer?.total_purchases || 0,
-      outstanding_balance: customer?.outstanding_balance || 0,
+      // total_purchases / outstanding_balance are trigger-maintained — never
+      // send them from the client, a stale value would overwrite the recompute
     };
 
     const { error } = isEdit

@@ -9,6 +9,7 @@ import { toast } from '@/hooks/use-toast';
 import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw, Filter, Search, X, HandCoins } from 'lucide-react';
 import type { Customer, Invoice, Quotation, Delivery, Payment } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
+import { fetchAll } from '@/lib/fetch-all';
 
 interface SalesReturn {
   id: string;
@@ -106,22 +107,22 @@ export default function CustomerDetailPage() {
     setCustomer(custData);
 
     const [invRes, invTotalsRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes, returnsRes, creditRes, payRes, advancesRes] = await Promise.all([
-      supabase.from('invoices').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(20),
+      fetchAll(() => supabase.from('invoices').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).order('id')),
       supabase.from('invoices').select('total_amount').eq('customer_id', customerId).neq('status', 'cancelled'),
-      supabase.from('quotations').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(10),
-      supabase.from('deliveries').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).limit(10),
+      fetchAll(() => supabase.from('quotations').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).order('id')),
+      fetchAll(() => supabase.from('deliveries').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).order('id')),
       supabase.from('journal_entries').select('id, entry_number, entry_date, description, total_debit, created_at').eq('customer_id', customerId).eq('reference_type', 'receivable').eq('is_posted', true).order('entry_date', { ascending: false }),
       supabase.from('payments').select('reference_id, amount, bad_debt_amount').eq('reference_type', 'receivable'),
       supabase.from('sales_returns').select('*, invoice:invoices(invoice_number)').eq('customer_id', customerId).order('created_at', { ascending: false }),
       supabase.from('customer_store_credits').select('balance').eq('customer_id', customerId).eq('status', 'active'),
-      supabase.from('payments').select('*').eq('customer_id', customerId).order('payment_date', { ascending: false }).limit(50),
+      fetchAll(() => supabase.from('payments').select('*').eq('customer_id', customerId).order('payment_date', { ascending: false }).order('id')),
       supabase.from('customer_advances').select('balance').eq('customer_id', customerId).eq('status', 'active'),
     ]);
 
-    setInvoices(invRes.data || []);
-    setQuotations(quoteRes.data || []);
-    setDeliveries(delivRes.data || []);
-    setPayments((payRes.data || []) as Payment[]);
+    setInvoices(invRes);
+    setQuotations(quoteRes);
+    setDeliveries(delivRes);
+    setPayments(payRes as Payment[]);
 
     // Calculate manual receivables with payments
     const receivablePaymentsMap = new Map<string, number>();
@@ -143,7 +144,7 @@ export default function CustomerDetailPage() {
     setManualReceivables(receivablesWithPayments);
     setSalesReturns(returnsRes.data || []);
 
-    const invData = invRes.data || [];
+    const invData = invRes;
     const returnsData = returnsRes.data || [];
     const totalPaid = invData.reduce((s, i) => s + Number(i.amount_paid), 0);
     const totalOut = invData.reduce((s, i) => s + Number(i.balance_due ?? i.total_amount - i.amount_paid), 0);
@@ -159,7 +160,7 @@ export default function CustomerDetailPage() {
       totalPurchases: actualTotalPurchases,
       totalRefunds,
       netPurchases,
-      activeDeliveries: (delivRes.data || []).filter(d => d.status !== 'delivered' && d.status !== 'returned').length,
+      activeDeliveries: delivRes.filter(d => d.status !== 'delivered' && d.status !== 'returned').length,
       manualReceivables: receivablesWithPayments.length,
       manualReceivablesOutstanding,
       storeCreditBalance: (creditRes.data || []).reduce((s: number, c: any) => s + Number(c.balance), 0),

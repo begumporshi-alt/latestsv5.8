@@ -790,18 +790,6 @@ export default function POSPage() {
           payment_for: 'paid_invoice_pay',
         });
         if (payError) console.error('Payment record error:', payError.message);
-
-        const { data: custData } = await supabase
-          .from('customers')
-          .select('total_purchases')
-          .eq('id', customerId)
-          .single();
-        if (custData) {
-          await supabase
-            .from('customers')
-            .update({ total_purchases: (custData.total_purchases || 0) + total })
-            .eq('id', customerId);
-        }
       }
 
       setCart([]);
