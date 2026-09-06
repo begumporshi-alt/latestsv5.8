@@ -9,6 +9,8 @@ import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
+import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
+import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/credit-gate';
 import {
   allocateCartLines, availableForNewAdd, fetchAllocatableBatches, fetchInventorySettings,
   ledgerQtyAllWarehouses, ledgerQtyForPair, pairKey, fmtQty, resolveWarehouse,
@@ -111,6 +113,9 @@ export default function POSPage() {
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
   const shortfallConfirmedRef = useRef(false);
+  const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
+  const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
+  const creditConfirmedRef = useRef(false);
   const [insufficient, setInsufficient] = useState<{
     info: InsufficientStockInfo;
     product: ProductData;
@@ -242,6 +247,9 @@ export default function POSPage() {
       .select('balance')
       .eq('customer_id', selectedCustomer)
       .eq('status', 'active')
+      // credits past their expiry date are no longer redeemable — exclude them
+      // from the balance so the checkout never offers money that can't be used
+      .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
       .then(({ data }) => {
         const total = (data || []).reduce((s: number, c: any) => s + Number(c.balance), 0);
         setStoreCreditBalance(total);
@@ -250,7 +258,7 @@ export default function POSPage() {
   }, [selectedCustomer]);
 
   // Any cart change invalidates a prior "Sell anyway" confirmation.
-  useEffect(() => { shortfallConfirmedRef.current = false; }, [cart]);
+  useEffect(() => { shortfallConfirmedRef.current = false; creditConfirmedRef.current = false; }, [cart]);
 
   // Allocation strategy + partial-add policy (spec §3, §6) — loaded once.
   useEffect(() => {
@@ -619,6 +627,21 @@ export default function POSPage() {
       }
     }
 
+    // Credit-limit gate (warn-and-confirm): the receivable this sale creates
+    // is the part the customer still owes — total minus cash now minus store
+    // credit. A fully-paid sale creates no receivable and never warns. The
+    // customer is fetched fresh at gate time; a failed lookup fails open.
+    if (!creditConfirmedRef.current) {
+      const cashNow = paymentTerm === 'full' ? total : paymentTerm === 'partial' ? (parseFloat(partialAmount) || 0) : 0;
+      const creditApplied = applyStoreCredit ? Math.min(storeCreditBalance, total) : 0;
+      const credit = await checkCreditLimit(selectedCustomer, newReceivableFor(total, cashNow, creditApplied));
+      if (credit) {
+        setPendingCreditCheck(credit);
+        setCreditConfirmOpen(true);
+        return;
+      }
+    }
+
     setProcessing(true);
 
     try {
@@ -735,12 +758,14 @@ export default function POSPage() {
       if (paymentTerm === 'credit') {
         // On credit — no payment to record
       } else if (creditToApply > 0) {
-        // Redeem store credit
+        // Redeem store credit — same expiry filter as the displayed balance,
+        // so what can be spent is exactly what was offered
         const { data: activeCredits } = await supabase
           .from('customer_store_credits')
           .select('id, balance')
           .eq('customer_id', customerId)
           .eq('status', 'active')
+          .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
           .order('created_at', { ascending: true });
 
         let remainingToRedeem = creditToApply;
@@ -806,12 +831,14 @@ export default function POSPage() {
       setInvoiceDate(new Date().toISOString().split('T')[0]);
       setReference('');
       shortfallConfirmedRef.current = false;
+      creditConfirmedRef.current = false;
       setOrderComplete(true);
       toast({ title: 'Success', description: `Order ${invoiceNumber} completed successfully` });
       loadProducts(search);
     } catch (error: any) {
       console.error('POS error:', error);
       shortfallConfirmedRef.current = false;
+      creditConfirmedRef.current = false;
       toast({ title: 'Error', description: error.message || 'Failed to process order', variant: 'destructive' });
     }
 
@@ -1599,6 +1626,19 @@ export default function POSPage() {
           onConfirm={() => {
             shortfallConfirmedRef.current = true;
             setShortfallConfirmOpen(false);
+            processOrder();
+          }}
+        />
+      )}
+
+      {creditConfirmOpen && pendingCreditCheck && (
+        <CreditConfirmDialog
+          check={pendingCreditCheck}
+          onGoBack={() => { setCreditConfirmOpen(false); setPendingCreditCheck(null); }}
+          onConfirm={() => {
+            creditConfirmedRef.current = true;
+            setCreditConfirmOpen(false);
+            setPendingCreditCheck(null);
             processOrder();
           }}
         />

@@ -43,3 +43,15 @@ export function getInitials(name: string): string {
     .join('')
     .toUpperCase();
 }
+
+// Overdue is COMPUTED, never stored: nothing in the app writes the
+// invoices.status 'overdue' value (verified in GAP-AUDIT-2026-09-06), so any
+// UI that keys on the status never fires. An unpaid invoice is overdue when
+// its due date has passed. Fully-paid and cancelled invoices are never
+// overdue regardless of the due date.
+export function isInvoiceOverdue(inv: { status: string; due_date?: string | null }): boolean {
+  if (!inv.due_date) return false;
+  if (inv.status !== 'sent' && inv.status !== 'partially_paid' && inv.status !== 'overdue') return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return inv.due_date.slice(0, 10) < today;
+}

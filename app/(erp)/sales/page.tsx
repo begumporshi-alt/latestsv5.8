@@ -16,11 +16,14 @@ import type { Invoice, InvoiceStatus, Customer, Product, Payment, PaymentMethod,
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
+import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
+import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/credit-gate';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
+import { isInvoiceOverdue } from '@/lib/format';
 
 const statusConfig: Record<InvoiceStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
@@ -276,7 +279,7 @@ export default function SalesPage() {
       refunded: periodRefunded,
       netCollected: totalCollected - periodRefunded,
       outstanding: activeInv.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0),
-      overdue: activeInv.filter((i: any) => i.status === 'overdue').length,
+      overdue: activeInv.filter((i: any) => isInvoiceOverdue(i)).length,
       storeCreditBalance,
       badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
       cogs: cogsAmount,
@@ -351,7 +354,9 @@ export default function SalesPage() {
     onRecordPayment: () => void;
     onUpdateStatus: (status: InvoiceStatus) => void;
   }) {
-    const cfg = statusConfig[invoice.status as InvoiceStatus] || statusConfig.draft;
+    const cfg = isInvoiceOverdue(invoice)
+      ? { label: 'Overdue', color: 'text-red-600', bg: 'bg-red-100' }
+      : (statusConfig[invoice.status as InvoiceStatus] || statusConfig.draft);
     const balance = Number(invoice.balance_due ?? (Number(invoice.total_amount) - Number(invoice.amount_paid)));
     const discountTotal = items.reduce((s, item) => s + (item.quantity * item.unit_price * (item.discount_percent || 0) / 100), 0);
     const printRef = useRef<HTMLDivElement>(null);
@@ -673,6 +678,9 @@ export default function SalesPage() {
       // Invoices that have any sales returns OR status is explicitly refunded
       const hasReturns = i.sales_returns && i.sales_returns.length > 0;
       if (!hasReturns && i.status !== 'refunded') return false;
+    } else if (filterStatus === 'overdue') {
+      // 'overdue' is computed from due_date, never stored (see isInvoiceOverdue)
+      if (!isInvoiceOverdue(i)) return false;
     } else if (filterStatus && i.status !== filterStatus) {
       return false;
     }
@@ -959,7 +967,9 @@ export default function SalesPage() {
                   {period === 'today' ? 'No invoices for today. Try "Last 7 Days" to see more.' : 'No invoices found'}
                 </td></tr>
               ) : pagedInvoices.map((inv) => {
-                const cfg = statusConfig[inv.status as InvoiceStatus] || statusConfig.draft;
+                const cfg = isInvoiceOverdue(inv)
+                  ? { label: 'Overdue', color: 'text-red-600', bg: 'bg-red-100' }
+                  : (statusConfig[inv.status as InvoiceStatus] || statusConfig.draft);
                 const hasReturns = inv.sales_returns && inv.sales_returns.length > 0;
                 const totalReturnedQty = hasReturns
                   ? inv.sales_returns!.flatMap(r => r.items?.map(i => i.quantity_returned) || []).reduce((a, b) => a + b, 0)
@@ -1224,6 +1234,23 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
   const shortfallConfirmedRef = useRef(false);
+  const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
+  const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
+  const creditConfirmedRef = useRef(false);
+
+  // Default the due date from the customer's credit terms. credit_days sat
+  // unused on 31 customers and due_date was never set on any invoice, which
+  // kept computed overdue permanently empty.
+  useEffect(() => {
+    if (!form.customer_id || form.due_date) return;
+    const cust = customers.find(c => c.id === form.customer_id);
+    const days = Number(cust?.credit_days ?? 0);
+    if (days > 0) {
+      const due = new Date(form.invoice_date);
+      due.setDate(due.getDate() + days);
+      setForm(f => ({ ...f, due_date: due.toISOString().slice(0, 10) }));
+    }
+  }, [form.customer_id, form.invoice_date, form.due_date, customers]);
 
   // Any items change invalidates a prior "Sell anyway" confirmation and
   // refreshes the batch-ledger data behind the per-row hint (fetched for
@@ -1232,6 +1259,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const itemProductKey = Array.from(new Set(items.map(i => i.product_id))).join(',');
   useEffect(() => {
     shortfallConfirmedRef.current = false;
+    creditConfirmedRef.current = false;
     if (!itemProductKey) { setLedgerStock(null); return; }
     let stale = false;
     (async () => {
@@ -1504,6 +1532,18 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       }
     }
     // gateStock null (ledger lookup failed) → advisory gate fails open.
+
+    // Credit-limit gate — same warn-and-confirm as the POS page: the
+    // receivable created is total minus what's collected now. Fetches the
+    // customer fresh; a failed lookup fails open (advisory gate).
+    if (!creditConfirmedRef.current) {
+      const credit = await checkCreditLimit(form.customer_id, newReceivableFor(totalAmount, amountPaid, 0));
+      if (credit) {
+        setPendingCreditCheck(credit);
+        setCreditConfirmOpen(true);
+        return;
+      }
+    }
 
     setSaving(true);
     setError('');
@@ -2054,6 +2094,19 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
             onConfirm={() => {
               shortfallConfirmedRef.current = true;
               setShortfallConfirmOpen(false);
+              handleSave();
+            }}
+          />
+        )}
+
+        {creditConfirmOpen && pendingCreditCheck && (
+          <CreditConfirmDialog
+            check={pendingCreditCheck}
+            onGoBack={() => { setCreditConfirmOpen(false); setPendingCreditCheck(null); }}
+            onConfirm={() => {
+              creditConfirmedRef.current = true;
+              setCreditConfirmOpen(false);
+              setPendingCreditCheck(null);
               handleSave();
             }}
           />
@@ -3138,12 +3191,12 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
 
   const filtered = invoices.filter(inv => {
     const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase()) || (inv.reference || '').toLowerCase().includes(search.toLowerCase());
-    const matchStatus = !filterStatus || inv.status === filterStatus;
+    const matchStatus = !filterStatus || (filterStatus === 'overdue' ? isInvoiceOverdue(inv) : inv.status === filterStatus);
     return matchSearch && matchStatus;
   });
 
   const totalOutstanding = filtered.reduce((s, i) => s + Number(i.balance_due || 0), 0);
-  const overdueCount = filtered.filter(i => i.status === 'overdue').length;
+  const overdueCount = filtered.filter(i => isInvoiceOverdue(i)).length;
   const partialCount = filtered.filter(i => i.status === 'partially_paid').length;
   const onCreditCount = filtered.filter(i => i.status === 'sent').length;
 
@@ -3247,7 +3300,7 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
                       )}
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <StatusBadge status={inv.status} />
+                      <StatusBadge status={inv.status} overdue={isInvoiceOverdue(inv)} />
                     </td>
                   </tr>
                 );
@@ -3273,7 +3326,7 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function StatusBadge({ status }: { status: InvoiceStatus }) {
+function StatusBadge({ status, overdue }: { status: InvoiceStatus; overdue?: boolean }) {
   const config: Record<InvoiceStatus, { label: string; className: string }> = {
     draft: { label: 'Draft', className: 'bg-gray-100 text-gray-600' },
     sent: { label: 'On Credit', className: 'bg-blue-50 text-blue-600' },
@@ -3284,6 +3337,10 @@ function StatusBadge({ status }: { status: InvoiceStatus }) {
     refunded: { label: 'Refunded', className: 'bg-purple-50 text-purple-600' },
     refundable: { label: 'Refundable', className: 'bg-orange-50 text-orange-600' },
   };
-  const c = config[status] || config.draft;
+  // Overdue is computed from due_date, never stored — sent/partially_paid
+  // invoices past due display as Overdue regardless of the status value.
+  const c = overdue && (status === 'sent' || status === 'partially_paid')
+    ? config.overdue
+    : (config[status] || config.draft);
   return <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${c.className}`}>{c.label}</span>;
 }

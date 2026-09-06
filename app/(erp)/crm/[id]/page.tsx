@@ -10,6 +10,7 @@ import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, Shoppin
 import type { Customer, Invoice, Quotation, Delivery, Payment } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
 import { fetchAll } from '@/lib/fetch-all';
+import { isInvoiceOverdue } from '@/lib/format';
 
 interface SalesReturn {
   id: string;
@@ -442,8 +443,8 @@ export default function CustomerDetailPage() {
                             <td className="px-3 py-2 text-sm text-right text-green-600">{formatCurrency(inv.amount_paid)}</td>
                             <td className="px-3 py-2 text-sm text-right text-red-600 font-bold">{formatCurrency(inv.balance_due ?? inv.total_amount - inv.amount_paid)}</td>
                             <td className="px-3 py-2">
-                              <span className={`badge-status ${inv.status === 'paid' ? 'bg-green-100 text-green-700' : inv.status === 'overdue' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-                                {inv.status.replace('_', ' ')}
+                              <span className={`badge-status ${inv.status === 'paid' ? 'bg-green-100 text-green-700' : isInvoiceOverdue(inv) ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                                {isInvoiceOverdue(inv) ? 'overdue' : inv.status.replace('_', ' ')}
                               </span>
                             </td>
                             <td className="px-3 py-2 text-right">
