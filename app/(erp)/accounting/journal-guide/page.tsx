@@ -105,8 +105,8 @@ const scenarios: JournalScenario[] = [
         debitCode: '5000',
         creditAccount: 'Inventory Asset',
         creditCode: '1200',
-        amount: 'Quantity × Cost Price (per item)',
-        explanation: 'COGS is an expense that increases (debit). Inventory asset decreases because goods have left the warehouse (credit). The amount is calculated as base_quantity × cost_price for each item.',
+        amount: 'FIFO/FEFO batch consumption (per item)',
+        explanation: 'COGS is an expense that increases (debit). Inventory asset decreases because goods have left the warehouse (credit). The amount comes from consuming inventory batches — oldest-first (FIFO) or earliest-expiry-first (FEFO, per the Inventory settings) — at each batch\'s actual unit cost. When a product has no batches, the item\'s cost_price × base_quantity is used as the fallback.',
       },
     ],
     example: {
@@ -118,6 +118,7 @@ const scenarios: JournalScenario[] = [
     },
     notes: [
       'COGS is posted per invoice item, not per invoice — each line item generates its own COGS entry.',
+      'The consumption is recorded per batch (invoice_item_batch_consumption), so sales returns can restore the exact same layers at the same cost.',
       'For multi-unit products (e.g., selling 1 box = 12 units), the system uses base_quantity (12) not the sale quantity (1).',
       'If invoice is created as draft, COGS is deferred until the invoice status changes to sent/paid.',
     ],
@@ -132,13 +133,13 @@ const scenarios: JournalScenario[] = [
     trigger: 'AFTER INSERT on invoice_items',
     entries: [
       {
-        description: 'Deduct stock from default warehouse',
+        description: 'Deduct stock from the item\'s warehouse (FIFO/FEFO batch consumption)',
         debitAccount: '— (inventory_items.quantity_on_hand decreased)',
         debitCode: 'N/A',
         creditAccount: '— (stock_movements row inserted)',
         creditCode: 'N/A',
         amount: 'Base Quantity (or Quantity if no base_quantity)',
-        explanation: 'This is not a journal entry — it is a direct inventory update. The quantity_on_hand in the default warehouse is reduced, and a stock_movements row of type "sale" is created with a negative quantity for audit tracking.',
+        explanation: 'This is not a journal entry — it is an inventory update. The quantity_on_hand in the item\'s warehouse (each invoice item carries its own warehouse; POS and the invoice modal let you pick) is reduced, the FIFO/FEFO batch layers are consumed at their actual costs, and a stock_movements row of type "sale" is created for audit tracking.',
       },
     ],
     example: {
@@ -149,7 +150,7 @@ const scenarios: JournalScenario[] = [
       ],
     },
     notes: [
-      'Stock is always deducted from the default warehouse. If the product has no inventory record, one is created with negative stock.',
+      'Stock is deducted from the item\'s warehouse — the system is multi-warehouse (warehouse-to-warehouse transfers exist on the Inventory → Stock Transfers page). If a product has no inventory record in that warehouse, one is created with negative stock (an IOU the Inventory Audit page tracks).',
       'The stock_movements row includes the product cost as unit_cost for valuation purposes.',
       'This runs alongside the COGS journal entry — stock deduction handles physical inventory, COGS handles the accounting value.',
     ],
@@ -188,7 +189,7 @@ const scenarios: JournalScenario[] = [
         creditAccount: '— (stock_movements recorded)',
         creditCode: 'N/A',
         amount: 'Per item base_quantity',
-        explanation: 'Physical stock is deducted from the default warehouse for each item.',
+        explanation: 'Physical stock is deducted from the item\'s warehouse for each item.',
       },
       {
         description: '4. Cash + AR (from payment trigger, if payment received)',
@@ -267,7 +268,7 @@ const scenarios: JournalScenario[] = [
     },
     notes: [
       'In POS, AR is momentarily created and then immediately cleared by the full payment — net AR effect is zero for cash POS sales.',
-      'Stock is deducted from the default warehouse just like a regular invoice.',
+      'Stock is deducted from the sale\'s warehouse just like a regular invoice (POS uses the warehouse selected on the sale).',
     ],
   },
   {
@@ -277,7 +278,7 @@ const scenarios: JournalScenario[] = [
     icon: RotateCcw,
     iconColor: 'bg-red-50 text-red-600',
     summary: 'When a sales return is created, the system reverses the original sale: revenue is reduced, AR or cash is credited back, and inventory is restored.',
-    trigger: 'Sales return creation (handled by return-specific triggers)',
+    trigger: 'Sales Returns page → record_sales_return RPC (one atomic transaction: return row, stock restore, journal entry)',
     entries: [
       {
         description: 'Reverse revenue and restore receivable/cash',
@@ -299,7 +300,8 @@ const scenarios: JournalScenario[] = [
       },
     ],
     notes: [
-      'Sales returns are processed through the Sales Returns page, which has its own trigger logic.',
+      'The Sales Returns page calls the record_sales_return RPC, which validates items, restores the FIFO batches, and posts the journal entry in one transaction.',
+      'Refunds are capped at what was actually paid on the invoice; refunds on VAT-carrying invoices reverse the VAT portion proportionally.',
       'The refund method determines whether AR is reduced (credit note) or cash is paid out.',
     ],
   },
@@ -310,7 +312,7 @@ const scenarios: JournalScenario[] = [
     icon: Truck,
     iconColor: 'bg-indigo-50 text-indigo-600',
     summary: 'When a Goods Receipt Note (GRN) is posted, the system records inventory received and creates an Accounts Payable liability to the supplier.',
-    trigger: 'GRN save handler calls the post_grn_journal RPC after batches are created (idempotent — one journal per GRN)',
+    trigger: 'GRN page calls the atomic receive_grn RPC (batches, stock, and the journal entry are created in one transaction)',
     entries: [
       {
         description: 'Record inventory received and payable to supplier',

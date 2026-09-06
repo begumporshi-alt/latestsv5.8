@@ -274,15 +274,20 @@ export default function JournalPage() {
   const [filterType, setFilterType] = useState('');
   const [filterSupplier, setFilterSupplier] = useState('');
   const [supplierOptions, setSupplierOptions] = useState<{ id: string; name: string }[]>([]);
+  const [filterCustomer, setFilterCustomer] = useState('');
+  const [customerOptions, setCustomerOptions] = useState<{ id: string; name: string }[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [period, setPeriod] = useState<'today' | 'last7' | 'last30' | 'all'>('today');
+  const [period, setPeriod] = useState<'today' | 'last7' | 'last30' | 'all' | 'custom'>('today');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [reversingEntry, setReversingEntry] = useState<JournalEntry | null>(null);
   const [editingEntry, setEditingEntry] = useState<JournalEntry | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<JournalEntry | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
 
-  useEffect(() => { loadData(); }, [period, filterSupplier]);
+  useEffect(() => { loadData(); }, [period, customFrom, customTo, filterSupplier, filterCustomer]);
 
   // Deep links: ?supplier=<id> from the supplier profile, ?highlight=<je id>
   // from the account statement and sales returns. Both widen to all periods —
@@ -322,6 +327,7 @@ export default function JournalPage() {
     if (period === 'today') return { from: today, to: today };
     if (period === 'last7') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6)), to: today };
     if (period === 'last30') return { from: ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29)), to: today };
+    if (period === 'custom') return { from: customFrom, to: customTo };
     return { from: '', to: '' };
   }
 
@@ -340,6 +346,15 @@ export default function JournalPage() {
           .eq('supplier_id', filterSupplier);
         if (grnError) throw grnError;
         grnIds = (supplierGrns || []).map((g: any) => g.id);
+      }
+      let customerInvoiceIds: string[] = [];
+      if (filterCustomer) {
+        const { data: customerInvoices, error: invError } = await supabase
+          .from('invoices')
+          .select('id')
+          .eq('customer_id', filterCustomer);
+        if (invError) throw invError;
+        customerInvoiceIds = (customerInvoices || []).map((i: any) => i.id);
       }
       // fetchAll pages past the row cap — a .limit(500) window silently hid
       // older entries on wide date ranges.
@@ -362,16 +377,24 @@ export default function JournalPage() {
             ? query.or(`supplier_id.eq.${filterSupplier},and(reference_type.eq.grn,reference_id.in.(${grnIds.join(',')}))`)
             : query.eq('supplier_id', filterSupplier);
         }
+        if (filterCustomer) {
+          // invoice/payment JEs carry customer_id; older ones match through the customer's invoice ids
+          query = customerInvoiceIds.length > 0
+            ? query.or(`customer_id.eq.${filterCustomer},and(reference_type.eq.invoice,reference_id.in.(${customerInvoiceIds.join(',')}))`)
+            : query.eq('customer_id', filterCustomer);
+        }
         return query;
       };
-      const [entriesData, accountsRes, suppliersRes] = await Promise.all([
+      const [entriesData, accountsRes, suppliersRes, customersRes] = await Promise.all([
         fetchAll(build),
         supabase.from('accounts').select('*').eq('is_active', true).order('code'),
         supabase.from('suppliers').select('id, name').order('name'),
+        supabase.from('customers').select('id, name').order('name'),
       ]);
       setEntries(entriesData as JournalEntry[]);
       setAccounts(accountsRes.data || []);
       setSupplierOptions((suppliersRes.data || []) as any[]);
+      setCustomerOptions((customersRes.data || []) as any[]);
     } catch (err: any) {
       setEntries([]);
       setLoadError(err.message || 'Failed to load journal entries');
@@ -551,6 +574,7 @@ export default function JournalPage() {
             { value: 'last7', label: 'Last 7 Days' },
             { value: 'last30', label: 'Last 30 Days' },
             { value: 'all', label: 'All Entries' },
+            { value: 'custom', label: 'Custom Range' },
           ] as const).map(opt => (
             <button
               key={opt.value}
@@ -561,6 +585,25 @@ export default function JournalPage() {
               {opt.label}
             </button>
           ))}
+          {period === 'custom' && (
+            <div className="flex items-center gap-1">
+              <input
+                type="date"
+                value={customFrom}
+                onChange={e => { setCustomFrom(e.target.value); setPage(1); }}
+                className="border border-border rounded-lg px-2 py-1 text-xs"
+                aria-label="From date"
+              />
+              <span className="text-muted-foreground text-xs">to</span>
+              <input
+                type="date"
+                value={customTo}
+                onChange={e => { setCustomTo(e.target.value); setPage(1); }}
+                className="border border-border rounded-lg px-2 py-1 text-xs"
+                aria-label="To date"
+              />
+            </div>
+          )}
         </div>
 
         {/* Search + supplier filter */}
@@ -588,6 +631,14 @@ export default function JournalPage() {
           >
             <option value="">All suppliers</option>
             {supplierOptions.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          <select
+            value={filterCustomer}
+            onChange={e => { setFilterCustomer(e.target.value); setPage(1); }}
+            className="border border-border rounded-lg px-3 py-1.5 text-sm bg-white min-w-[180px] focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="">All customers</option>
+            {customerOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -673,6 +724,7 @@ export default function JournalPage() {
                   onToggle={() => toggleExpand(entry.id)}
                   onEdit={() => setEditingEntry(entry)}
                   onDelete={() => setShowDeleteConfirm(entry)}
+                  onReverse={() => setReversingEntry(entry)}
                 />
               );
               if (group.rows.length < 2) return renderRow(group.rows[0]);
@@ -758,16 +810,25 @@ export default function JournalPage() {
           onDeleted={() => { loadData(); setShowDeleteConfirm(null); }}
         />
       )}
+
+      {reversingEntry && (
+        <ReverseEntryModal
+          entry={reversingEntry}
+          onClose={() => setReversingEntry(null)}
+          onSaved={() => { loadData(); setReversingEntry(null); }}
+        />
+      )}
     </div>
   );
 }
 
-function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete }: {
+function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete, onReverse }: {
   entry: JournalEntry;
   isExpanded: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onReverse: () => void;
 }) {
   const [lines, setLines] = useState<JournalLine[] | null>(null);
   const refType = entry.reference_type || 'manual';
@@ -855,6 +916,9 @@ function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete }: {
           <div className="flex items-center justify-center gap-1">
             <button onClick={onEdit} aria-label={isAuto ? 'Edit auto-posted entry (with impact preview)' : 'Edit entry'} className="w-7 h-7 flex items-center justify-center rounded hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title={isAuto ? 'Edit auto-posted entry (with impact preview)' : 'Edit entry'}>
               <Edit2 className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={onReverse} aria-label="Reverse entry" className="w-7 h-7 flex items-center justify-center rounded hover:bg-violet-50 text-muted-foreground hover:text-violet-600 transition" title="Reverse entry — posts the mirror-image entry instead of deleting the original">
+              <RotateCcw className="w-3.5 h-3.5" />
             </button>
             <button onClick={onDelete} aria-label={isAuto ? 'Delete auto-posted entry (with impact preview)' : 'Delete entry'} className="w-7 h-7 flex items-center justify-center rounded hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title={isAuto ? 'Delete auto-posted entry (with impact preview)' : 'Delete entry'}>
               <Trash2 className="w-3.5 h-3.5" />
@@ -1710,6 +1774,7 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
   const [impact, setImpact] = useState<{ account: string; accountId: string; change: number }[]>([]);
   const [linkedRecords, setLinkedRecords] = useState<{ type: string; label: string; detail: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [reason, setReason] = useState('');
   const isAuto = entry.reference_type !== 'manual' && entry.reference_type !== null;
 
   useEffect(() => {
@@ -1782,6 +1847,10 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
   }, [entry.id, entry.reference_id, entry.reference_type, entry.customer_id, entry.supplier_id, isAuto]);
 
   async function handleDelete() {
+    if (isAuto && !reason.trim()) {
+      toast({ title: 'Reason required', description: 'Auto-posted entries need a reason so the audit trail explains why it was removed', variant: 'destructive' });
+      return;
+    }
     setDeleting(true);
     try {
       const { error: rpcError } = await supabase.rpc('delete_manual_journal_entry', {
@@ -1789,6 +1858,17 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
         p_allow_auto: entry.reference_type !== 'manual',
       });
       if (rpcError) throw rpcError;
+
+      // the audit trigger logs the row; this records WHY (required for auto entries)
+      if (reason.trim()) {
+        await supabase.from('activity_logs').insert({
+          action: 'journal_entry_delete_reason',
+          entity_type: 'journal_entry',
+          entity_id: entry.id,
+          entity_label: entry.entry_number,
+          metadata: { reason: reason.trim(), reference_type: entry.reference_type, description: entry.description },
+        });
+      }
 
       toast({ title: 'Success', description: `Entry ${entry.entry_number} deleted` });
       onDeleted();
@@ -1891,6 +1971,19 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
             <p><strong>Amount:</strong> {formatCurrency(entry.total_debit)}</p>
           </div>
 
+          <div>
+            <label className="block text-xs font-medium mb-1">
+              Reason {isAuto ? <span className="text-red-600">*</span> : <span className="text-muted-foreground">(optional)</span>}
+            </label>
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              rows={2}
+              placeholder={isAuto ? 'Why is this auto-posted entry being removed? (required — recorded in the activity log)' : 'Why is this entry being deleted?'}
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500/20"
+            />
+          </div>
+
           <div className="flex items-center justify-end gap-3 pt-2 border-t border-border">
             <button onClick={onClose} disabled={deleting} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50">Cancel</button>
             <button
@@ -1899,6 +1992,144 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
               className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
             >
               {deleting ? 'Deleting...' : isAuto ? 'Delete Anyway' : 'Delete Entry'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReverseEntryModal({ entry, onClose, onSaved }: {
+  entry: JournalEntry;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [lines, setLines] = useState<{ account_id: string; account?: any; description: string | null; debit: number; credit: number }[] | null>(null);
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  useEffect(() => {
+    supabase
+      .from('journal_lines')
+      .select('account_id, description, debit, credit, account:accounts(code, name)')
+      .eq('journal_entry_id', entry.id)
+      .order('sort_order')
+      .then(({ data }) => setLines((data || []) as any));
+  }, [entry.id]);
+
+  const mirrored = (lines || []).map(l => ({
+    account_id: l.account_id,
+    debit: Number(l.credit),
+    credit: Number(l.debit),
+    description: `Reversal — ${l.description || entry.description || 'original line'}`,
+  }));
+  const mirrorTotal = mirrored.reduce((s, l) => s + l.debit, 0);
+
+  async function handleReverse() {
+    if (!reason.trim()) { setError('A reason is required — it becomes part of the reversal entry\'s description and the audit trail'); return; }
+    if (mirrored.length === 0) { setError('This entry has no lines to reverse'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+        p_entry_date: new Date().toISOString().split('T')[0],
+        p_description: `Reversal of ${entry.entry_number}: ${reason.trim()}`,
+        p_reference_type: 'manual',
+        p_customer_id: (entry as any).customer_id || null,
+        p_supplier_id: (entry as any).supplier_id || null,
+        p_lines: mirrored,
+      });
+      if (rpcError) throw rpcError;
+      toast({ title: 'Success', description: `Reversal posted for ${entry.entry_number} (${formatCurrency(mirrorTotal)})` });
+      onSaved();
+    } catch (err: any) {
+      setError(err.message || 'Failed to post reversal');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const accLabel = (l: any) => {
+    const acc = Array.isArray(l.account) ? l.account[0] : l.account;
+    return acc ? `${acc.code} – ${acc.name}` : l.account_id;
+  };
+
+  return (
+    <div role="dialog" aria-modal="true" className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
+          <div>
+            <h2 className="text-base font-bold flex items-center gap-2"><RotateCcw className="w-4 h-4 text-violet-600" />Reverse Entry</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">{entry.entry_number} — the original stays; a mirror-image entry is posted</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+
+          <div className="bg-violet-50 border border-violet-200 rounded-xl p-4 text-xs text-violet-800">
+            Reversing keeps the audit trail intact — the original entry remains and a new entry with the debit/credit
+            sides swapped is posted, netting the effect to zero. Prefer this over deleting for corrections.
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-muted-foreground mb-2">Original lines → mirrored lines</p>
+            {lines === null ? (
+              <div className="text-xs text-muted-foreground py-2">Loading lines…</div>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b border-border">
+                    <th className="text-left py-1.5">Account</th>
+                    <th className="text-right py-1.5">Original Dr</th>
+                    <th className="text-right py-1.5">Original Cr</th>
+                    <th className="text-right py-1.5">Reversal Dr</th>
+                    <th className="text-right py-1.5">Reversal Cr</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(lines || []).map((l, i) => (
+                    <tr key={i} className="border-b border-border/50">
+                      <td className="py-1.5 font-medium text-foreground">{accLabel(l)}</td>
+                      <td className="py-1.5 text-right text-muted-foreground">{Number(l.debit) > 0 ? formatCurrency(Number(l.debit)) : '—'}</td>
+                      <td className="py-1.5 text-right text-muted-foreground">{Number(l.credit) > 0 ? formatCurrency(Number(l.credit)) : '—'}</td>
+                      <td className="py-1.5 text-right text-violet-700 font-medium">{Number(l.credit) > 0 ? formatCurrency(Number(l.credit)) : '—'}</td>
+                      <td className="py-1.5 text-right text-violet-700 font-medium">{Number(l.debit) > 0 ? formatCurrency(Number(l.debit)) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1">Reason <span className="text-red-600">*</span></label>
+            <textarea
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              rows={2}
+              placeholder="e.g. Posted to the wrong account — reversing and reposting correctly"
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2 border-t border-border">
+            <button onClick={onClose} disabled={saving} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50">Cancel</button>
+            <button
+              onClick={handleReverse}
+              disabled={saving || lines === null}
+              className="px-5 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
+            >
+              {saving ? 'Posting…' : `Post Reversal (${formatCurrency(mirrorTotal)})`}
             </button>
           </div>
         </div>

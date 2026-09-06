@@ -3,10 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, Calendar, CalendarDays, ChevronDown, ChevronRight, Download, FileText,
-  Loader2, RefreshCw, Search, Trash2, X, XCircle,
+  Loader2, Printer, RefreshCw, Search, Trash2, X, XCircle,
 } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { supabase } from '@/lib/supabase';
+import Link from 'next/link';
 import { formatCurrency } from '@/lib/format';
 import Pagination from '@/components/ui/AppPagination';
 
@@ -544,7 +545,7 @@ export default function COGSAuditPage() {
   }
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-6 print-modal">
       {/* ── Header ─────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
@@ -566,18 +567,24 @@ export default function COGSAuditPage() {
           >
             <Download className="h-4 w-4" /> Export CSV
           </button>
+          <button
+            onClick={() => window.print()}
+            className="flex items-center gap-2 px-3 py-2 text-sm border rounded hover:bg-gray-50"
+          >
+            <Printer className="h-4 w-4" /> Print
+          </button>
         </div>
       </div>
 
       {/* ── Stats cards ────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
-        <StatCard label="Total Invoices" value={stats.total} color="#6b7280" />
-        <StatCard label="History Δ (C−B)" value={stats.historyDiff} color="#f59e0b" />
-        <StatCard label="Consistent" value={stats.consistent} color={STATUS_COLORS.CONSISTENT} />
-        <StatCard label="Duplicate COGS" value={stats.duplicates} color={STATUS_COLORS.DUPLICATE_COGS} />
-        <StatCard label="Mismatch" value={stats.mismatches} color={STATUS_COLORS.MISMATCH} />
-        <StatCard label="Missing" value={stats.missing} color={STATUS_COLORS.MISSING} />
-        <StatCard label="Cancelled Orphans" value={stats.cancelledOrphans} color={STATUS_COLORS.CANCELLED_ORPHAN} />
+        <StatCard label="Total Invoices" value={stats.total} color="#6b7280" onClick={() => { setFilter('all'); setPage(1); }} />
+        <StatCard label="History Δ (C−B)" value={stats.historyDiff} color="#f59e0b" onClick={() => { setFilter('history-diff'); setPage(1); }} />
+        <StatCard label="Consistent" value={stats.consistent} color={STATUS_COLORS.CONSISTENT} onClick={() => { setFilter('consistent'); setPage(1); }} />
+        <StatCard label="Duplicate COGS" value={stats.duplicates} color={STATUS_COLORS.DUPLICATE_COGS} onClick={() => { setFilter('duplicate'); setPage(1); }} />
+        <StatCard label="Mismatch" value={stats.mismatches} color={STATUS_COLORS.MISMATCH} onClick={() => { setFilter('mismatch'); setPage(1); }} />
+        <StatCard label="Missing" value={stats.missing} color={STATUS_COLORS.MISSING} onClick={() => { setFilter('missing'); setPage(1); }} />
+        <StatCard label="Cancelled Orphans" value={stats.cancelledOrphans} color={STATUS_COLORS.CANCELLED_ORPHAN} onClick={() => { setFilter('cancelled'); setPage(1); }} />
         <StatCard
           label="Total Overstatement"
           value={formatCurrency(stats.totalOverstatement + Math.max(0, stats.orphanNetImpact))}
@@ -1095,7 +1102,7 @@ export default function COGSAuditPage() {
   );
 }
 
-function StatCard({ label, value, color }: { label: string; value: number | string; color: string }) {
+function StatCard({ label, value, color, onClick }: { label: string; value: number | string; color: string; onClick?: () => void }) {
   return (
     <div className="bg-white border rounded p-4">
       <div className="text-xs text-gray-500 uppercase">{label}</div>
@@ -1138,7 +1145,9 @@ function AuditTableRow({
             />
           )}
         </td>
-        <td className="p-2 font-mono text-xs">{row.invoice_number}</td>
+        <td className="p-2 font-mono text-xs">
+          <Link href={`/sales?highlight=${row.invoice_id}`} className="text-blue-600 hover:underline">{row.invoice_number}</Link>
+        </td>
         <td className="p-2 text-xs">{row.invoice_date}</td>
         <td className="p-2 text-xs">{row.customer_name || '—'}</td>
         <td className="p-2 text-right">{row.item_count}</td>
@@ -1203,9 +1212,11 @@ function AuditTableRow({
                 <button
                   onClick={() => onRepair('repost-cogs')}
                   className="text-[11px] text-red-600 hover:underline whitespace-nowrap"
-                  title={`Journal (C) ${formatCurrency(row.journal_cogs_c)} doesn't match current items (A) ${formatCurrency(row.expected_cogs_a)} — deletes this invoice's COGS entries and reposts one at items × cost`}
+                  title={row.journal_cogs_c === 0
+                    ? `No COGS entry exists (items cost ${formatCurrency(row.expected_cogs_a)}) — creates the missing COGS journal entry at items × cost`
+                    : `Journal (C) ${formatCurrency(row.journal_cogs_c)} doesn't match current items (A) ${formatCurrency(row.expected_cogs_a)} — deletes this invoice's COGS entries and reposts one at items × cost`}
                 >
-                  Repost COGS @ items
+                  {row.journal_cogs_c === 0 ? 'Create missing COGS JE' : 'Repost COGS @ items'}
                 </button>
               )}
               {showRefresh && (
