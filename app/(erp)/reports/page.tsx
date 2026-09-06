@@ -288,7 +288,7 @@ export default function ReportsPage() {
   ];
 
   return (
-    <div className="space-y-5 animate-fade-in">
+    <div className="space-y-5 animate-fade-in print-modal">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Reports & Analytics</h1>

@@ -194,7 +194,7 @@ export default function PLPage() {
   }
 
   return (
-    <div className="space-y-5 animate-fade-in">
+    <div className="space-y-5 animate-fade-in print-modal">
       {/* P&L Explanation Panel */}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-5 print:hidden">
         <div className="flex items-start gap-3">
