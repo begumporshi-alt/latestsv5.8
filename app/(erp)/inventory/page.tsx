@@ -1016,7 +1016,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
                   p_notes: 'Stock increase adjustment',
                 });
               } else if (diff < 0) {
-                // Stock decrease: post Dr 5900 / Cr 1200 to reduce inventory
+                // Stock decrease: post Dr 3900 / Cr 1200 (equity — quantity corrections are not P&L)
                 await supabase.rpc('create_stock_reduction', {
                   p_product_id: productId,
                   p_warehouse_id: warehouseId,
@@ -1756,7 +1756,7 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
                 p_notes: 'Stock updated from import',
               });
             } else if (currentStock < existingQty) {
-              // Stock decrease from import: post Dr 5900 / Cr 1200
+              // Stock decrease from import: post Dr 3900 / Cr 1200 (equity)
               const reduceQty = existingQty - currentStock;
               await supabase.from('inventory_items')
                 .update({ quantity_on_hand: currentStock })
