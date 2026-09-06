@@ -142,22 +142,11 @@ export default function ExpensesPage() {
 
   async function handleDelete(expense: ExpenseEntry) {
     try {
-      // Reverse account balances
-      for (const line of expense.lines || []) {
-        const acct = accounts.find(a => a.id === line.account_id);
-        if (!acct) continue;
-        const debit = Number(line.debit);
-        const credit = Number(line.credit);
-        // Reverse: debit was added, credit was subtracted
-        await supabase.from('accounts').update({
-          balance: (Number(acct.balance) || 0) - debit + credit,
-        }).eq('id', line.account_id);
-      }
-
-      // Delete journal lines then entry
-      await supabase.from('journal_lines').delete().eq('journal_entry_id', expense.id);
-      const { error } = await supabase.from('journal_entries').delete().eq('id', expense.id);
-      if (error) throw error;
+      const { error: rpcError } = await supabase.rpc('delete_manual_journal_entry', {
+        p_entry_id: expense.id,
+        p_allow_auto: false,
+      });
+      if (rpcError) throw rpcError;
 
       toast({ title: 'Deleted', description: `Expense ${expense.entry_number} deleted and accounts reversed` });
       setDeletingExpense(null);
@@ -434,86 +423,32 @@ function ExpenseModal({ expenseAccounts, cashBankAccounts, editingExpense, onClo
       }
 
       if (editingExpense) {
-        // EDIT: reverse old lines' account balances, delete old lines, insert new lines, apply new balances
-        for (const line of editingExpense.lines || []) {
-          const acct = [...expenseAccounts, ...cashBankAccounts].find(a => a.id === line.account_id);
-          if (!acct) {
-            const { data: fresh } = await supabase.from('accounts').select('balance').eq('id', line.account_id).maybeSingle();
-            if (fresh) {
-              await supabase.from('accounts').update({
-                balance: (Number(fresh.balance) || 0) - Number(line.debit) + Number(line.credit),
-              }).eq('id', line.account_id);
-            }
-          } else {
-            await supabase.from('accounts').update({
-              balance: (Number(acct.balance) || 0) - Number(line.debit) + Number(line.credit),
-            }).eq('id', line.account_id);
-          }
-        }
-
-        // Delete old lines
-        await supabase.from('journal_lines').delete().eq('journal_entry_id', editingExpense.id);
-
-        // Update entry
-        await supabase.from('journal_entries').update({
-          entry_date: form.date,
-          description: form.description || 'Expense payment',
-          total_debit: amount,
-          total_credit: amount,
-        }).eq('id', editingExpense.id);
-
-        // Insert new lines
-        await supabase.from('journal_lines').insert([
-          { journal_entry_id: editingExpense.id, account_id: expenseAccountId, description: form.description, debit: amount, credit: 0, sort_order: 0 },
-          { journal_entry_id: editingExpense.id, account_id: form.paid_from, description: form.description, debit: 0, credit: amount, sort_order: 1 },
-        ]);
-
-        // Apply new account balances (fetch fresh balances to avoid stale state)
-        const { data: newExpAcct } = await supabase.from('accounts').select('balance').eq('id', expenseAccountId).maybeSingle();
-        if (newExpAcct) {
-          await supabase.from('accounts').update({ balance: (Number(newExpAcct.balance) || 0) + amount }).eq('id', expenseAccountId);
-        }
-        const { data: newCashAcct } = await supabase.from('accounts').select('balance').eq('id', form.paid_from).maybeSingle();
-        if (newCashAcct) {
-          await supabase.from('accounts').update({ balance: (Number(newCashAcct.balance) || 0) - amount }).eq('id', form.paid_from);
-        }
+        // EDIT: one atomic server-side call reverses old lines and applies the new ones
+        const { error: rpcError } = await supabase.rpc('edit_manual_journal_entry', {
+          p_entry_id: editingExpense.id,
+          p_entry_date: form.date,
+          p_description: form.description || 'Expense payment',
+          p_allow_auto: false,
+          p_lines: [
+            { account_id: expenseAccountId, debit: amount, credit: 0, description: form.description },
+            { account_id: form.paid_from, debit: 0, credit: amount, description: form.description },
+          ],
+        });
+        if (rpcError) throw rpcError;
 
         toast({ title: 'Updated', description: 'Expense updated and accounts adjusted' });
       } else {
-        // CREATE: new entry
-        const entryNumber = await supabase.rpc('get_next_journal_number');
-
-        const { data: entry } = await supabase
-          .from('journal_entries')
-          .insert({
-            entry_number: entryNumber.data || `JE-${Date.now().toString().slice(-6)}`,
-            entry_date: form.date,
-            description: form.description || 'Expense payment',
-            reference_type: 'manual',
-            total_debit: amount,
-            total_credit: amount,
-            is_posted: true,
-          })
-          .select()
-          .single();
-
-        if (!entry) throw new Error('Failed to create entry');
-
-        await supabase.from('journal_lines').insert([
-          { journal_entry_id: entry.id, account_id: expenseAccountId, description: form.description, debit: amount, credit: 0, sort_order: 0 },
-          { journal_entry_id: entry.id, account_id: form.paid_from, description: form.description, debit: 0, credit: amount, sort_order: 1 },
-        ]);
-
-        // Update balances
-        const expenseAccount = expenseAccounts.find(a => a.id === expenseAccountId);
-        const cashAccount = cashBankAccounts.find(a => a.id === form.paid_from);
-
-        if (expenseAccount) {
-          await supabase.from('accounts').update({ balance: (expenseAccount.balance || 0) + amount }).eq('id', expenseAccountId);
-        }
-        if (cashAccount) {
-          await supabase.from('accounts').update({ balance: (cashAccount.balance || 0) - amount }).eq('id', form.paid_from);
-        }
+        // CREATE: one atomic server-side call posts entry + lines + balances
+        const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+          p_entry_date: form.date,
+          p_description: form.description || 'Expense payment',
+          p_reference_type: 'manual',
+          p_lines: [
+            { account_id: expenseAccountId, debit: amount, credit: 0, description: form.description },
+            { account_id: form.paid_from, debit: 0, credit: amount, description: form.description },
+          ],
+        });
+        if (rpcError) throw rpcError;
 
         toast({ title: 'Success', description: 'Expense recorded successfully' });
       }

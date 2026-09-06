@@ -1081,49 +1081,23 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
 
     setSaving(true);
     try {
-      const totalAmt = finalLines.reduce((s, l) => s + l.debit, 0);
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-      const entryNumber = jeNum || `JE-${Date.now().toString().slice(-7)}`;
+      const { data: result, error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+        p_entry_date: entryDate,
+        p_description: description,
+        p_reference_type: 'manual',
+        p_reference_id: null,
+        p_customer_id: customerId || null,
+        p_supplier_id: supplierId || null,
+        p_lines: finalLines.map(l => ({
+          account_id: l.accountId,
+          debit: l.debit,
+          credit: l.credit,
+          description: l.description,
+        })),
+      });
+      if (rpcError) throw rpcError;
 
-      const { data: entry, error: entryError } = await supabase
-        .from('journal_entries')
-        .insert({
-          entry_number: entryNumber,
-          entry_date: entryDate,
-          description,
-          reference_type: 'manual',
-          total_debit: totalAmt,
-          total_credit: totalAmt,
-          is_posted: true,
-          supplier_id: supplierId || null,
-          customer_id: customerId || null,
-        })
-        .select()
-        .single();
-
-      if (entryError) throw entryError;
-
-      for (let i = 0; i < finalLines.length; i++) {
-        const line = finalLines[i];
-        await supabase.from('journal_lines').insert({
-          journal_entry_id: entry.id,
-          account_id: line.accountId,
-          description: line.description,
-          debit: line.debit,
-          credit: line.credit,
-          sort_order: i,
-        });
-
-        const account = accounts.find(a => a.id === line.accountId);
-        if (account) {
-          const delta = (account.account_type === 'asset' || account.account_type === 'expense')
-            ? line.debit - line.credit
-            : line.credit - line.debit;
-          await supabase.rpc('increment_account_balance', { p_account_id: line.accountId, p_delta: delta });
-        }
-      }
-
-      toast({ title: 'Success', description: `Entry ${entryNumber} posted` });
+      toast({ title: 'Success', description: `Entry ${result?.entry_number || ''} posted` });
       onSaved();
     } catch (err: any) {
       setError(err.message || 'Failed to create entry');
@@ -1392,7 +1366,6 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
   const [entryDate, setEntryDate] = useState(entry.entry_date);
   const [description, setDescription] = useState(entry.description);
   const [lines, setLines] = useState<{ id?: string; accountId: string; debit: string; credit: string; description: string }[]>([]);
-  const [originalLines, setOriginalLines] = useState<{ accountId: string; debit: number; credit: number }[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -1422,7 +1395,6 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
         description: l.description || '',
       }));
       setLines(loadedLines);
-      setOriginalLines((jl || []).map(l => ({ accountId: l.account_id, debit: Number(l.debit), credit: Number(l.credit) })));
 
       // Load linked records for auto-posted entries
       if (isAuto && entry.reference_id) {
@@ -1497,50 +1469,19 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
 
     setSaving(true);
     try {
-      // Reverse original balances
-      for (const ol of originalLines) {
-        const acc = accounts.find(a => a.id === ol.accountId);
-        if (acc) {
-          const reverseDelta = (acc.account_type === 'asset' || acc.account_type === 'expense')
-            ? -(ol.debit - ol.credit)
-            : -(ol.credit - ol.debit);
-          await supabase.rpc('increment_account_balance', { p_account_id: ol.accountId, p_delta: reverseDelta });
-        }
-      }
-
-      // Delete old journal lines
-      await supabase.from('journal_lines').delete().eq('journal_entry_id', entry.id);
-
-      // Update entry
-      await supabase.from('journal_entries')
-        .update({
-          entry_date: entryDate,
-          description,
-          total_debit: totalDebit,
-          total_credit: totalCredit,
-        })
-        .eq('id', entry.id);
-
-      // Insert new lines and update balances
-      for (let i = 0; i < validLines.length; i++) {
-        const line = validLines[i];
-        await supabase.from('journal_lines').insert({
-          journal_entry_id: entry.id,
-          account_id: line.accountId,
-          description: line.description,
-          debit: parseFloat(line.debit) || 0,
-          credit: parseFloat(line.credit) || 0,
-          sort_order: i,
-        });
-
-        const acc = accounts.find(a => a.id === line.accountId);
-        if (acc) {
-          const delta = (acc.account_type === 'asset' || acc.account_type === 'expense')
-            ? (parseFloat(line.debit) || 0) - (parseFloat(line.credit) || 0)
-            : (parseFloat(line.credit) || 0) - (parseFloat(line.debit) || 0);
-          await supabase.rpc('increment_account_balance', { p_account_id: line.accountId, p_delta: delta });
-        }
-      }
+      const { error: rpcError } = await supabase.rpc('edit_manual_journal_entry', {
+        p_entry_id: entry.id,
+        p_entry_date: entryDate,
+        p_description: description,
+        p_allow_auto: entry.reference_type !== 'manual',
+        p_lines: validLines.map(l => ({
+          account_id: l.accountId,
+          debit: parseFloat(l.debit) || 0,
+          credit: parseFloat(l.credit) || 0,
+          description: l.description,
+        })),
+      });
+      if (rpcError) throw rpcError;
 
       toast({ title: 'Success', description: `Entry ${entry.entry_number} updated` });
       onSaved();
@@ -1843,16 +1784,11 @@ function DeleteJournalEntryModal({ entry, onClose, onDeleted }: {
   async function handleDelete() {
     setDeleting(true);
     try {
-      // Reverse account balances using atomic RPC
-      for (const imp of impact) {
-        await supabase.rpc('increment_account_balance', { p_account_id: imp.accountId, p_delta: imp.change });
-      }
-
-      // Delete journal lines
-      await supabase.from('journal_lines').delete().eq('journal_entry_id', entry.id);
-
-      // Delete journal entry
-      await supabase.from('journal_entries').delete().eq('id', entry.id);
+      const { error: rpcError } = await supabase.rpc('delete_manual_journal_entry', {
+        p_entry_id: entry.id,
+        p_allow_auto: entry.reference_type !== 'manual',
+      });
+      if (rpcError) throw rpcError;
 
       toast({ title: 'Success', description: `Entry ${entry.entry_number} deleted` });
       onDeleted();

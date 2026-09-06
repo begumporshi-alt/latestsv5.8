@@ -306,62 +306,26 @@ function CreateAccountModal({ onClose, onSaved }: { onClose: () => void; onSaved
           .eq('code', '3900')
           .maybeSingle();
 
-        if (equityAccount) {
-          const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-          const isDebitNormal = form.account_type === 'asset' || form.account_type === 'expense';
-          const debitAccountId = isDebitNormal ? newAccount.id : equityAccount.id;
-          const creditAccountId = isDebitNormal ? equityAccount.id : newAccount.id;
-
-          const { data: entry, error: entryError } = await supabase
-            .from('journal_entries')
-            .insert({
-              entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-              entry_date: new Date().toISOString().split('T')[0],
-              description: `Opening Balance - ${form.name}`,
-              reference_type: 'opening_balance',
-              total_debit: openingBalance,
-              total_credit: openingBalance,
-              is_posted: true,
-            })
-            .select()
-            .single();
-
-          if (entryError) throw entryError;
-
-          await supabase.from('journal_lines').insert([
-            {
-              journal_entry_id: entry.id,
-              account_id: debitAccountId,
-              description: `Opening Balance - ${form.name}`,
-              debit: openingBalance,
-              credit: 0,
-              sort_order: 0,
-            },
-            {
-              journal_entry_id: entry.id,
-              account_id: creditAccountId,
-              description: `Opening Balance - ${form.name}`,
-              debit: 0,
-              credit: openingBalance,
-              sort_order: 1,
-            },
-          ]);
-
-          await supabase.rpc('increment_account_balance', {
-            p_account_id: newAccount.id,
-            p_delta: isDebitNormal ? openingBalance : -openingBalance,
-          });
-          await supabase.rpc('increment_account_balance', {
-            p_account_id: equityAccount.id,
-            p_delta: isDebitNormal ? -openingBalance : openingBalance,
-          });
-        } else {
-          // Fallback: direct balance update if Opening Balance Equity doesn't exist
-          await supabase
-            .from('accounts')
-            .update({ balance: openingBalance })
-            .eq('id', newAccount.id);
+        if (!equityAccount) {
+          throw new Error('Opening Balance Equity account (3900) not found — cannot post an opening balance. Create account 3900 first, or set the balance to 0 and adjust via the journal.');
         }
+
+        const isDebitNormal = form.account_type === 'asset' || form.account_type === 'expense';
+        const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+          p_entry_date: new Date().toISOString().split('T')[0],
+          p_description: `Opening Balance - ${form.name}`,
+          p_reference_type: 'opening_balance',
+          p_lines: isDebitNormal
+            ? [
+                { account_id: newAccount.id, debit: openingBalance, credit: 0, description: `Opening Balance - ${form.name}` },
+                { account_id: equityAccount.id, debit: 0, credit: openingBalance, description: `Opening Balance - ${form.name}` },
+              ]
+            : [
+                { account_id: equityAccount.id, debit: openingBalance, credit: 0, description: `Opening Balance - ${form.name}` },
+                { account_id: newAccount.id, debit: 0, credit: openingBalance, description: `Opening Balance - ${form.name}` },
+              ],
+        });
+        if (rpcError) throw rpcError;
       }
 
       toast({ title: 'Success', description: `Account ${form.code} created successfully` });

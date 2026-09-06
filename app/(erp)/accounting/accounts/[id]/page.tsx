@@ -980,7 +980,6 @@ function BalanceAdjustmentPanel({ account, onAdjusted }: { account: Account; onA
     setError('');
     setSaving(true);
     try {
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
       const isDebitNormal = account.account_type === 'asset' || account.account_type === 'expense';
 
       // For positive adjustment: debit asset/expense accounts, credit liability/equity/revenue accounts
@@ -1008,50 +1007,26 @@ function BalanceAdjustmentPanel({ account, onAdjusted }: { account: Account; onA
         }
       }
 
-      const { data: entry, error: entryError } = await supabase
-        .from('journal_entries')
-        .insert({
-          entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-          entry_date: form.date,
-          description: form.description || `Balance adjustment for ${account.name}`,
-          reference_type: 'balance_adjustment',
-          total_debit: absAmount,
-          total_credit: absAmount,
-          is_posted: true,
-        })
-        .select()
-        .single();
-
-      if (entryError) throw entryError;
-
-      await supabase.from('journal_lines').insert([
-        {
-          journal_entry_id: entry.id,
-          account_id: account.id,
-          description: form.description || `Balance adjustment`,
-          debit: targetDebit,
-          credit: targetCredit,
-          sort_order: 0,
-        },
-        {
-          journal_entry_id: entry.id,
-          account_id: form.offsetAccountId,
-          description: form.description || `Balance adjustment - ${account.name}`,
-          debit: offsetDebit,
-          credit: offsetCredit,
-          sort_order: 1,
-        },
-      ]);
-
-      // Update balances using the RPC function
-      await supabase.rpc('increment_account_balance', {
-        p_account_id: account.id,
-        p_delta: isDebitNormal ? (targetDebit - targetCredit) : (targetCredit - targetDebit),
+      const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+        p_entry_date: form.date,
+        p_description: form.description || `Balance adjustment for ${account.name}`,
+        p_reference_type: 'balance_adjustment',
+        p_lines: [
+          {
+            account_id: account.id,
+            debit: targetDebit,
+            credit: targetCredit,
+            description: form.description || `Balance adjustment`,
+          },
+          {
+            account_id: form.offsetAccountId,
+            debit: offsetDebit,
+            credit: offsetCredit,
+            description: form.description || `Balance adjustment - ${account.name}`,
+          },
+        ],
       });
-      await supabase.rpc('increment_account_balance', {
-        p_account_id: form.offsetAccountId,
-        p_delta: offsetDebit - offsetCredit,
-      });
+      if (rpcError) throw rpcError;
 
       toast({ title: 'Balance adjusted', description: `Adjustment of ${formatCurrency(absAmount)} posted successfully` });
       setIsOpen(false);

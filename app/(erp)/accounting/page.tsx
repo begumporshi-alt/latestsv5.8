@@ -863,25 +863,16 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
     setSaving(true);
     try {
       const amount = parseFloat(form.amount);
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
-        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-        entry_date: form.date,
-        description: form.description || 'Expense payment',
-        reference_type: 'manual',
-        total_debit: amount,
-        total_credit: amount,
-        is_posted: true,
-      }).select().single();
-      if (entryError) throw entryError;
-
-      await supabase.from('journal_lines').insert([
-        { journal_entry_id: entry.id, account_id: form.expense_account, description: form.description, debit: amount, credit: 0, sort_order: 0 },
-        { journal_entry_id: entry.id, account_id: form.paid_from, description: form.description, debit: 0, credit: amount, sort_order: 1 },
-      ]);
-
-      await supabase.rpc('increment_account_balance', { p_account_id: form.expense_account, p_delta: amount });
-      await supabase.rpc('increment_account_balance', { p_account_id: form.paid_from, p_delta: -amount });
+      const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+        p_entry_date: form.date,
+        p_description: form.description || 'Expense payment',
+        p_reference_type: 'manual',
+        p_lines: [
+          { account_id: form.expense_account, debit: amount, credit: 0, description: form.description },
+          { account_id: form.paid_from, debit: 0, credit: amount, description: form.description },
+        ],
+      });
+      if (rpcError) throw rpcError;
 
       toast({ title: 'Success', description: 'Expense recorded successfully' });
       setForm({ date: new Date().toISOString().split('T')[0], amount: '', expense_account: '', paid_from: '', description: '' });
@@ -984,29 +975,20 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
       const customer = customers.find(c => c.id === form.customer_id);
       const offsetAcc = accounts.find(a => a.id === form.offset_account_id);
       const desc = form.description || `Receivable from ${customer?.name || 'Customer'}`;
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-
-      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
-        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-        entry_date: form.date,
-        description: desc,
-        reference_type: 'receivable',
-        total_debit: amount,
-        total_credit: amount,
-        is_posted: true,
-        customer_id: form.customer_id,
-      }).select().single();
-      if (entryError) throw entryError;
 
       if (!manualReceivableAccount || !offsetAcc) throw new Error('Required accounts not found');
 
-      await supabase.from('journal_lines').insert([
-        { journal_entry_id: entry.id, account_id: manualReceivableAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
-        { journal_entry_id: entry.id, account_id: offsetAcc.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
-      ]);
-
-      await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: amount });
-      await supabase.rpc('increment_account_balance', { p_account_id: offsetAcc.id, p_delta: amount });
+      const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+        p_entry_date: form.date,
+        p_description: desc,
+        p_reference_type: 'receivable',
+        p_customer_id: form.customer_id,
+        p_lines: [
+          { account_id: manualReceivableAccount.id, debit: amount, credit: 0, description: desc },
+          { account_id: offsetAcc.id, debit: 0, credit: amount, description: desc },
+        ],
+      });
+      if (rpcError) throw rpcError;
 
       toast({ title: 'Success', description: `Receivable of ${formatCurrency(amount)} recorded` });
       setForm({ customer_id: '', amount: '', description: '', date: new Date().toISOString().split('T')[0], offset_account_id: '' });
@@ -1116,31 +1098,20 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
       const amount = parseFloat(form.amount);
       const supplier = suppliers.find(s => s.id === form.supplier_id);
       const desc = form.description || `Payable to ${supplier?.name || 'Supplier'}`;
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-
-      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
-        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-        entry_date: form.date,
-        description: desc,
-        reference_type: 'payable',
-        total_debit: amount,
-        total_credit: amount,
-        is_posted: true,
-        supplier_id: form.supplier_id,
-      }).select().single();
-      if (entryError) throw entryError;
 
       if (!apAccount) throw new Error('Accounts Payable account (2000) not found');
 
-      await supabase.from('journal_lines').insert([
-        { journal_entry_id: entry.id, account_id: form.debit_account_id, description: desc, debit: amount, credit: 0, sort_order: 0 },
-        { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
-      ]);
-
-      const debitAcc = accounts.find(a => a.id === form.debit_account_id);
-      const debitDelta = (debitAcc?.account_type === 'asset' || debitAcc?.account_type === 'expense') ? amount : -amount;
-      await supabase.rpc('increment_account_balance', { p_account_id: form.debit_account_id, p_delta: debitDelta });
-      await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: amount });
+      const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+        p_entry_date: form.date,
+        p_description: desc,
+        p_reference_type: 'payable',
+        p_supplier_id: form.supplier_id,
+        p_lines: [
+          { account_id: form.debit_account_id, debit: amount, credit: 0, description: desc },
+          { account_id: apAccount.id, debit: 0, credit: amount, description: desc },
+        ],
+      });
+      if (rpcError) throw rpcError;
       // Supplier outstanding_balance is maintained by the journal_lines
       // recompute trigger (DB) — no client-side write.
 
@@ -1219,8 +1190,6 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
       .then(({ data }) => { if (data && data.length > 0) setPaymentMethods(data); });
   }, []);
 
-  const manualReceivableAccount = accounts.find(a => a.code === '1300');
-  const badDebtAccount = accounts.find(a => a.code === '5600');
   const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank);
   const remainingAfter = receivable.outstanding_balance - form.amount - form.bad_debt_amount;
 
@@ -1235,76 +1204,19 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
     try {
       const amount = form.amount;
       const badDebt = form.bad_debt_amount;
-      const desc = form.notes || `Payment received for ${receivable.entry_number}`;
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-
-      const { error: payError } = await supabase.from('payments').insert({
-        payment_number: `PAY-${Date.now().toString().slice(-6)}`,
-        payment_type: 'received',
-        reference_type: 'receivable',
-        reference_id: receivable.id,
-        customer_id: receivable.party_id || null,
-        amount,
-        bad_debt_amount: badDebt,
-        payment_method: form.payment_method,
-        payment_date: form.payment_date,
-        reference_number: form.reference_number || null,
-        notes: form.notes || null,
-        payment_for: 'manual_receivable',
+      const { data: result, error: rpcError } = await supabase.rpc('record_manual_receivable_payment', {
+        p_receivable_je_id: receivable.id,
+        p_amount: amount,
+        p_bad_debt_amount: badDebt,
+        p_payment_date: form.payment_date,
+        p_payment_method: form.payment_method,
+        p_cash_account_id: form.account_id || null,
+        p_reference_number: form.reference_number || null,
+        p_notes: form.notes || null,
       });
-      if (payError) throw payError;
+      if (rpcError) throw rpcError;
 
-      if (!manualReceivableAccount) throw new Error('Manual Receivable account (1300) not found');
-
-      if (amount > 0) {
-        const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
-          entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-          entry_date: form.payment_date,
-          description: desc,
-          reference_type: 'payment',
-          total_debit: amount,
-          total_credit: amount,
-          is_posted: true,
-        }).select().single();
-        if (entryError) throw entryError;
-
-        await supabase.from('journal_lines').insert([
-          { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: amount, credit: 0, sort_order: 0 },
-          { journal_entry_id: entry.id, account_id: manualReceivableAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
-        ]);
-
-        await supabase.rpc('increment_account_balance', { p_account_id: form.account_id, p_delta: amount });
-        await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: -amount });
-      }
-
-      if (badDebt > 0) {
-        const { data: jeNum2 } = await supabase.rpc('get_next_journal_number');
-        const { data: bdEntry, error: bdEntryError } = await supabase.from('journal_entries').insert({
-          entry_number: jeNum2 || `JE-${Date.now().toString().slice(-6)}`,
-          entry_date: form.payment_date,
-          description: `Bad debt write-off for ${receivable.entry_number}`,
-          reference_type: 'payment',
-          total_debit: badDebt,
-          total_credit: badDebt,
-          is_posted: true,
-        }).select().single();
-        if (bdEntryError) throw bdEntryError;
-
-        if (badDebtAccount) {
-          await supabase.from('journal_lines').insert([
-            { journal_entry_id: bdEntry.id, account_id: badDebtAccount.id, description: `Bad debt write-off - ${receivable.party_name || ''}`, debit: badDebt, credit: 0, sort_order: 0 },
-            { journal_entry_id: bdEntry.id, account_id: manualReceivableAccount.id, description: `Manual Receivable reduction - bad debt`, debit: 0, credit: badDebt, sort_order: 1 },
-          ]);
-          await supabase.rpc('increment_account_balance', { p_account_id: badDebtAccount.id, p_delta: badDebt });
-        } else {
-          await supabase.from('journal_lines').insert([
-            { journal_entry_id: bdEntry.id, account_id: manualReceivableAccount.id, description: `Manual Receivable reduction - bad debt`, debit: 0, credit: badDebt, sort_order: 0 },
-          ]);
-        }
-        await supabase.rpc('increment_account_balance', { p_account_id: manualReceivableAccount.id, p_delta: -badDebt });
-      }
-
-      const descParts = [`Payment of ${formatCurrency(amount)} recorded`];
+      const descParts = [`Payment of ${formatCurrency(amount)} recorded (${result?.payment_number || ''})`];
       if (badDebt > 0) descParts.push(`bad debt write-off of ${formatCurrency(badDebt)}`);
       toast({ title: 'Success', description: descParts.join(', ') });
       onSaved();
@@ -1403,7 +1315,6 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
       .then(({ data }) => { if (data && data.length > 0) setPaymentMethods(data); });
   }, []);
 
-  const apAccount = accounts.find(a => a.code === '2000');
   const cashBankAccounts = accounts.filter(a => a.is_cash || a.is_bank);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -1415,46 +1326,18 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
     setSaving(true);
     try {
       const amount = form.amount;
-      const desc = form.notes || `Payment made for ${payable.entry_number}`;
-      const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-
-      const { error: payError } = await supabase.from('payments').insert({
-        payment_number: `PAY-${Date.now().toString().slice(-6)}`,
-        payment_type: 'made',
-        reference_type: 'payable',
-        reference_id: payable.id,
-        supplier_id: payable.party_id || null,
-        amount,
-        payment_method: form.payment_method,
-        payment_date: form.payment_date,
-        reference_number: form.reference_number || null,
-        notes: form.notes || null,
-        payment_for: 'supplier_payment',
+      const { data: result, error: rpcError } = await supabase.rpc('record_manual_payable_payment', {
+        p_payable_je_id: payable.id,
+        p_amount: amount,
+        p_payment_date: form.payment_date,
+        p_payment_method: form.payment_method,
+        p_cash_account_id: form.account_id,
+        p_reference_number: form.reference_number || null,
+        p_notes: form.notes || null,
       });
-      if (payError) throw payError;
+      if (rpcError) throw rpcError;
 
-      const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
-        entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-        entry_date: form.payment_date,
-        description: desc,
-        reference_type: 'payment',
-        total_debit: amount,
-        total_credit: amount,
-        is_posted: true,
-        supplier_id: payable.party_id || null,
-      }).select().single();
-      if (entryError) throw entryError;
-
-      if (!apAccount) throw new Error('Accounts Payable account not found');
-      await supabase.from('journal_lines').insert([
-        { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
-        { journal_entry_id: entry.id, account_id: form.account_id, description: desc, debit: 0, credit: amount, sort_order: 1 },
-      ]);
-
-      await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: -amount });
-      await supabase.rpc('increment_account_balance', { p_account_id: form.account_id, p_delta: -amount });
-
-      toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded` });
+      toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded (${result?.payment_number || ''})` });
       onSaved();
       onClose();
     } catch (err: any) {
