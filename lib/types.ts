@@ -218,6 +218,10 @@ export interface Customer {
   total_purchases: number;
   loyalty_points: number;
   discount_percent: number;
+  tax_id?: string | null;
+  notes?: string | null;
+  tags?: string[] | null;
+  assigned_to?: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;

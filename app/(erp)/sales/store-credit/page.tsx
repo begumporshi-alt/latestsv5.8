@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { useToast } from '@/hooks/use-toast';
-import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle } from 'lucide-react';
+import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle, Plus } from 'lucide-react';
+import CustomerSearchInput, { type CustomerResult } from '@/components/ui/CustomerSearchInput';
 
 interface StoreCredit {
   id: string;
@@ -46,6 +47,7 @@ export default function StoreCreditPage() {
   const [stats, setStats] = useState({ totalIssued: 0, totalRedeemed: 0, activeBalance: 0, expiredCount: 0 });
   const [detailCredit, setDetailCredit] = useState<StoreCredit | null>(null);
   const [detailRedemptions, setDetailRedemptions] = useState<Redemption[]>([]);
+  const [showIssue, setShowIssue] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
@@ -174,6 +176,12 @@ export default function StoreCreditPage() {
           <h1 className="text-2xl font-bold text-foreground">Store Credit</h1>
           <p className="text-sm text-muted-foreground mt-1">Manage customer store credit balances, issuances, and redemptions</p>
         </div>
+        <button
+          onClick={() => setShowIssue(true)}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition"
+        >
+          <Plus className="w-4 h-4" />Issue Credit
+        </button>
       </div>
 
       {/* Stats */}
@@ -334,6 +342,13 @@ export default function StoreCreditPage() {
         </div>
       )}
 
+      {showIssue && (
+        <IssueCreditModal
+          onClose={() => setShowIssue(false)}
+          onSaved={() => { setShowIssue(false); loadData(); }}
+        />
+      )}
+
       {/* Detail Modal */}
       {detailCredit && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={() => setDetailCredit(null)}>
@@ -392,6 +407,125 @@ export default function StoreCreditPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function IssueCreditModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerResult | null>(null);
+  const [accounts, setAccounts] = useState<{ id: string; code: string; name: string; account_type: string }[]>([]);
+  const [form, setForm] = useState({ amount: '', debit_account_id: '', notes: '', expires_at: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    supabase.from('accounts').select('id, code, name, account_type').eq('is_active', true).in('account_type', ['expense', 'revenue']).order('code')
+      .then(({ data }) => { if (data) setAccounts(data); });
+  }, []);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    if (!selectedCustomer) { setError('Please select a customer'); return; }
+    if (!form.amount || parseFloat(form.amount) <= 0) { setError('Please enter an amount'); return; }
+    if (!form.debit_account_id) { setError('Please select the account to charge — this credit is money the store owes the customer, so something must absorb the cost'); return; }
+
+    setSaving(true);
+    try {
+      const amount = parseFloat(form.amount);
+      const { data: creditNum } = await supabase.rpc('generate_credit_number');
+      const { data: credit, error: creditError } = await supabase
+        .from('customer_store_credits')
+        .insert({
+          credit_number: creditNum || `SC-${Date.now().toString().slice(-6)}`,
+          customer_id: selectedCustomer.id,
+          amount: amount,
+          balance: amount,
+          status: 'active',
+          notes: form.notes || 'Manually issued store credit',
+          expires_at: form.expires_at || null,
+        })
+        .select()
+        .single();
+      if (creditError) throw creditError;
+
+      // GL: the store now owes the customer — Cr 2200 (Customer Refund
+      // Payable), charged to the account the issuer picked. Posted through
+      // post_journal_entry (atomic lines + balances). If the JE fails, the
+      // credit row is removed so a retry starts clean — no credit without
+      // its journal entry.
+      const { data: creditAccount } = await supabase.from('accounts').select('id').eq('code', '2200').maybeSingle();
+      if (!creditAccount) throw new Error('Customer Refund Payable account (2200) not found');
+
+      const { error: jeError } = await supabase.rpc('post_journal_entry', {
+        p_description: `Store credit issued ${credit.credit_number} — ${selectedCustomer.name}`,
+        p_entry_date: new Date().toISOString().split('T')[0],
+        p_reference_type: 'store_credit',
+        p_reference_id: credit.id,
+        p_lines: [
+          { account_id: form.debit_account_id, debit: amount, credit: 0, description: `Store credit issued — ${selectedCustomer.name}` },
+          { account_id: creditAccount.id, debit: 0, credit: amount, description: `Store credit liability — ${selectedCustomer.name}` },
+        ],
+        p_customer_id: selectedCustomer.id,
+      });
+      if (jeError) {
+        await supabase.from('customer_store_credits').delete().eq('id', credit.id);
+        throw jeError;
+      }
+
+      toast({ title: 'Success', description: `Store credit ${credit.credit_number} of ${formatCurrency(amount)} issued to ${selectedCustomer.name}` });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || 'Failed to issue store credit');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white">
+          <h2 className="text-base font-bold flex items-center gap-2"><Plus className="w-4 h-4" />Issue Store Credit</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div>
+            <label className="block text-xs font-medium mb-1">Customer *</label>
+            {selectedCustomer ? (
+              <div className="flex items-center justify-between border border-blue-300 bg-blue-50 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-foreground truncate">{selectedCustomer.name}</p>
+                  <p className="text-xs text-muted-foreground">{selectedCustomer.code || ''}{selectedCustomer.code && selectedCustomer.phone ? ' · ' : ''}{selectedCustomer.phone || ''}</p>
+                </div>
+                <button type="button" onClick={() => setSelectedCustomer(null)} className="text-muted-foreground hover:text-red-500 shrink-0 ml-2"><X className="w-4 h-4" /></button>
+              </div>
+            ) : (
+              <CustomerSearchInput onSelect={(c) => setSelectedCustomer(c)} placeholder="Search customer by name, code, or phone..." />
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="block text-xs font-medium mb-1">Amount *</label><input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Expires On</label><input type="date" value={form.expires_at} onChange={e => setForm({ ...form, expires_at: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Charge To (Debit) *</label>
+            <select required value={form.debit_account_id} onChange={e => setForm({ ...form, debit_account_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
+              <option value="">Select account</option>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground mt-1">The credit is a liability (Cr 2200 Customer Refund Payable). Pick what absorbs the cost: a sales/discount account for commercial adjustments, or an expense account for goodwill credits.</p>
+          </div>
+          <div><label className="block text-xs font-medium mb-1">Notes</label><input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Reason, e.g. goodwill credit, pricing adjustment..." className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">{saving ? 'Issuing...' : 'Issue Credit'}</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

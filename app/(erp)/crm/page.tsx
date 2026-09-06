@@ -4,7 +4,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown, HandCoins, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown, HandCoins, ChevronLeft, ChevronRight, FileDown } from 'lucide-react';
 import Link from 'next/link';
 import type { Customer, CustomerType } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
@@ -208,6 +208,37 @@ export default function CRMPage() {
     setCreditMin(''); setCreditMax('');
   }
 
+  function exportCsv() {
+    const header = ['Name', 'Code', 'Type', 'Company', 'Phone', 'Mobile', 'Email', 'City', 'Address',
+      'Credit Limit', 'Credit Days', 'Total Purchases', 'Invoice Due', 'Manual Due', 'Total Outstanding',
+      'Returns Count', 'Returns Value', 'Loyalty Points', 'Tags', 'Notes', 'Active', 'Customer Since'];
+    const escape = (v: any) => {
+      const s = v === null || v === undefined ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [
+      header.join(','),
+      ...filtered.map(c => [
+        escape(c.name), escape(c.code), escape(c.type), escape(c.company_name), escape(c.phone), escape(c.mobile),
+        escape(c.email), escape(c.city), escape(c.address),
+        c.credit_limit ?? 0, c.credit_days ?? 0,
+        c.total_purchases_calc ?? 0, c.invoice_outstanding ?? 0, c.manual_outstanding ?? 0,
+        c.outstanding_balance ?? 0,
+        c.return_count ?? 0, c.return_total ?? 0,
+        c.loyalty_points ?? 0, escape((c.tags || []).join('; ')), escape(c.notes),
+        c.is_active ? 'yes' : 'no', c.created_at ? c.created_at.slice(0, 10) : '',
+      ].join(',')),
+    ];
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `customers-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({ title: 'Exported', description: `${filtered.length} customer(s) exported to CSV` });
+  }
+
   return (
     <div className="space-y-5 animate-fade-in">
       <div className="flex items-center justify-between">
@@ -216,6 +247,9 @@ export default function CRMPage() {
           <p className="text-muted-foreground text-sm mt-0.5">Manage customer relationships</p>
         </div>
         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <button onClick={exportCsv} className="flex items-center justify-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition whitespace-nowrap">
+            <FileDown className="w-4 h-4" />Export CSV
+          </button>
           <RecordButton variant="receivable" onSaved={loadData} />
           <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition whitespace-nowrap">
             <Plus className="w-4 h-4" />Add Customer
@@ -486,11 +520,18 @@ function CustomerModal({ customer, onClose, onSaved }: { customer?: Customer | n
     code: customer?.code || '',
     type: customer?.type || 'retail',
     phone: customer?.phone || '',
+    mobile: customer?.mobile || '',
     email: customer?.email || '',
+    company_name: customer?.company_name || '',
     city: customer?.city || '',
     address: customer?.address || '',
+    tax_id: customer?.tax_id || '',
+    tags: (customer?.tags || []).join(', '),
+    notes: customer?.notes || '',
     credit_limit: customer?.credit_limit?.toString() || '0',
     credit_days: customer?.credit_days?.toString() || '30',
+    loyalty_points: customer?.loyalty_points?.toString() || '0',
+    discount_percent: customer?.discount_percent?.toString() || '0',
     is_active: customer?.is_active ?? true,
   });
   const [saving, setSaving] = useState(false);
@@ -509,16 +550,24 @@ function CustomerModal({ customer, onClose, onSaved }: { customer?: Customer | n
     setSaving(true);
     setError('');
 
+    const tagsArray = form.tags.split(',').map(t => t.trim()).filter(Boolean);
     const data = {
       name: form.name,
       code: form.code,
       type: form.type as CustomerType,
       phone: form.phone || null,
+      mobile: form.mobile || null,
       email: form.email || null,
+      company_name: form.company_name || null,
       city: form.city || null,
       address: form.address || null,
+      tax_id: form.tax_id || null,
+      tags: tagsArray.length > 0 ? tagsArray : null,
+      notes: form.notes || null,
       credit_limit: Number(form.credit_limit),
       credit_days: Number(form.credit_days),
+      loyalty_points: Number(form.loyalty_points) || 0,
+      discount_percent: Number(form.discount_percent) || 0,
       is_active: form.is_active,
       country: (customer?.country || 'Bangladesh'),
       // total_purchases / outstanding_balance are trigger-maintained — never
@@ -571,7 +620,23 @@ function CustomerModal({ customer, onClose, onSaved }: { customer?: Customer | n
             <div><label className="block text-xs font-medium mb-1">Email</label><input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
             <div><label className="block text-xs font-medium mb-1">City</label><input value={form.city} onChange={e => setForm({ ...form, city: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
           </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="block text-xs font-medium mb-1">Email</label><input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Mobile</label><input value={form.mobile} onChange={e => setForm({ ...form, mobile: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="block text-xs font-medium mb-1">Company Name</label><input value={form.company_name} onChange={e => setForm({ ...form, company_name: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Tax ID</label><input value={form.tax_id} onChange={e => setForm({ ...form, tax_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+          </div>
           <div><label className="block text-xs font-medium mb-1">Address</label><textarea value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><label className="block text-xs font-medium mb-1">Tags <span className="text-muted-foreground font-normal">(comma separated)</span></label><input value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} placeholder="vip, dealer, project-x" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Loyalty Points {isEdit ? '' : <span className="text-muted-foreground font-normal">(start at 0)</span>}</label><input type="number" min="0" value={form.loyalty_points} readOnly={!isEdit} onChange={e => isEdit && setForm({ ...form, loyalty_points: e.target.value })} className={`w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none ${!isEdit ? 'bg-gray-50 text-gray-500 cursor-default' : 'focus:ring-2 focus:ring-blue-500/20'}`} /></div>
+          </div>
+          {isEdit && (
+            <div><label className="block text-xs font-medium mb-1">Standing Discount %</label><input type="number" min="0" max="100" step="0.01" value={form.discount_percent} onChange={e => setForm({ ...form, discount_percent: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+          )}
+          <div><label className="block text-xs font-medium mb-1">Notes</label><textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} placeholder="Internal notes about this customer..." className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-xs font-medium mb-1">Credit Limit</label><input type="number" min="0" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
             <div><label className="block text-xs font-medium mb-1">Credit Days</label><input type="number" min="0" value={form.credit_days} onChange={e => setForm({ ...form, credit_days: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>

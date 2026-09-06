@@ -1,16 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw, Filter, Search, X, HandCoins } from 'lucide-react';
+import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw, Filter, Search, X, HandCoins, Printer, StickyNote, Plus, Trash2 } from 'lucide-react';
 import type { Customer, Invoice, Quotation, Delivery, Payment } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
 import { fetchAll } from '@/lib/fetch-all';
 import { isInvoiceOverdue } from '@/lib/format';
+import { printNode } from '@/lib/print';
 
 interface SalesReturn {
   id: string;
@@ -22,6 +23,13 @@ interface SalesReturn {
   notes: string;
   created_at: string;
   invoice?: { invoice_number: string };
+}
+
+interface CustomerNote {
+  id: string;
+  note: string;
+  note_type: 'general' | 'call' | 'meeting' | 'follow_up' | 'complaint';
+  created_at: string;
 }
 
 interface ManualReceivable {
@@ -80,9 +88,16 @@ export default function CustomerDetailPage() {
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [manualReceivables, setManualReceivables] = useState<ManualReceivable[]>([]);
   const [salesReturns, setSalesReturns] = useState<SalesReturn[]>([]);
-  const [activeTab, setActiveTab] = useState<'invoices' | 'payments' | 'quotations' | 'deliveries' | 'receivables' | 'returns'>('invoices');
+  const [activeTab, setActiveTab] = useState<'invoices' | 'payments' | 'quotations' | 'deliveries' | 'receivables' | 'returns' | 'notes'>('invoices');
   const [payments, setPayments] = useState<Payment[]>([]);
   const [showCollect, setShowCollect] = useState(false);
+  const [notes, setNotes] = useState<CustomerNote[]>([]);
+  const [newNote, setNewNote] = useState('');
+  const [newNoteType, setNewNoteType] = useState<CustomerNote['note_type']>('general');
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [statement, setStatement] = useState<any[] | null>(null);
+  const [printing, setPrinting] = useState(false);
+  const statementRef = useRef<HTMLDivElement>(null);
 
   // Receivables filter state
   const [receivablesFilter, setReceivablesFilter] = useState<'all' | 'invoice' | 'manual'>('all');
@@ -107,7 +122,7 @@ export default function CustomerDetailPage() {
     }
     setCustomer(custData);
 
-    const [invRes, invTotalsRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes, returnsRes, creditRes, payRes, advancesRes] = await Promise.all([
+    const [invRes, invTotalsRes, quoteRes, delivRes, receivableRes, receivablePaymentsRes, returnsRes, creditRes, payRes, advancesRes, notesRes] = await Promise.all([
       fetchAll(() => supabase.from('invoices').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).order('id')),
       supabase.from('invoices').select('total_amount').eq('customer_id', customerId).neq('status', 'cancelled'),
       fetchAll(() => supabase.from('quotations').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).order('id')),
@@ -118,6 +133,7 @@ export default function CustomerDetailPage() {
       supabase.from('customer_store_credits').select('balance').eq('customer_id', customerId).eq('status', 'active'),
       fetchAll(() => supabase.from('payments').select('*').eq('customer_id', customerId).order('payment_date', { ascending: false }).order('id')),
       supabase.from('customer_advances').select('balance').eq('customer_id', customerId).eq('status', 'active'),
+      supabase.from('customer_notes').select('id, note, note_type, created_at').eq('customer_id', customerId).order('created_at', { ascending: false }),
     ]);
 
     setInvoices(invRes);
@@ -144,6 +160,7 @@ export default function CustomerDetailPage() {
 
     setManualReceivables(receivablesWithPayments);
     setSalesReturns(returnsRes.data || []);
+    setNotes((notesRes.data || []) as CustomerNote[]);
 
     const invData = invRes;
     const returnsData = returnsRes.data || [];
@@ -169,6 +186,57 @@ export default function CustomerDetailPage() {
     });
 
     setLoading(false);
+  }
+
+  async function addNote() {
+    if (!newNote.trim()) return;
+    setNoteSaving(true);
+    const { error } = await supabase.from('customer_notes').insert({
+      customer_id: customerId,
+      note: newNote.trim(),
+      note_type: newNoteType,
+    });
+    setNoteSaving(false);
+    if (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      return;
+    }
+    setNewNote('');
+    setNewNoteType('general');
+    const { data } = await supabase
+      .from('customer_notes')
+      .select('id, note, note_type, created_at')
+      .eq('customer_id', customerId)
+      .order('created_at', { ascending: false });
+    setNotes((data || []) as CustomerNote[]);
+  }
+
+  async function deleteNote(noteId: string) {
+    const { error } = await supabase.from('customer_notes').delete().eq('id', noteId);
+    if (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      return;
+    }
+    setNotes(notes.filter(n => n.id !== noteId));
+  }
+
+  async function handlePrintStatement() {
+    setPrinting(true);
+    try {
+      if (!statement) {
+        const { data, error } = await supabase.rpc('get_customer_ar_statement', { p_customer_id: customerId });
+        if (error) throw error;
+        setStatement((data || []) as any[]);
+        // Wait for the off-screen statement to render before printing it
+        setTimeout(() => printNode(statementRef.current), 150);
+      } else {
+        printNode(statementRef.current);
+      }
+    } catch (err: any) {
+      toast({ title: 'Error', description: err.message || 'Failed to build statement', variant: 'destructive' });
+    } finally {
+      setPrinting(false);
+    }
   }
 
   // Combine and filter receivables
@@ -243,6 +311,14 @@ export default function CustomerDetailPage() {
           <p className="text-sm text-muted-foreground">{customer.code} - {customer.type.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={handlePrintStatement}
+            disabled={printing}
+            className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50"
+            title="Print the receivable statement for this customer"
+          >
+            <Printer className="w-4 h-4" />Statement
+          </button>
           {Number(customer.outstanding_balance) > 0 && (
             <button
               onClick={() => setShowCollect(true)}
@@ -295,6 +371,13 @@ export default function CustomerDetailPage() {
                   <span className="text-foreground">{customer.company_name}</span>
                 </div>
               )}
+              {customer.tags && customer.tags.length > 0 && (
+                <div className="flex flex-wrap gap-1 pt-1">
+                  {customer.tags.map(t => (
+                    <span key={t} className="px-2 py-0.5 bg-blue-50 text-blue-600 rounded-full text-[10px] font-medium">{t}</span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -333,6 +416,12 @@ export default function CustomerDetailPage() {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground flex items-center gap-2"><Star className="w-4 h-4" />Discount</span>
                   <span className="font-semibold text-green-600">{customer.discount_percent}%</span>
+                </div>
+              )}
+              {customer.loyalty_points > 0 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground flex items-center gap-2"><Star className="w-4 h-4" />Loyalty Points</span>
+                  <span className="font-semibold text-amber-600">{customer.loyalty_points.toLocaleString()}</span>
                 </div>
               )}
             </div>
@@ -395,6 +484,7 @@ export default function CustomerDetailPage() {
                 { key: 'receivables', label: 'Receivables', icon: User },
                 { key: 'quotations', label: 'Quotations', icon: FileText },
                 { key: 'deliveries', label: 'Deliveries', icon: Truck },
+                { key: 'notes', label: `Notes${notes.length > 0 ? ` (${notes.length})` : ''}`, icon: StickyNote },
               ].map(tab => (
                 <button
                   key={tab.key}
@@ -716,6 +806,74 @@ export default function CustomerDetailPage() {
                 </div>
               )}
 
+              {activeTab === 'notes' && (
+                <div className="space-y-4">
+                  {/* Add note */}
+                  <div className="p-3 bg-muted/30 rounded-lg space-y-2">
+                    <div className="flex gap-2">
+                      <select
+                        value={newNoteType}
+                        onChange={e => setNewNoteType(e.target.value as CustomerNote['note_type'])}
+                        className="border border-border rounded-lg px-2 py-1.5 text-xs focus:outline-none bg-white"
+                      >
+                        <option value="general">General</option>
+                        <option value="call">Call</option>
+                        <option value="meeting">Meeting</option>
+                        <option value="follow_up">Follow-up</option>
+                        <option value="complaint">Complaint</option>
+                      </select>
+                      <input
+                        value={newNote}
+                        onChange={e => setNewNote(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addNote(); } }}
+                        placeholder="Log a call, meeting, follow-up, complaint..."
+                        className="flex-1 border border-border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      />
+                      <button
+                        onClick={addNote}
+                        disabled={noteSaving || !newNote.trim()}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50"
+                      >
+                        <Plus className="w-3.5 h-3.5" />Add
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Notes list */}
+                  {notes.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground text-sm">
+                      <StickyNote className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      No notes yet — log the first call or follow-up above
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {notes.map(n => (
+                        <div key={n.id} className="flex items-start justify-between gap-3 p-3 bg-muted/20 rounded-lg">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                                n.note_type === 'complaint' ? 'bg-red-50 text-red-600'
+                                : n.note_type === 'follow_up' ? 'bg-amber-50 text-amber-600'
+                                : n.note_type === 'call' ? 'bg-blue-50 text-blue-600'
+                                : n.note_type === 'meeting' ? 'bg-purple-50 text-purple-600'
+                                : 'bg-gray-100 text-gray-600'
+                              }`}>
+                                {n.note_type.replace('_', ' ')}
+                              </span>
+                              <span className="text-[10px] text-muted-foreground">{formatDate(n.created_at)}</span>
+                            </div>
+                            <p className="text-sm text-foreground whitespace-pre-wrap">{n.note}</p>
+                          </div>
+                          <button onClick={() => deleteNote(n.id)} className="p-1 hover:bg-red-50 rounded text-muted-foreground hover:text-red-500 shrink-0" title="Delete note">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {activeTab === 'quotations' && (
                 <div className="overflow-x-auto">
                   {quotations.length === 0 ? (
@@ -804,6 +962,61 @@ export default function CustomerDetailPage() {
           onSaved={() => { setShowCollect(false); loadCustomerData(); }}
         />
       )}
+
+      {/* Off-screen statement for printing (printNode prints this node) */}
+      <div ref={statementRef} className="bg-white p-6 text-black" style={{ width: '760px' }}>
+        <div className="flex items-baseline justify-between border-b-2 border-black pb-2 mb-3">
+          <div>
+            <h1 className="text-lg font-bold">Customer Statement</h1>
+            <p className="text-sm">{customer.name} ({customer.code}){customer.company_name ? ` — ${customer.company_name}` : ''}</p>
+            {customer.phone && <p className="text-xs">{customer.phone}</p>}
+            {customer.address && <p className="text-xs">{customer.address}{customer.city ? `, ${customer.city}` : ''}</p>}
+          </div>
+          <div className="text-right text-xs">
+            <p className="font-semibold">{new Date().toLocaleDateString()}</p>
+            <p>Credit terms: {customer.credit_days} days</p>
+            {Number(customer.credit_limit) > 0 && <p>Limit: {formatCurrency(customer.credit_limit)}</p>}
+          </div>
+        </div>
+
+        <div className="flex gap-4 mb-3 text-xs">
+          <div className="flex-1 border border-black p-2">
+            <p className="font-semibold border-b border-black pb-1 mb-1">Summary</p>
+            <div className="flex justify-between"><span>Lifetime purchases</span><span className="font-mono">{formatCurrency(stats.totalPurchases)}</span></div>
+            <div className="flex justify-between"><span>Total returned</span><span className="font-mono">{formatCurrency(stats.totalRefunds)}</span></div>
+            <div className="flex justify-between font-bold"><span>Balance due</span><span className="font-mono">{formatCurrency(customer.outstanding_balance)}</span></div>
+          </div>
+        </div>
+
+        <table className="w-full border-collapse text-[11px]" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr>
+              {['Date', 'Entry #', 'Type', 'Description', 'Debit', 'Credit', 'Balance'].map(h => (
+                <th key={h} className="border border-black px-1.5 py-1.5 text-left bg-gray-100">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {!statement || statement.length === 0 ? (
+              <tr><td className="border border-black px-1.5 py-3 text-center" colSpan={7}>No receivable activity</td></tr>
+            ) : statement.map((row: any, i: number) => (
+              <tr key={i}>
+                <td className="border border-black px-1.5 py-1.5">{formatDate(row.entry_date)}</td>
+                <td className="border border-black px-1.5 py-1.5">{row.entry_number}</td>
+                <td className="border border-black px-1.5 py-1.5">{row.doc_type}</td>
+                <td className="border border-black px-1.5 py-1.5 truncate">{row.description}</td>
+                <td className="border border-black px-1.5 py-1.5 text-right font-mono">{Number(row.debit) > 0 ? formatCurrency(row.debit) : ''}</td>
+                <td className="border border-black px-1.5 py-1.5 text-right font-mono">{Number(row.credit) > 0 ? formatCurrency(row.credit) : ''}</td>
+                <td className="border border-black px-1.5 py-1.5 text-right font-mono">{formatCurrency(row.balance)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="text-[10px] mt-2 text-gray-600">
+          Debit increases what the customer owes (invoices, receivables). Credit reduces it (payments, returns, bad debt).
+          Generated from the customer profile · {statement?.length ?? 0} entr{(statement?.length ?? 0) === 1 ? 'y' : 'ies'}.
+        </p>
+      </div>
     </div>
   );
 }

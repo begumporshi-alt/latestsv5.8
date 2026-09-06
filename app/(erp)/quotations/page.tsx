@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell } from 'lucide-react';
+import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock } from 'lucide-react';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -89,6 +89,20 @@ export default function QuotationsPage() {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: 'Quotation marked as sent' });
+      loadData();
+    }
+  }
+
+  async function setQuotationStatus(quotation: QuotationWithCustomer, status: 'accepted' | 'rejected' | 'expired') {
+    const label = status === 'accepted' ? 'accepted' : status === 'rejected' ? 'rejected' : 'expired';
+    const { error } = await supabase
+      .from('quotations')
+      .update({ status })
+      .eq('id', quotation.id);
+    if (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } else {
+      toast({ title: 'Success', description: `Quotation marked as ${label}` });
       loadData();
     }
   }
@@ -308,6 +322,15 @@ export default function QuotationsPage() {
                         )}
                         {q.status === 'draft' && (
                           <button onClick={() => sendQuotation(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition"><Send className="w-3.5 h-3.5" /></button>
+                        )}
+                        {(q.status === 'draft' || q.status === 'sent' || q.status === 'viewed') && (
+                          <button onClick={() => setQuotationStatus(q, 'accepted')} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition" title="Mark Accepted"><CheckCircle className="w-3.5 h-3.5" /></button>
+                        )}
+                        {(q.status === 'draft' || q.status === 'sent' || q.status === 'viewed') && (
+                          <button onClick={() => setQuotationStatus(q, 'rejected')} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Mark Rejected"><Ban className="w-3.5 h-3.5" /></button>
+                        )}
+                        {(q.status === 'draft' || q.status === 'sent' || q.status === 'viewed' || q.status === 'accepted') && (
+                          <button onClick={() => setQuotationStatus(q, 'expired')} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-orange-50 text-muted-foreground hover:text-orange-600 transition" title="Mark Expired"><Clock className="w-3.5 h-3.5" /></button>
                         )}
                         {(q.status === 'draft' || q.status === 'sent') && (
                           <button onClick={() => setDeletingQuotation(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Delete Quotation"><Trash2 className="w-3.5 h-3.5" /></button>
