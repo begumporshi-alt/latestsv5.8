@@ -1,14 +1,22 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, Layers, TriangleAlert as AlertTriangle } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
-import { fetchLedgerStockFor, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
+import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
+import {
+  allocateCartLines, availableForNewAdd, fetchAllocatableBatches, fetchInventorySettings,
+  ledgerQtyAllWarehouses, ledgerQtyForPair, pairKey, fmtQty, resolveWarehouse,
+  DEFAULT_INVENTORY_SETTINGS,
+  type AllocationResult, type AllocLineInput, type AllocatableBatch, type InventorySettings,
+} from '@/lib/batch-allocation';
+import { InsufficientStockDialog, type InsufficientStockInfo } from '@/components/insufficient-stock-dialog';
+import { BatchAllocationEditor, type EditorBatch } from '@/components/batch-allocation-editor';
 import { useGlobalCart } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 
@@ -27,6 +35,9 @@ interface CartItem {
   unit_price: number;
   base_quantity: number;
   discount_percent: number;
+  // Manual batch allocation (spec §9): batchId → base-unit qty. Cleared on
+  // any quantity/warehouse change so automatic allocation takes over again.
+  allocOverride?: Record<string, number> | null;
   available_warehouses?: { warehouse_id: string; warehouse_name: string; stock: number; inventory_item_id: string }[];
 }
 
@@ -70,6 +81,7 @@ export default function POSPage() {
   const [processing, setProcessing] = useState(false);
   const [lastInvoiceNumber, setLastInvoiceNumber] = useState('');
   const [unitSelectorProduct, setUnitSelectorProduct] = useState<ProductData | null>(null);
+  const [unitSelectorQty, setUnitSelectorQty] = useState('1');
   const [showScanner, setShowScanner] = useState(false);
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [brands, setBrands] = useState<{ id: string; name: string }[]>([]);
@@ -88,22 +100,57 @@ export default function POSPage() {
   const { items: globalCartItems, clearCart: clearGlobalCart } = useGlobalCart();
   const globalCartConsumed = useRef(false);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default: boolean }[]>([]);
-  // Batch-ledger stock (FIFO truth) for the cart's products — drives the
-  // oversell gate and the per-row hint. Always fetched for exactly the
-  // cart's product ids: the full-catalog RPC result exceeds Supabase's
-  // 1000-row cap and the tail silently reads as "ledger 0".
-  const [ledgerStock, setLedgerStock] = useState<LedgerStock | null>(null);
+  // Automatic batch allocation: eligible batches for exactly the cart's
+  // products are fetched once per cart change and the allocation is DERIVED
+  // from the snapshot + cart contents on every render — so consolidating
+  // lines, changing quantities, or removing items re-allocates automatically
+  // and cart quantities act as in-session reservations (spec §4, §10). The
+  // checkout gate re-fetches fresh totals at submit (spec §13).
+  const [invSettings, setInvSettings] = useState<InventorySettings>(DEFAULT_INVENTORY_SETTINGS);
+  const [allocBatches, setAllocBatches] = useState<Map<string, AllocatableBatch[]> | null>(null);
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
   const shortfallConfirmedRef = useRef(false);
+  const [insufficient, setInsufficient] = useState<{
+    info: InsufficientStockInfo;
+    product: ProductData;
+    unit: ProductUnit;
+    targetWarehouseId: string | undefined;
+    availableWhs: CartItem['available_warehouses'];
+  } | null>(null);
+  const [expandedBatchLine, setExpandedBatchLine] = useState<string | null>(null);
+  const [editingAllocLine, setEditingAllocLine] = useState<string | null>(null);
 
   const defaultWarehouseId = warehouses.find(w => w.is_default)?.id ?? null;
+  const strategy = invSettings.batch_allocation_method;
 
-  // FIFO ledger quantity available for a cart item (its warehouse, or the
-  // default warehouse — the same fallback consume_fifo uses for NULL).
-  function getLedgerQty(item: CartItem): number {
-    if (!ledgerStock) return 0;
-    return ledgerQtyFor({ product_id: item.id, warehouse_id: item.warehouse_id }, ledgerStock);
+  // Stable identity for a cart line (engine input + expandable/override UI)
+  function lineIdOf(item: CartItem): string {
+    return `${item.id}|${item.selected_unit?.id || 'default'}|${item.warehouse_id ?? ''}`;
+  }
+
+  const cartLineInputs: AllocLineInput[] = useMemo(
+    () => cart.map(item => ({
+      lineId: `${item.id}|${item.selected_unit?.id || 'default'}|${item.warehouse_id ?? ''}`,
+      productId: item.id,
+      warehouseId: item.warehouse_id,
+      baseQuantity: item.base_quantity,
+      allocOverride: item.allocOverride,
+    })),
+    [cart]
+  );
+
+  // The allocation itself: a pure derivation, recomputed whenever the cart
+  // or the batch snapshot changes. null when the batch lookup failed — the
+  // UI then falls back to counter-based behavior, the same fail-open policy
+  // as the oversell gate.
+  const allocation: AllocationResult | null = useMemo(
+    () => allocateCartLines(cartLineInputs, allocBatches, strategy, defaultWarehouseId),
+    [cartLineInputs, allocBatches, strategy, defaultWarehouseId]
+  );
+
+  function lineAllocation(item: CartItem) {
+    return allocation?.byLine.get(lineIdOf(item)) || null;
   }
 
   // Consume global cart items on mount (from header scanner)
@@ -205,19 +252,24 @@ export default function POSPage() {
   // Any cart change invalidates a prior "Sell anyway" confirmation.
   useEffect(() => { shortfallConfirmedRef.current = false; }, [cart]);
 
-  // Refresh batch-ledger stock whenever the set of products in the cart
-  // changes (bounded by cart size, so the 1000-row RPC cap can't bite).
+  // Allocation strategy + partial-add policy (spec §3, §6) — loaded once.
+  useEffect(() => {
+    fetchInventorySettings().then(setInvSettings).catch(() => {});
+  }, []);
+
+  // Refresh eligible batches whenever the set of products in the cart
+  // changes (bounded by cart size, so the 1000-row cap can't bite).
   const cartProductKey = Array.from(new Set(cart.map(i => i.id))).join(',');
   useEffect(() => {
-    if (!cartProductKey) { setLedgerStock(null); return; }
+    if (!cartProductKey) { setAllocBatches(null); return; }
     let stale = false;
     (async () => {
-      const stock = await fetchLedgerStockFor(cartProductKey.split(','), defaultWarehouseId);
-      if (!stale && stock) setLedgerStock(stock);
+      const batches = await fetchAllocatableBatches(cartProductKey.split(','));
+      if (!stale) setAllocBatches(batches);
     })();
     return () => { stale = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cartProductKey, defaultWarehouseId]);
+  }, [cartProductKey]);
 
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
@@ -265,10 +317,87 @@ export default function POSPage() {
     return product.inventory_items?.reduce((s: number, i: any) => s + Number(i.quantity_on_hand), 0) || 0;
   }
 
-  function addToCart(product: ProductData, selectedUnit?: ProductUnit) {
-    const invItems = product.inventory_items || [];
+  // Product-level availability for the grid badge (spec §18): batch-ledger
+  // truth minus everything already reserved in the cart, falling back to the
+  // counter when the product has no batch rows at all (legacy data) or the
+  // batch lookup failed (fail open, same policy as the oversell gate).
+  function getProductAvailable(product: ProductData): { available: number; batches: number } {
+    const cartQty = cart.filter(c => c.id === product.id).reduce((s, c) => s + c.base_quantity, 0);
+    if (allocBatches && allocBatches.has(product.id)) {
+      return {
+        available: Math.max(0, ledgerQtyAllWarehouses(product.id, allocBatches) - cartQty),
+        batches: (allocBatches.get(product.id) || []).length,
+      };
+    }
+    return { available: Math.max(0, getStockInBaseUnits(product) - cartQty), batches: 0 };
+  }
 
-    // Build available warehouses from inventory_items
+  // Batch-ledger qty this pair can still take (cart reservations already
+  // subtracted). null → no batch data for this product → caller falls back
+  // to the counter.
+  function pairAvailable(productId: string, warehouseId?: string | null): number | null {
+    if (!allocBatches || !allocBatches.has(productId)) return null;
+    return availableForNewAdd(productId, warehouseId, allocation, defaultWarehouseId);
+  }
+
+  // Warehouse with the most eligible batch stock (counter as tiebreaker).
+  function pickBestWarehouse(productId: string, availableWhs: { warehouse_id: string; stock: number }[]): string | undefined {
+    if (availableWhs.length === 0) return undefined;
+    if (allocBatches && allocBatches.has(productId)) {
+      let best: string | undefined;
+      let bestQty = -1;
+      for (const wh of availableWhs) {
+        const q = ledgerQtyForPair(productId, wh.warehouse_id, allocBatches, defaultWarehouseId);
+        if (q > bestQty) { bestQty = q; best = wh.warehouse_id; }
+      }
+      if (bestQty > 0) return best;
+    }
+    return availableWhs.reduce((a, b) => (a.stock > b.stock ? a : b)).warehouse_id;
+  }
+
+  // Pure cart mutation: merge into the product+unit+warehouse line, or push
+  // a new line. Quantity changes clear any manual allocation override so
+  // automatic allocation takes over again (spec §11).
+  function performAdd(product: ProductData, unit: ProductUnit, qty: number, warehouseId: string | undefined, availableWhs: CartItem['available_warehouses']) {
+    const unitPrice = unit.price || product.sale_price;
+    setCart(prev => {
+      const idx = prev.findIndex(i => i.id === product.id && i.selected_unit?.id === unit.id && (i.warehouse_id ?? '') === (warehouseId ?? ''));
+      if (idx >= 0) {
+        const existing = prev[idx];
+        const newQty = existing.quantity + qty;
+        const updated = [...prev];
+        updated[idx] = { ...existing, quantity: newQty, base_quantity: convertToBaseUnit(newQty, unit), allocOverride: null };
+        return updated;
+      }
+      const bestInv = availableWhs?.find(w => w.warehouse_id === warehouseId);
+      return [{
+        id: product.id,
+        name: product.name,
+        sku: product.sku,
+        sale_price: unitPrice,
+        cost_price: unit.cost_price || (product.cost_price || 0) * (unit.conversion_factor || 1),
+        quantity: qty,
+        image_url: product.image_url,
+        inventory_item_id: bestInv?.inventory_item_id,
+        warehouse_id: warehouseId,
+        stock_available: bestInv?.stock ?? 0,
+        selected_unit: unit,
+        unit_price: unitPrice,
+        base_quantity: convertToBaseUnit(qty, unit),
+        discount_percent: 0,
+        allocOverride: null,
+        available_warehouses: availableWhs,
+      }, ...prev];
+    });
+  }
+
+  function addToCart(product: ProductData, selectedUnit?: ProductUnit, requestedQty?: number) {
+    const qty = Math.max(requestedQty ?? 1, 0);
+    if (qty <= 0) return;
+    const unit = selectedUnit || getDefaultSaleUnit(product as any);
+    const addBaseQty = convertToBaseUnit(qty, unit);
+
+    const invItems = product.inventory_items || [];
     const availableWhs = invItems
       .filter((i: any) => Number(i.quantity_on_hand) > 0)
       .map((i: any) => ({
@@ -277,61 +406,56 @@ export default function POSPage() {
         stock: Number(i.quantity_on_hand),
         inventory_item_id: i.id,
       }));
-    const bestInv = availableWhs.length > 0
-      ? availableWhs.reduce((a, b) => (a.stock > b.stock ? a : b))
-      : null;
 
-    const stockAvailableInBase = bestInv ? bestInv.stock : 0;
+    // Merge target: an existing line for the same product+unit keeps its
+    // warehouse (spec §12 — update the line, don't duplicate).
+    const existing = cart.find(i => i.id === product.id && i.selected_unit?.id === unit.id);
+    const targetWarehouseId = existing?.warehouse_id ?? pickBestWarehouse(product.id, availableWhs);
 
-    if (stockAvailableInBase <= 0) {
-      toast({ title: 'Out of stock', description: `${product.name} is not available`, variant: 'destructive' });
+    // Ceiling in base units for this pair: batch-ledger available (cart
+    // reservations subtracted) when batch data exists for the product,
+    // otherwise the counter stock of the target warehouse (legacy products).
+    const batchKnown = !!allocBatches && allocBatches.has(product.id);
+    const key = pairKey(product.id, targetWarehouseId || defaultWarehouseId);
+    const maxTotalBase = batchKnown
+      ? (allocation?.availableByPair.get(key) ?? 0)
+      : (availableWhs.find(w => w.warehouse_id === targetWarehouseId)?.stock ?? 0);
+
+    const existingBase = existing?.base_quantity ?? 0;
+    const newTotalBase = existingBase + addBaseQty;
+
+    if (newTotalBase > maxTotalBase + 1e-9) {
+      const availableBase = Math.max(0, maxTotalBase - existingBase);
+      if (availableBase <= 1e-9) {
+        toast({ title: 'Out of stock', description: `${product.name} has nothing allocatable across its batches`, variant: 'destructive' });
+        return;
+      }
+      // Insufficient stock (spec §6): offer what exists — behavior is
+      // configurable via Settings → Inventory → allow_partial_add.
+      const cf = unit.conversion_factor || 1;
+      setInsufficient({
+        info: {
+          productName: product.name,
+          requested: qty,
+          available: availableBase / cf,
+          unitName: unit.unit_short || unit.unit_name,
+        },
+        product,
+        unit,
+        targetWarehouseId,
+        availableWhs,
+      });
+      setUnitSelectorProduct(null);
       return;
     }
 
-    const unit = selectedUnit || getDefaultSaleUnit(product as any);
-    const unitPrice = unit.price || product.sale_price;
-
-    setCart(prev => {
-      const existingIndex = prev.findIndex(i => i.id === product.id && i.selected_unit?.id === unit.id && (i.warehouse_id ?? '') === (bestInv?.warehouse_id ?? ''));
-
-      if (existingIndex >= 0) {
-        const existing = prev[existingIndex];
-        const newQty = existing.quantity + 1;
-        const newBaseQty = convertToBaseUnit(newQty, unit);
-
-        if (newBaseQty > stockAvailableInBase) {
-          toast({ title: 'Stock limit', description: `Only ${stockAvailableInBase} base units available`, variant: 'destructive' });
-          return prev;
-        }
-        const updated = [...prev];
-        updated[existingIndex] = { ...existing, quantity: newQty, base_quantity: newBaseQty };
-        return updated;
-      }
-
-      return [{
-        id: product.id,
-        name: product.name,
-        sku: product.sku,
-        sale_price: unitPrice,
-        cost_price: unit.cost_price || (product.cost_price || 0) * (unit.conversion_factor || 1),
-        quantity: 1,
-        image_url: product.image_url,
-        inventory_item_id: bestInv?.inventory_item_id,
-        warehouse_id: bestInv?.warehouse_id,
-        stock_available: stockAvailableInBase,
-        selected_unit: unit,
-        unit_price: unitPrice,
-        base_quantity: convertToBaseUnit(1, unit),
-        discount_percent: 0,
-        available_warehouses: availableWhs,
-      }, ...prev];
-    });
-
+    performAdd(product, unit, qty, targetWarehouseId, availableWhs);
     setUnitSelectorProduct(null);
   }
 
   function handleProductClick(product: ProductData) {
     if (isMultiUnitEnabled(product as any)) {
+      setUnitSelectorQty('1');
       setUnitSelectorProduct(product);
     } else {
       addToCart(product);
@@ -343,11 +467,15 @@ export default function POSPage() {
       if (i.id !== id || i.selected_unit?.id !== unitId) return i;
       const newQty = Math.max(0, i.quantity + delta);
       const newBaseQty = i.selected_unit ? convertToBaseUnit(newQty, i.selected_unit) : newQty;
-      if (newBaseQty > i.stock_available) {
-        toast({ title: 'Stock limit', description: `Only ${i.stock_available} base units available`, variant: 'destructive' });
+      // Ceiling: what the pair can still take beyond this line's own
+      // reservation (batch ledger truth; counter fallback without data).
+      const extra = pairAvailable(i.id, i.warehouse_id);
+      const maxBase = extra !== null ? i.base_quantity + extra : i.stock_available;
+      if (newBaseQty > maxBase + 1e-9) {
+        toast({ title: 'Stock limit', description: `Only ${fmtQty(maxBase)} base units available`, variant: 'destructive' });
         return i;
       }
-      return { ...i, quantity: newQty, base_quantity: newBaseQty };
+      return { ...i, quantity: newQty, base_quantity: newBaseQty, allocOverride: null };
     }).filter(i => i.quantity > 0));
   }
 
@@ -373,13 +501,51 @@ export default function POSPage() {
     setCart(prev => prev.map(i => {
       if (i.id !== id || (unitId && i.selected_unit?.id !== unitId)) return i;
       const baseQty = i.selected_unit ? convertToBaseUnit(newQty, i.selected_unit) : newQty;
-      if (baseQty > i.stock_available) {
-        toast({ title: 'Stock limit', description: `Only ${i.stock_available} ${i.selected_unit ? 'base units' : 'units'} available`, variant: 'destructive' });
-        const maxQty = i.selected_unit ? i.stock_available / i.selected_unit.conversion_factor : i.stock_available;
-        return { ...i, quantity: maxQty, base_quantity: i.stock_available };
+      const extra = pairAvailable(i.id, i.warehouse_id);
+      const maxBase = extra !== null ? i.base_quantity + extra : i.stock_available;
+      if (baseQty > maxBase + 1e-9) {
+        toast({ title: 'Stock limit', description: `Only ${fmtQty(maxBase)} ${i.selected_unit ? 'base units' : 'units'} available`, variant: 'destructive' });
+        const maxQty = i.selected_unit ? maxBase / i.selected_unit.conversion_factor : maxBase;
+        return { ...i, quantity: maxQty, base_quantity: maxBase, allocOverride: null };
       }
-      return { ...i, quantity: newQty, base_quantity: baseQty };
+      return { ...i, quantity: newQty, base_quantity: baseQty, allocOverride: null };
     }));
+  }
+
+  // ---- Manual batch allocation (spec §9) --------------------------------
+  // Eligible batches for a line with per-batch availability EXCLUDING this
+  // line's own reservation: the engine is re-run on the rest of the cart and
+  // each batch's remaining stock is reduced by what those lines hold.
+  function editorBatchesFor(item: CartItem): EditorBatch[] {
+    if (!allocBatches || !allocation) return [];
+    const liKey = lineIdOf(item);
+    const wh = resolveWarehouse({ warehouseId: item.warehouse_id }, defaultWarehouseId);
+    const key = pairKey(item.id, wh);
+    const eligible = allocation.batchesByPair.get(key) || [];
+    const others = cart
+      .filter(c => lineIdOf(c) !== liKey)
+      .map(c => ({ lineId: lineIdOf(c), productId: c.id, warehouseId: c.warehouse_id, baseQuantity: c.base_quantity, allocOverride: c.allocOverride }));
+    const othersResult = allocateCartLines(others, allocBatches, strategy, defaultWarehouseId);
+    const usedByOthers = new Map<string, number>();
+    if (othersResult) {
+      for (const la of othersResult.byLine.values()) {
+        for (const a of la.allocations) usedByOthers.set(a.batch.id, (usedByOthers.get(a.batch.id) || 0) + a.qty);
+      }
+    }
+    return eligible.map(b => ({ batch: b, available: Math.max(0, b.quantity_remaining - (usedByOthers.get(b.id) || 0)) }));
+  }
+
+  function autoAllocMapFor(item: CartItem): Record<string, number> {
+    const out: Record<string, number> = {};
+    const la = lineAllocation(item);
+    if (la && !la.usedOverride) for (const a of la.allocations) out[a.batch.id] = a.qty;
+    return out;
+  }
+
+  function saveAllocationOverride(item: CartItem, override: Record<string, number>) {
+    setCart(prev => prev.map(c => (lineIdOf(c) === lineIdOf(item) ? { ...c, allocOverride: override } : c)));
+    setEditingAllocLine(null);
+    toast({ title: 'Batch allocation updated', description: 'Manual allocation saved for this line' });
   }
 
   function reorderCart(fromIndex: number, toIndex: number) {
@@ -413,7 +579,6 @@ export default function POSPage() {
       Array.from(new Set(cart.map(i => i.id))),
       defaultWarehouseId
     );
-    if (gateStock) setLedgerStock(gateStock);
 
     if (!shortfallConfirmedRef.current) {
       if (gateStock) {
@@ -978,14 +1143,14 @@ export default function POSPage() {
               {search ? `No products found for "${search}"` : 'No products found'}
             </div>
           ) : filteredProducts.map(p => {
-            const stock = getStockInBaseUnits(p);
             const multiUnit = isMultiUnitEnabled(p as any);
             const saleUnit = p.units?.find(u => u.is_sale_unit);
             const displayPrice = saleUnit?.price || p.sale_price;
 
-            const inCart = cart.filter(c => c.id === p.id);
-            const cartQty = inCart.reduce((sum, c) => sum + c.base_quantity, 0);
-            const available = stock - cartQty;
+            // Batch-ledger availability minus cart reservations (spec §18);
+            // counter fallback when the product has no batch rows.
+            const stockInfo = getProductAvailable(p);
+            const available = stockInfo.available;
 
             return (
               <div
@@ -1044,7 +1209,10 @@ export default function POSPage() {
                         <div className="absolute top-full left-3 w-0 h-0 border-x-4 border-x-transparent border-t-4 border-t-slate-800" />
                       </div>
                     </div>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${available > 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-500'}`}>{available}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.5 rounded ${available > 0 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-500'}`}
+                      title={stockInfo.batches > 0 ? `${stockInfo.batches} eligible batch${stockInfo.batches === 1 ? '' : 'es'} · ${strategy.toUpperCase()} allocation` : 'Counter stock (no batch ledger rows)'}
+                    >{available}</span>
                   </div>
                 </div>
               </div>
@@ -1124,6 +1292,9 @@ export default function POSPage() {
           ) : cartTab === 'items' ? (
             cart.map((item, index) => {
               const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
+              const liKey = lineIdOf(item);
+              const la = lineAllocation(item);
+              const batchExpanded = expandedBatchLine === liKey;
               return (
             <div
               key={`${item.id}-${item.selected_unit?.id || 'default'}`}
@@ -1184,12 +1355,48 @@ export default function POSPage() {
                   />
                 </div>
               </div>
-              {ledgerStock && item.base_quantity - Math.max(getLedgerQty(item), 0) > 0 && (
+              {la && la.shortfall > 1e-9 && (
                 <div className="mt-1.5 pl-6 flex items-center gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
                   <span className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                    Ledger stock {getLedgerQty(item)} of {item.base_quantity} — short {item.base_quantity - Math.max(getLedgerQty(item), 0)} units, needs confirmation
+                    Batch ledger {fmtQty(la.allocatedQty)} of {fmtQty(item.base_quantity)} — short {fmtQty(la.shortfall)} base units, needs confirmation
                   </span>
+                </div>
+              )}
+              {la && la.allocations.length > 0 && (
+                <div className="mt-1 pl-6">
+                  {/* Batch allocation preview (spec §7–§8): informational,
+                      expandable — the normal flow never requires interaction */}
+                  <button
+                    onClick={() => setExpandedBatchLine(v => (v === liKey ? null : liKey))}
+                    className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 font-medium"
+                  >
+                    {batchExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                    Batch Allocation ({la.allocations.length} batch{la.allocations.length === 1 ? '' : 'es'})
+                    <span className={`ml-1 px-1 py-px rounded text-[9px] font-semibold ${la.usedOverride ? 'bg-purple-100 text-purple-700' : 'bg-blue-50 text-blue-500'}`}>
+                      {la.usedOverride ? 'MANUAL' : strategy.toUpperCase()}
+                    </span>
+                  </button>
+                  {batchExpanded && (
+                    <div className="mt-1 bg-white border border-border rounded-lg px-2 py-1.5 space-y-0.5">
+                      {la.allocations.map(a => (
+                        <div key={a.batch.id} className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="text-foreground font-medium truncate max-w-[130px]">{a.batch.batch_number || a.batch.id.slice(0, 8)}</span>
+                          <span className="text-muted-foreground shrink-0">
+                            {fmtQty(a.qty)}{item.selected_unit && item.selected_unit.conversion_factor !== 1 ? ` (${fmtQty(a.qty / item.selected_unit.conversion_factor)} ${item.selected_unit.unit_short || item.selected_unit.unit_name})` : ''}
+                          </span>
+                          <span className="text-muted-foreground shrink-0">@ ৳{fmtQty(a.batch.unit_cost)}</span>
+                        </div>
+                      ))}
+                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-border/60">
+                        <span className="text-muted-foreground">Batch COGS (est.)</span>
+                        <span className="font-semibold text-foreground">{formatCurrency(la.allocations.reduce((s, a) => s + a.qty * a.batch.unit_cost, 0))}</span>
+                      </div>
+                      <button onClick={() => setEditingAllocLine(liKey)} className="text-[11px] text-blue-600 hover:underline pt-0.5">
+                        Edit Batch Allocation
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
               {item.available_warehouses && item.available_warehouses.length > 0 && (
@@ -1200,7 +1407,9 @@ export default function POSPage() {
                     onChange={e => {
                       const wh = item.available_warehouses?.find(w => w.warehouse_id === e.target.value);
                       if (wh) {
-                        setCart(prev => prev.map((c, ci) => ci === index ? { ...c, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_available: wh.stock } : c));
+                        // New warehouse = new allocation pair: drop any manual
+                        // override so automatic allocation re-runs there.
+                        setCart(prev => prev.map((c, ci) => ci === index ? { ...c, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_available: wh.stock, allocOverride: null } : c));
                       }
                     }}
                     onClick={e => e.stopPropagation()}
@@ -1407,6 +1616,43 @@ export default function POSPage() {
         />
       )}
 
+      {/* Insufficient stock at add-time (spec §6) — configurable partial add */}
+      {insufficient && (
+        <InsufficientStockDialog
+          info={insufficient.info}
+          allowPartial={invSettings.allow_partial_add}
+          onAddPartial={(partialQty) => {
+            performAdd(insufficient.product, insufficient.unit, partialQty, insufficient.targetWarehouseId, insufficient.availableWhs);
+            setInsufficient(null);
+          }}
+          onCancel={() => setInsufficient(null)}
+        />
+      )}
+
+      {/* Manual batch allocation override (spec §9) */}
+      {editingAllocLine && (() => {
+        const item = cart.find(c => lineIdOf(c) === editingAllocLine);
+        if (!item || !allocation) return null;
+        const la = lineAllocation(item);
+        return (
+          <BatchAllocationEditor
+            productName={item.name}
+            lineQty={item.base_quantity}
+            unitLabel={item.selected_unit ? (item.selected_unit.unit_short || item.selected_unit.unit_name) : undefined}
+            batches={editorBatchesFor(item)}
+            autoAllocations={autoAllocMapFor(item)}
+            initialOverride={la?.usedOverride ? Object.fromEntries(la.allocations.map(a => [a.batch.id, a.qty])) : null}
+            strategy={strategy}
+            onSave={(ov) => saveAllocationOverride(item, ov)}
+            onUseAuto={() => {
+              setCart(prev => prev.map(c => (lineIdOf(c) === editingAllocLine ? { ...c, allocOverride: null } : c)));
+              setEditingAllocLine(null);
+            }}
+            onClose={() => setEditingAllocLine(null)}
+          />
+        );
+      })()}
+
       {showScanner && (
         <BarcodeScannerModal
           onDetected={async (code) => {
@@ -1447,10 +1693,42 @@ export default function POSPage() {
               <button onClick={() => setUnitSelectorProduct(null)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
             </div>
             <div className="p-4 space-y-2">
+              {/* Enter quantity → Add to Cart (spec §17); allocation is
+                  automatic afterwards — no batch popup */}
+              {(() => {
+                const info = getProductAvailable(unitSelectorProduct);
+                return (
+                  <p className="text-[11px] text-muted-foreground">
+                    Available: <span className="font-semibold text-foreground">{fmtQty(info.available)}</span> base units
+                    {info.batches > 0 ? ` · ${info.batches} batch${info.batches === 1 ? '' : 'es'} · ${strategy.toUpperCase()}` : ''}
+                  </p>
+                );
+              })()}
+              <div className="flex items-center justify-between gap-2 pb-2 border-b border-border">
+                <span className="text-xs font-semibold text-muted-foreground">QUANTITY</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => setUnitSelectorQty(q => String(Math.max(0, (parseFloat(q) || 0) - 1)))}
+                    className="w-8 h-8 border border-border rounded-lg text-sm font-bold text-muted-foreground hover:bg-muted transition"
+                  >−</button>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={unitSelectorQty}
+                    onChange={e => setUnitSelectorQty(e.target.value)}
+                    className="w-16 text-center text-sm font-bold border border-border rounded-lg px-1 py-1.5 focus:outline-none focus:border-blue-400 bg-white"
+                  />
+                  <button
+                    onClick={() => setUnitSelectorQty(q => String((parseFloat(q) || 0) + 1))}
+                    className="w-8 h-8 border border-border rounded-lg text-sm font-bold text-muted-foreground hover:bg-muted transition"
+                  >+</button>
+                </div>
+              </div>
               {unitSelectorProduct.units?.filter(u => u.is_active).map(unit => (
                 <button
                   key={unit.id}
-                  onClick={() => addToCart(unitSelectorProduct, unit)}
+                  onClick={() => addToCart(unitSelectorProduct, unit, parseFloat(unitSelectorQty) || 1)}
                   className="w-full flex items-center justify-between p-3 border border-border rounded-xl hover:border-blue-400 hover:bg-blue-50/50 transition"
                 >
                   <div className="text-left">
@@ -1467,7 +1745,7 @@ export default function POSPage() {
               ))}
               {(!unitSelectorProduct.units || unitSelectorProduct.units.filter(u => u.is_active).length === 0) && (
                 <button
-                  onClick={() => addToCart(unitSelectorProduct)}
+                  onClick={() => addToCart(unitSelectorProduct, undefined, parseFloat(unitSelectorQty) || 1)}
                   className="w-full flex items-center justify-between p-3 border border-border rounded-xl hover:border-blue-400 hover:bg-blue-50/50 transition"
                 >
                   <p className="text-sm font-semibold">{unitSelectorProduct.unit || 'Piece'}</p>

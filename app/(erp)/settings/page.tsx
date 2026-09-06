@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
 import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X } from 'lucide-react';
 
-type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'data';
+type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'data';
 
 interface DeleteTarget {
   key: string;
@@ -39,6 +39,11 @@ interface AppearanceSettings {
   darkMode: boolean;
   theme: string;
   interface: string;
+}
+
+interface InventorySettings {
+  batch_allocation_method: 'fifo' | 'fefo';
+  allow_partial_add: boolean;
 }
 
 interface ProfileData {
@@ -83,6 +88,10 @@ export default function SettingsPage() {
     darkMode: false,
     theme: '#2563eb',
     interface: 'desktop',
+  });
+  const [inventorySettings, setInventorySettings] = useState<InventorySettings>({
+    batch_allocation_method: 'fifo',
+    allow_partial_add: true,
   });
   const [profile, setProfile] = useState<ProfileData>({
     full_name: '',
@@ -215,10 +224,11 @@ export default function SettingsPage() {
   async function loadSettings() {
     setLoading(true);
 
-    const [companyRes, notifRes, appearRes, profileRes] = await Promise.all([
+    const [companyRes, notifRes, appearRes, invRes, profileRes] = await Promise.all([
       supabase.from('app_settings').select('*').eq('setting_key', 'company').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'notifications').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'appearance').single(),
+      supabase.from('app_settings').select('*').eq('setting_key', 'inventory').single(),
       supabase.from('profiles').select('*').limit(1).single(),
     ]);
 
@@ -230,6 +240,9 @@ export default function SettingsPage() {
     }
     if (appearRes.data?.setting_value) {
       setAppearance({ ...appearance, ...appearRes.data.setting_value as AppearanceSettings });
+    }
+    if (invRes.data?.setting_value) {
+      setInventorySettings({ ...inventorySettings, ...invRes.data.setting_value as InventorySettings });
     }
     if (profileRes.data) {
       setProfile({
@@ -311,6 +324,7 @@ export default function SettingsPage() {
 
   const tabs = [
     { id: 'general', label: 'General', icon: Settings },
+    { id: 'inventory', label: 'Inventory', icon: Package },
     { id: 'profile', label: 'Profile', icon: User },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'security', label: 'Security', icon: Shield },
@@ -480,6 +494,57 @@ export default function SettingsPage() {
                       <option>YYYY-MM-DD</option>
                     </select>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'inventory' && (
+            <div>
+              <div className="px-6 py-4 border-b border-border">
+                <h2 className="text-base font-bold">Inventory Settings</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">Batch allocation and stock policies</p>
+              </div>
+              <div className="p-6 space-y-6">
+                <div>
+                  <label className="block text-xs font-medium mb-1">Batch Allocation Method</label>
+                  <p className="text-xs text-muted-foreground mb-3 max-w-2xl">
+                    How the POS automatically distributes a sale across stock batches (Settings apply to new sales; the
+                    database consumes batches in the same order at checkout). FEFO consumes the earliest-expiry batch
+                    first and needs expiry dates on batches; FIFO consumes the oldest stock first.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3 max-w-md">
+                    <button
+                      onClick={() => setInventorySettings(s => ({ ...s, batch_allocation_method: 'fifo' }))}
+                      className={`flex flex-col items-start gap-1 p-4 rounded-xl border-2 text-left transition ${inventorySettings.batch_allocation_method === 'fifo' ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/10' : 'border-border hover:border-blue-200'}`}
+                    >
+                      <span className="text-sm font-bold text-foreground">FIFO</span>
+                      <span className="text-xs text-muted-foreground">First In, First Out — oldest stock leaves first</span>
+                    </button>
+                    <button
+                      onClick={() => setInventorySettings(s => ({ ...s, batch_allocation_method: 'fefo' }))}
+                      className={`flex flex-col items-start gap-1 p-4 rounded-xl border-2 text-left transition ${inventorySettings.batch_allocation_method === 'fefo' ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/10' : 'border-border hover:border-blue-200'}`}
+                    >
+                      <span className="text-sm font-bold text-foreground">FEFO</span>
+                      <span className="text-xs text-muted-foreground">First Expired, First Out — earliest expiry leaves first</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-6 max-w-2xl border border-border rounded-xl p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Allow partial adds past available stock</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      When a requested quantity exceeds batch availability, the POS offers "Add Available X" so the
+                      cashier can take what exists. Turn off to require the full quantity instead.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setInventorySettings(s => ({ ...s, allow_partial_add: !s.allow_partial_add }))}
+                    className={`w-10 h-5 rounded-full transition relative shrink-0 ${inventorySettings.allow_partial_add ? 'bg-blue-600' : 'bg-gray-300'}`}
+                    title={inventorySettings.allow_partial_add ? 'Partial adds allowed' : 'Partial adds blocked'}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${inventorySettings.allow_partial_add ? 'left-5' : 'left-0.5'}`} />
+                  </button>
                 </div>
               </div>
             </div>
@@ -913,6 +978,7 @@ export default function SettingsPage() {
             <button
               onClick={() => {
                 if (activeTab === 'general') saveSettings('company', company);
+                else if (activeTab === 'inventory') saveSettings('inventory', inventorySettings);
                 else if (activeTab === 'notifications') saveSettings('notifications', notifications);
                 else if (activeTab === 'appearance') saveSettings('appearance', appearance);
                 else if (activeTab === 'profile') saveProfile();
