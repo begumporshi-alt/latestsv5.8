@@ -18,6 +18,7 @@ import {
   type AllocationResult, type AllocLineInput, type AllocatableBatch, type InventorySettings,
 } from '@/lib/batch-allocation';
 import { InsufficientStockDialog, type InsufficientStockInfo } from '@/components/insufficient-stock-dialog';
+import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { BatchAllocationEditor, type EditorBatch } from '@/components/batch-allocation-editor';
 import { useGlobalCart } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
@@ -68,6 +69,14 @@ const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
 export default function POSPage() {
   const [products, setProducts] = useState<ProductData[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
+  const [applyVat, setApplyVat] = useState(false);
+  useEffect(() => {
+    loadVatSettings(supabase).then(s => {
+      setVatSettings(s);
+      setApplyVat(s.enabled && s.default_on);
+    });
+  }, []);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<string>('');
@@ -571,6 +580,8 @@ export default function POSPage() {
   const cartDiscountAmount = (subtotal * discount) / 100;
   const discountAmount = cartDiscountAmount;
   const total = Math.max(0, subtotal - cartDiscountAmount - extraDiscount);
+  const posVat = computeVat(total, vatSettings, applyVat);
+  const grandTotal = posVat.total;
 
   async function processOrder() {
     if (cart.length === 0) { toast({ title: 'Cart is empty', variant: 'destructive' }); return; }
@@ -632,9 +643,9 @@ export default function POSPage() {
     // credit. A fully-paid sale creates no receivable and never warns. The
     // customer is fetched fresh at gate time; a failed lookup fails open.
     if (!creditConfirmedRef.current) {
-      const cashNow = paymentTerm === 'full' ? total : paymentTerm === 'partial' ? (parseFloat(partialAmount) || 0) : 0;
-      const creditApplied = applyStoreCredit ? Math.min(storeCreditBalance, total) : 0;
-      const credit = await checkCreditLimit(selectedCustomer, newReceivableFor(total, cashNow, creditApplied));
+      const cashNow = paymentTerm === 'full' ? grandTotal : paymentTerm === 'partial' ? (parseFloat(partialAmount) || 0) : 0;
+      const creditApplied = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
+      const credit = await checkCreditLimit(selectedCustomer, newReceivableFor(grandTotal, cashNow, creditApplied));
       if (credit) {
         setPendingCreditCheck(credit);
         setCreditConfirmOpen(true);
@@ -650,14 +661,14 @@ export default function POSPage() {
       setLastInvoiceNumber(invoiceNumber);
 
       const customerId = selectedCustomer;
-      const creditToApply = applyStoreCredit ? Math.min(storeCreditBalance, total) : 0;
+      const creditToApply = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
 
       // Determine amount paid based on payment term
       let amountPaid = 0;
       let invoiceStatus = 'draft';
       if (paymentTerm === 'full') {
-        amountPaid = total;
-        invoiceStatus = creditToApply > 0 && (total - creditToApply) > 0 ? 'partially_paid' : 'paid';
+        amountPaid = grandTotal;
+        invoiceStatus = creditToApply > 0 && (grandTotal - creditToApply) > 0 ? 'partially_paid' : 'paid';
       } else if (paymentTerm === 'partial') {
         amountPaid = parseFloat(partialAmount) || 0;
         if (amountPaid <= 0) {
@@ -665,7 +676,7 @@ export default function POSPage() {
           setProcessing(false);
           return;
         }
-        if (amountPaid >= total) {
+        if (amountPaid >= grandTotal) {
           toast({ title: 'Invalid amount', description: 'Partial payment must be less than total. Use Full Payment.', variant: 'destructive' });
           setProcessing(false);
           return;
@@ -677,7 +688,7 @@ export default function POSPage() {
         invoiceStatus = 'sent';
       }
 
-      const cashToPay = paymentTerm === 'full' ? (total - creditToApply) : (paymentTerm === 'partial' ? amountPaid : 0);
+      const cashToPay = paymentTerm === 'full' ? (grandTotal - creditToApply) : (paymentTerm === 'partial' ? amountPaid : 0);
 
       const { data: invoice, error: invError } = await supabase
         .from('invoices')
@@ -689,9 +700,9 @@ export default function POSPage() {
           discount_amount: cartDiscountAmount,
           cart_discount_percent: discount,
           extra_discount: extraDiscount,
-          tax_amount: 0,
-          total_amount: total,
-          amount_paid: paymentTerm === 'full' ? total : (paymentTerm === 'partial' ? amountPaid : 0),
+          tax_amount: posVat.taxAmount,
+          total_amount: grandTotal,
+          amount_paid: paymentTerm === 'full' ? grandTotal : (paymentTerm === 'partial' ? amountPaid : 0),
           status: invoiceStatus,
           is_pos: true,
           reference: reference || null,
@@ -1484,7 +1495,7 @@ export default function POSPage() {
               </div>
               <div className="flex justify-between text-sm pt-1">
                 <span className="text-muted-foreground">Selling Total:</span>
-                <span className="font-bold text-foreground">{formatCurrency(total)}</span>
+                <span className="font-bold text-foreground">{formatCurrency(grandTotal)}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-muted-foreground">Profit (est.):</span>
@@ -1537,7 +1548,21 @@ export default function POSPage() {
                   {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item Discounts</span><span>-{formatCurrency(itemDiscountTotal)}</span></div>}
                   {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart Discount ({discount}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>}
                   {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>}
-                  <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span>{formatCurrency(total)}</span></div>
+                  {vatSettings.enabled && (
+                    <div className="flex justify-between items-center pt-1 border-t border-border">
+                      <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={applyVat}
+                          onChange={e => setApplyVat(e.target.checked)}
+                          className="w-3.5 h-3.5 accent-blue-600"
+                        />
+                        VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
+                      </label>
+                      {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(posVat.taxAmount)}</span>}
+                    </div>
+                  )}
+                  <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
                 </div>
 
                 <button
@@ -1546,7 +1571,7 @@ export default function POSPage() {
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl transition disabled:opacity-60 text-sm flex items-center justify-center gap-2"
                 >
                   <Receipt className="w-4 h-4" />
-                  {processing ? 'Processing...' : `Checkout · ${formatCurrency(total)}`}
+                  {processing ? 'Processing...' : `Checkout · ${formatCurrency(grandTotal)}`}
                 </button>
 
                 <button
@@ -1560,7 +1585,7 @@ export default function POSPage() {
 
             {!showCartFooter && (
               <div className="px-2.5 py-2 flex items-center justify-between">
-                <div className="flex justify-between font-bold text-sm text-foreground w-full"><span>Total</span><span>{formatCurrency(total)}</span></div>
+                <div className="flex justify-between font-bold text-sm text-foreground w-full"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
                 <button
                   onClick={() => setShowCheckout(true)}
                   disabled={processing || !selectedCustomer}
@@ -1589,7 +1614,9 @@ export default function POSPage() {
       {/* Checkout Modal */}
       {showCheckout && (
         <CheckoutModal
-          total={total}
+          total={grandTotal}
+          taxAmount={posVat.taxAmount}
+          vatLabel={vatSettings.enabled ? `VAT (${vatSettings.rate}%${vatSettings.mode === 'inclusive' ? ', in prices' : ''})` : ''}
           subtotal={subtotal}
           discount={discount}
           discountAmount={discountAmount}
@@ -1987,13 +2014,13 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
 }
 
 function CheckoutModal({
-  total, subtotal, discount, discountAmount, extraDiscount, itemDiscountTotal, cartDiscountAmount, paymentMethod, setPaymentMethod,
+  total, taxAmount, vatLabel, subtotal, discount, discountAmount, extraDiscount, itemDiscountTotal, cartDiscountAmount, paymentMethod, setPaymentMethod,
   displayMethods, paymentMethodIcons, paymentMethodColors,
   amountPaid, setAmountPaid, processing, onConfirm, onClose,
   storeCreditBalance, applyStoreCredit, setApplyStoreCredit, selectedCustomer, customers, cart,
   paymentTerm, setPaymentTerm, partialAmount, setPartialAmount,
 }: {
-  total: number; subtotal: number; discount: number; discountAmount: number; extraDiscount: number; itemDiscountTotal: number; cartDiscountAmount: number;
+  total: number; taxAmount: number; vatLabel: string; subtotal: number; discount: number; discountAmount: number; extraDiscount: number; itemDiscountTotal: number; cartDiscountAmount: number;
   paymentMethod: string; setPaymentMethod: (m: string) => void;
   displayMethods: any[]; paymentMethodIcons: Record<string, any>; paymentMethodColors: Record<string, string>;
   amountPaid: string; setAmountPaid: (v: string) => void;
@@ -2036,6 +2063,9 @@ function CheckoutModal({
             )}
             {extraDiscount > 0 && (
               <div className="flex justify-between text-red-600"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>
+            )}
+            {taxAmount > 0 && vatLabel && (
+              <div className="flex justify-between text-blue-700"><span>{vatLabel}</span><span>+{formatCurrency(taxAmount)}</span></div>
             )}
             <div className="flex justify-between text-base font-bold pt-1 border-t border-border"><span>Total Due</span><span className="text-blue-600">{formatCurrency(total)}</span></div>
           </div>

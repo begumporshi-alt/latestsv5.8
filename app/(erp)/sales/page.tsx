@@ -15,6 +15,7 @@ import Pagination from '@/components/ui/AppPagination';
 import type { Invoice, InvoiceStatus, Customer, Product, Payment, PaymentMethod, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
+import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
 import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/credit-gate';
@@ -1192,6 +1193,14 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   onSaved: () => void;
 }) {
   const router = useRouter();
+  const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
+  const [applyVat, setApplyVat] = useState(false);
+  useEffect(() => {
+    loadVatSettings(supabase).then(s => {
+      setVatSettings(s);
+      setApplyVat(s.enabled && s.default_on);
+    });
+  }, []);
   const [form, setForm] = useState({
     customer_id: '',
     invoice_date: new Date().toISOString().split('T')[0],
@@ -1483,7 +1492,9 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   }, 0);
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
-  const amountPaid = form.payment_type === 'full' ? totalAmount : (form.payment_type === 'partial' ? form.amount_paid : 0);
+  const vat = computeVat(totalAmount, vatSettings, applyVat);
+  const grandTotal = vat.total;
+  const amountPaid = form.payment_type === 'full' ? grandTotal : (form.payment_type === 'partial' ? form.amount_paid : 0);
 
   async function handleAddCustomer(newCustomerId: string) {
     const { data } = await supabase.from('customers').select('*').eq('id', newCustomerId).single();
@@ -1498,7 +1509,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     if (!form.customer_id) { setError('Please select a customer'); return; }
     if (items.length === 0) { setError('Please add at least one item'); return; }
     if (form.payment_type === 'partial' && form.amount_paid <= 0) { setError('Please enter payment amount for partial payment'); return; }
-    if (form.payment_type === 'partial' && form.amount_paid >= totalAmount) { setError('Partial payment must be less than total. Use "Full Payment" instead.'); return; }
+    if (form.payment_type === 'partial' && form.amount_paid >= grandTotal) { setError('Partial payment must be less than total. Use "Full Payment" instead.'); return; }
 
     // Oversell gate — same warn-and-confirm as the POS page: compare the
     // line items against the FIFO batch ledger (the counter can drift and
@@ -1537,7 +1548,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     // receivable created is total minus what's collected now. Fetches the
     // customer fresh; a failed lookup fails open (advisory gate).
     if (!creditConfirmedRef.current) {
-      const credit = await checkCreditLimit(form.customer_id, newReceivableFor(totalAmount, amountPaid, 0));
+      const credit = await checkCreditLimit(form.customer_id, newReceivableFor(grandTotal, amountPaid, 0));
       if (credit) {
         setPendingCreditCheck(credit);
         setCreditConfirmOpen(true);
@@ -1562,9 +1573,10 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         cart_discount_percent: form.cart_discount_percent || 0,
         discount_amount: cartDiscountAmount,
         extra_discount: form.extra_discount || 0,
-        total_amount: totalAmount,
+        total_amount: grandTotal,
+        tax_amount: vat.taxAmount,
         amount_paid: amountPaid,
-        status: amountPaid >= totalAmount ? 'paid' : (amountPaid > 0 ? 'partially_paid' : 'draft'),
+        status: amountPaid >= grandTotal ? 'paid' : (amountPaid > 0 ? 'partially_paid' : 'draft'),
         is_pos: false,
         notes: form.notes || null,
         reference: form.reference || null,
@@ -1970,9 +1982,25 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                   <span>-{formatCurrency(form.extra_discount || 0)}</span>
                 </div>
               )}
+              {vatSettings.enabled && (
+                <>
+                  <div className="flex justify-between items-center pt-1 border-t border-border">
+                    <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={applyVat}
+                        onChange={e => setApplyVat(e.target.checked)}
+                        className="w-3.5 h-3.5 accent-blue-600"
+                      />
+                      VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
+                    </label>
+                    {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(vat.taxAmount)}</span>}
+                  </div>
+                </>
+              )}
               <div className="flex justify-between items-center pt-1 border-t border-border">
                 <p className="text-xs font-medium text-muted-foreground">Total</p>
-                <p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p>
+                <p className="text-lg font-bold text-foreground">{formatCurrency(grandTotal)}</p>
               </div>
             </div>
           </div>
@@ -2000,7 +2028,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
               </button>
               <button
                 type="button"
-                onClick={() => setForm({ ...form, payment_type: 'full', amount_paid: totalAmount })}
+                onClick={() => setForm({ ...form, payment_type: 'full', amount_paid: grandTotal })}
                 className={`p-3 border rounded-lg text-center transition ${form.payment_type === 'full' ? 'border-green-600 bg-green-50 text-green-700' : 'border-border hover:border-gray-300'}`}
               >
                 <CheckCircle2 className="w-5 h-5 mx-auto mb-1" />
@@ -2051,15 +2079,15 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                     <input
                       type="number"
                       min="0.01"
-                      max={totalAmount - 0.01}
+                      max={grandTotal - 0.01}
                       step="0.01"
                       value={form.amount_paid}
                       onChange={e => setForm({ ...form, amount_paid: parseFloat(e.target.value) || 0 })}
                       className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
-                      placeholder={`Enter amount (Max: ${formatCurrency(totalAmount)})`}
+                      placeholder={`Enter amount (Max: ${formatCurrency(grandTotal)})`}
                     />
                     <p className="text-xs text-green-700 mt-1 font-medium">
-                      Balance Due After Payment: {formatCurrency(totalAmount - form.amount_paid)}
+                      Balance Due After Payment: {formatCurrency(grandTotal - form.amount_paid)}
                     </p>
                   </div>
                 )}

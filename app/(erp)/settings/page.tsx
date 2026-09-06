@@ -3,9 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
-import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X } from 'lucide-react';
+import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt } from 'lucide-react';
 
-type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'data';
+type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'tax' | 'data';
 
 interface DeleteTarget {
   key: string;
@@ -44,6 +44,13 @@ interface AppearanceSettings {
 interface InventorySettings {
   batch_allocation_method: 'fifo' | 'fefo';
   allow_partial_add: boolean;
+}
+
+interface VatSettingsState {
+  enabled: boolean;
+  rate: number;
+  mode: 'exclusive' | 'inclusive';
+  default_on: boolean;
 }
 
 interface ProfileData {
@@ -89,6 +96,7 @@ export default function SettingsPage() {
     theme: '#2563eb',
     interface: 'desktop',
   });
+  const [vatSettings, setVatSettings] = useState<VatSettingsState>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
   const [inventorySettings, setInventorySettings] = useState<InventorySettings>({
     batch_allocation_method: 'fifo',
     allow_partial_add: true,
@@ -224,11 +232,12 @@ export default function SettingsPage() {
   async function loadSettings() {
     setLoading(true);
 
-    const [companyRes, notifRes, appearRes, invRes, profileRes] = await Promise.all([
+    const [companyRes, notifRes, appearRes, invRes, vatRes, profileRes] = await Promise.all([
       supabase.from('app_settings').select('*').eq('setting_key', 'company').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'notifications').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'appearance').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'inventory').single(),
+      supabase.from('app_settings').select('*').eq('setting_key', 'vat').maybeSingle(),
       supabase.from('profiles').select('*').limit(1).single(),
     ]);
 
@@ -243,6 +252,9 @@ export default function SettingsPage() {
     }
     if (invRes.data?.setting_value) {
       setInventorySettings({ ...inventorySettings, ...invRes.data.setting_value as InventorySettings });
+    }
+    if (vatRes.data?.setting_value) {
+      setVatSettings(s => ({ ...s, ...vatRes.data.setting_value as VatSettingsState }));
     }
     if (profileRes.data) {
       setProfile({
@@ -325,6 +337,7 @@ export default function SettingsPage() {
   const tabs = [
     { id: 'general', label: 'General', icon: Settings },
     { id: 'inventory', label: 'Inventory', icon: Package },
+    { id: 'tax', label: 'Tax / VAT', icon: Receipt },
     { id: 'profile', label: 'Profile', icon: User },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'security', label: 'Security', icon: Shield },
@@ -545,6 +558,98 @@ export default function SettingsPage() {
                   >
                     <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${inventorySettings.allow_partial_add ? 'left-5' : 'left-0.5'}`} />
                   </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'tax' && (
+            <div>
+              <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-bold">Tax / VAT</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">VAT charged on sales — posting, rate and pricing mode</p>
+                </div>
+                <button
+                  onClick={() => saveSettings('vat', vatSettings)}
+                  disabled={saving}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition disabled:opacity-60"
+                >
+                  <Save className="w-4 h-4" />{saving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div className="flex items-center justify-between gap-6 max-w-2xl border border-border rounded-xl p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Charge VAT on sales</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 max-w-xl">
+                      When on, invoices and POS sales can carry VAT. The journal entry posts the sale as
+                      Dr Accounts Receivable (total) / Cr Sales Revenue (net) / Cr VAT Payable — so revenue and
+                      profit statements stay net of VAT, and the VAT Payable account (2100) tracks what is owed.
+                      Each invoice and POS sale has its own VAT toggle that starts {vatSettings.default_on ? 'ON' : 'OFF'}.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setVatSettings(s => ({ ...s, enabled: !s.enabled }))}
+                    className={`w-10 h-5 rounded-full transition relative shrink-0 ${vatSettings.enabled ? 'bg-blue-600' : 'bg-gray-300'}`}
+                    title={vatSettings.enabled ? 'VAT charging enabled' : 'VAT charging disabled'}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${vatSettings.enabled ? 'left-5' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl">
+                  <div>
+                    <label className="block text-xs font-medium mb-1">VAT Rate (%)</label>
+                    <input
+                      type="number" min="0" max="100" step="0.5"
+                      value={vatSettings.rate}
+                      onChange={e => setVatSettings(s => ({ ...s, rate: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) }))}
+                      className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white"
+                      disabled={!vatSettings.enabled}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1">Default on new documents</label>
+                    <button
+                      onClick={() => setVatSettings(s => ({ ...s, default_on: !s.default_on }))}
+                      className={`w-10 h-5 rounded-full transition relative mt-1.5 ${vatSettings.default_on ? 'bg-blue-600' : 'bg-gray-300'}`}
+                      title={vatSettings.default_on ? 'VAT toggle starts ON' : 'VAT toggle starts OFF'}
+                    >
+                      <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${vatSettings.default_on ? 'left-5' : 'left-0.5'}`} />
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium mb-1">Pricing Mode</label>
+                  <div className="grid grid-cols-2 gap-3 max-w-xl">
+                    <button
+                      onClick={() => setVatSettings(s => ({ ...s, mode: 'exclusive' }))}
+                      disabled={!vatSettings.enabled}
+                      className={`flex flex-col items-start gap-1 p-4 rounded-xl border-2 text-left transition ${vatSettings.mode === 'exclusive' ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/10' : 'border-border hover:border-blue-200'} disabled:opacity-50`}
+                    >
+                      <span className="text-sm font-bold text-foreground">Exclusive</span>
+                      <span className="text-xs text-muted-foreground">Product prices exclude VAT — VAT is added on top at checkout</span>
+                    </button>
+                    <button
+                      onClick={() => setVatSettings(s => ({ ...s, mode: 'inclusive' }))}
+                      disabled={!vatSettings.enabled}
+                      className={`flex flex-col items-start gap-1 p-4 rounded-xl border-2 text-left transition ${vatSettings.mode === 'inclusive' ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/10' : 'border-border hover:border-blue-200'} disabled:opacity-50`}
+                    >
+                      <span className="text-sm font-bold text-foreground">Inclusive</span>
+                      <span className="text-xs text-muted-foreground">Product prices already include VAT — the VAT portion is separated out at checkout</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-muted/40 border border-border rounded-xl p-4 max-w-2xl text-xs text-muted-foreground space-y-1">
+                  <p><strong className="text-foreground">How it posts:</strong> VAT-carrying invoices split the entry —
+                    Dr 1100 Accounts Receivable (gross) / Cr 4000 Sales Revenue (net) / Cr 2100 VAT Payable.</p>
+                  <p>Returns, edits and cancellations reverse the VAT portion automatically and proportionally.</p>
+                  <p><strong className="text-foreground">Withholding:</strong> supplier payments have an optional
+                    &ldquo;Withholding deducted&rdquo; field that posts Dr 2000 (full) / Cr cash (paid) / Cr 2110 WHT Payable —
+                    available now regardless of this toggle.</p>
                 </div>
               </div>
             </div>

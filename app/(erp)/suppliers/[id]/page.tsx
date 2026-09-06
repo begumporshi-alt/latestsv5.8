@@ -688,6 +688,7 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
 }) {
   const [form, setForm] = useState({
     amount: target.balance,
+    wht: 0,
     payment_date: new Date().toISOString().split('T')[0],
     payment_method: 'cash',
     reference_number: '',
@@ -710,6 +711,8 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
     const amount = Number(form.amount);
     if (!amount || amount <= 0) { setError('Enter a valid amount'); return; }
     if (amount > target.balance + 0.005) { setError(`Amount cannot exceed the outstanding balance (${formatCurrency(target.balance)})`); return; }
+    if ((form.wht || 0) < 0) { setError('Withholding cannot be negative'); return; }
+    if ((form.wht || 0) >= amount) { setError('Withholding must be less than the payment amount'); return; }
 
     setSaving(true);
     try {
@@ -723,6 +726,7 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
           reference_id: target.id,
           supplier_id: supplierId,
           amount,
+          wht_amount: form.wht || 0,
           payment_method: form.payment_method,
           payment_date: form.payment_date,
           reference_number: form.reference_number || null,
@@ -730,54 +734,30 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
         });
         if (payError) throw payError;
       } else {
-        // Manual payable: payment row + journal entry (Dr AP / Cr cash),
-        // mirroring the accounting page's Pay Payable flow, with the
-        // supplier id on both so the balance and profile pick them up.
-        const apAccount = accounts.find(a => a.code === '2000');
-        if (!apAccount) throw new Error('Accounts Payable account (2000) not found');
-        let creditAccount = accounts.find(a => a.is_cash || a.is_bank);
+        // Manual payable: one atomic RPC writes payment row + JE
+        // (Dr AP / Cr cash / Cr WHT Payable) and maintains balances.
+        let whtCreditAccount: { id: string } | null = null;
         const methodAccount = methods.length > 0
           ? await supabase.from('payment_methods').select('account_id').eq('code', form.payment_method).eq('is_active', true).maybeSingle()
           : null;
         if (methodAccount && methodAccount.data && methodAccount.data.account_id) {
-          creditAccount = accounts.find(a => a.id === methodAccount.data!.account_id) || creditAccount;
+          whtCreditAccount = { id: methodAccount.data.account_id };
+        } else {
+          whtCreditAccount = accounts.find(a => a.is_cash || a.is_bank) || null;
         }
-        if (!creditAccount) throw new Error('No cash/bank account found to pay from');
+        if (!whtCreditAccount) throw new Error('No cash/bank account found to pay from');
 
-        const { error: payError } = await supabase.from('payments').insert({
-          payment_number: `PAY-${Date.now().toString().slice(-6)}`,
-          payment_type: 'made',
-          reference_type: 'payable',
-          reference_id: target.id,
-          supplier_id: supplierId,
-          amount,
-          payment_method: form.payment_method,
-          payment_date: form.payment_date,
-          reference_number: form.reference_number || null,
-          payment_for: 'supplier_payment',
+        const { error: rpcError } = await supabase.rpc('record_manual_payable_payment', {
+          p_payable_je_id: target.id,
+          p_amount: amount,
+          p_wht_amount: form.wht || 0,
+          p_payment_date: form.payment_date,
+          p_payment_method: form.payment_method,
+          p_cash_account_id: whtCreditAccount.id,
+          p_reference_number: form.reference_number || null,
+          p_notes: `Payment made for ${target.label}`,
         });
-        if (payError) throw payError;
-
-        const { data: jeNum } = await supabase.rpc('get_next_journal_number');
-        const desc = `Payment made for ${target.label}`;
-        const { data: entry, error: entryError } = await supabase.from('journal_entries').insert({
-          entry_number: jeNum || `JE-${Date.now().toString().slice(-6)}`,
-          entry_date: form.payment_date,
-          description: desc,
-          reference_type: 'payment',
-          total_debit: amount,
-          total_credit: amount,
-          is_posted: true,
-          supplier_id: supplierId,
-        }).select().single();
-        if (entryError) throw entryError;
-
-        await supabase.from('journal_lines').insert([
-          { journal_entry_id: entry.id, account_id: apAccount.id, description: desc, debit: amount, credit: 0, sort_order: 0 },
-          { journal_entry_id: entry.id, account_id: creditAccount.id, description: desc, debit: 0, credit: amount, sort_order: 1 },
-        ]);
-        await supabase.rpc('increment_account_balance', { p_account_id: apAccount.id, p_delta: -amount });
-        await supabase.rpc('increment_account_balance', { p_account_id: creditAccount.id, p_delta: -amount });
+        if (rpcError) throw rpcError;
       }
 
       toast({ title: 'Success', description: `Payment of ${formatCurrency(amount)} recorded for ${target.label}` });
@@ -802,11 +782,17 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
             <span className="text-muted-foreground">Outstanding</span>
             <span className="font-bold text-red-600">{formatCurrency(target.balance)}</span>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
               <input type="number" required min="0.01" step="0.01" max={target.balance} value={form.amount}
                 onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" title="Tax deducted at source — posted to WHT Payable (2110)">Withholding</label>
+              <input type="number" min="0" step="0.01" value={form.wht || ''} placeholder="0"
+                onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })}
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
             </div>
             <div>
@@ -815,6 +801,9 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
             </div>
           </div>
+          {(form.wht || 0) > 0 && (
+            <p className="text-[11px] text-muted-foreground -mt-2">Withholding {formatCurrency(form.wht)} posts to WHT Payable (2110) — cash out {formatCurrency(Number(form.amount) - (form.wht || 0))}.</p>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Method *</label>

@@ -1466,6 +1466,7 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
   const balance = Number(order.total_amount) - Number(order.amount_paid);
   const [form, setForm] = useState({
     amount: balance,
+    wht: 0,
     payment_method: 'bank_transfer' as PaymentMethod,
     payment_date: new Date().toISOString().split('T')[0],
     reference_number: '',
@@ -1484,6 +1485,8 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
     e.preventDefault();
     if (form.amount <= 0) { setError('Amount must be greater than 0'); return; }
     if (form.amount > balance) { setError(`Amount cannot exceed balance (${formatCurrency(balance)})`); return; }
+    if ((form.wht || 0) < 0) { setError('Withholding cannot be negative'); return; }
+    if ((form.wht || 0) >= form.amount) { setError('Withholding must be less than the payment amount'); return; }
 
     setSaving(true);
     setError('');
@@ -1498,6 +1501,7 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
       reference_id: order.id,
       supplier_id: order.supplier_id,
       amount: form.amount,
+      wht_amount: form.wht || 0,
       payment_method: form.payment_method,
       payment_date: form.payment_date,
       reference_number: form.reference_number || null,
@@ -1530,9 +1534,16 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
             <span className="text-sm font-bold text-red-600">{formatCurrency(balance)}</span>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium mb-1">Payment Amount *</label>
-            <input type="number" min="0.01" max={balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Payment Amount *</label>
+              <input type="number" min="0.01" max={balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" title="Tax deducted at source — posted to WHT Payable (2110)">Withholding deducted</label>
+              <input type="number" min="0" step="0.01" value={form.wht || ''} placeholder="0" onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              {(form.wht || 0) > 0 && <p className="text-[11px] text-muted-foreground mt-1">Cash out: {formatCurrency(form.amount - (form.wht || 0))}</p>}
+            </div>
           </div>
 
           <div>

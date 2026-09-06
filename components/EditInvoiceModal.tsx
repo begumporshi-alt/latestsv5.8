@@ -8,6 +8,7 @@ import { X, Save, TriangleAlert as AlertTriangle, History, Package, Trash2, Info
 import type { Invoice, InvoiceStatus, Customer, Product, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
+import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 
 interface EditableInvoice extends Omit<Invoice, 'customer'> {
@@ -42,6 +43,16 @@ interface EditItem {
 }
 
 export default function EditInvoiceModal({ invoice, customers, products, onClose, onSaved }: EditInvoiceModalProps) {
+  const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
+  const [applyVat, setApplyVat] = useState(Number((invoice as any).tax_amount || 0) > 0);
+  useEffect(() => {
+    loadVatSettings(supabase).then(s => {
+      setVatSettings(s);
+      // keep the invoice's own VAT state when it already carries tax
+      if (Number((invoice as any).tax_amount || 0) > 0) setApplyVat(true);
+      else setApplyVat(s.enabled && s.default_on);
+    });
+  }, []);
   const [form, setForm] = useState({
     customer_id: invoice.customer_id,
     invoice_date: invoice.invoice_date,
@@ -243,9 +254,12 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
   const itemDiscountTotal = items.reduce((sum, item) => sum + (item.quantity * item.unit_price - item.subtotal), 0);
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
+  const vat = computeVat(totalAmount, vatSettings, applyVat);
+  const grandTotal = vat.total;
+  const vatChanged = Math.abs(vat.taxAmount - Number((invoice as any).tax_amount || 0)) > 0.005;
   const hasItemChanges = JSON.stringify(items.map(i => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price, discount_percent: i.discount_percent, selected_unit_id: i.selected_unit?.id }))) !== JSON.stringify(originalItems.map(i => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price, discount_percent: i.discount_percent, selected_unit_id: i.selected_unit?.id })));
   const hasHeaderChanges = form.customer_id !== originalHeader.customer_id || form.invoice_date !== originalHeader.invoice_date || form.due_date !== originalHeader.due_date || form.notes !== originalHeader.notes || form.reference !== originalHeader.reference || (form.cart_discount_percent || 0) !== (originalHeader.cart_discount_percent || 0) || (form.extra_discount || 0) !== (originalHeader.extra_discount || 0) || form.payment_term !== originalHeader.payment_term || form.payment_method !== originalHeader.payment_method || form.partial_amount !== originalHeader.partial_amount;
-  const hasChanges = hasItemChanges || hasHeaderChanges;
+  const hasChanges = hasItemChanges || hasHeaderChanges || vatChanged;
 
   useEffect(() => {
     setShowReason(!isDraft && hasChanges);
@@ -293,6 +307,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
         payment_term: form.payment_term,
         payment_method: form.payment_method,
         partial_amount: form.payment_term === 'partial' ? form.partial_amount : 0,
+        tax_amount: vat.taxAmount,
         items: newItems,
       };
 
@@ -518,11 +533,25 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                   <span>-{formatCurrency(form.extra_discount || 0)}</span>
                 </div>
               )}
+              {vatSettings.enabled && (
+                <div className="flex justify-between items-center pt-1 border-t border-border">
+                  <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={applyVat}
+                      onChange={e => setApplyVat(e.target.checked)}
+                      className="w-3.5 h-3.5 accent-blue-600"
+                    />
+                    VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
+                  </label>
+                  {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(vat.taxAmount)}</span>}
+                </div>
+              )}
               <div className="flex justify-between items-center pt-1 border-t border-border">
                 <p className="text-xs font-medium text-muted-foreground">New Total</p>
-                <p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p>
+                <p className="text-lg font-bold text-foreground">{formatCurrency(grandTotal)}</p>
               </div>
-              {totalAmount !== Number(invoice.total_amount) && (
+              {grandTotal !== Number(invoice.total_amount) && (
                 <p className="text-[10px] text-blue-600">Was: {formatCurrency(Number(invoice.total_amount))}</p>
               )}
             </div>
@@ -584,10 +613,10 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                 <input
                   type="number"
                   min="0"
-                  max={totalAmount}
+                  max={grandTotal}
                   step="0.01"
                   value={form.partial_amount}
-                  onChange={e => setForm({ ...form, partial_amount: Math.min(totalAmount, Math.max(0, parseFloat(e.target.value) || 0)) })}
+                  onChange={e => setForm({ ...form, partial_amount: Math.min(grandTotal, Math.max(0, parseFloat(e.target.value) || 0)) })}
                   className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 />
               </div>
@@ -596,7 +625,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
           {form.payment_term === 'partial' && form.partial_amount > 0 && (
             <div className="flex justify-between text-xs text-blue-600 bg-blue-50 rounded-lg px-3 py-1.5">
               <span>Balance Due After Payment</span>
-              <span className="font-semibold">{formatCurrency(Math.max(0, totalAmount - form.partial_amount))}</span>
+              <span className="font-semibold">{formatCurrency(Math.max(0, grandTotal - form.partial_amount))}</span>
             </div>
           )}
 

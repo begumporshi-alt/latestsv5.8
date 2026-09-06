@@ -1305,7 +1305,7 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
 }
 
 function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { payable: ManualReceivablePayable; accounts: Account[]; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ amount: payable.outstanding_balance, payment_date: new Date().toISOString().split('T')[0], payment_method: 'cash', account_id: '', reference_number: '', notes: '' });
+  const [form, setForm] = useState({ amount: payable.outstanding_balance, wht: 0, payment_date: new Date().toISOString().split('T')[0], payment_method: 'cash', account_id: '', reference_number: '', notes: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
@@ -1322,6 +1322,8 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
     setError('');
     if (!form.account_id || form.amount <= 0) { setError('Please select a cash/bank account and enter a valid amount'); return; }
     if (form.amount > payable.outstanding_balance) { setError(`Amount cannot exceed outstanding balance (${formatCurrency(payable.outstanding_balance)})`); return; }
+    if ((form.wht || 0) < 0) { setError('Withholding cannot be negative'); return; }
+    if ((form.wht || 0) >= form.amount) { setError('Withholding must be less than the payment amount'); return; }
 
     setSaving(true);
     try {
@@ -1329,6 +1331,7 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
       const { data: result, error: rpcError } = await supabase.rpc('record_manual_payable_payment', {
         p_payable_je_id: payable.id,
         p_amount: amount,
+        p_wht_amount: form.wht || 0,
         p_payment_date: form.payment_date,
         p_payment_method: form.payment_method,
         p_cash_account_id: form.account_id,
@@ -1361,16 +1364,23 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
             <div className="flex justify-between text-xs"><span className="text-muted-foreground">Party:</span><span className="font-medium">{payable.party_name}</span></div>
             <div className="flex justify-between text-xs"><span className="text-muted-foreground">Outstanding:</span><span className="font-bold text-amber-600">{formatCurrency(payable.outstanding_balance)}</span></div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
               <input type="number" required min="0.01" max={payable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" title="Tax deducted at source — posted to WHT Payable (2110)">Withholding</label>
+              <input type="number" min="0" step="0.01" value={form.wht || ''} placeholder="0" onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Date</label>
               <input type="date" value={form.payment_date} onChange={e => setForm({ ...form, payment_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
             </div>
           </div>
+          {(form.wht || 0) > 0 && (
+            <p className="text-[11px] text-muted-foreground -mt-2">Cash out {formatCurrency(form.amount - (form.wht || 0))} — withholding {formatCurrency(form.wht)} posts to WHT Payable (2110).</p>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Method</label>
