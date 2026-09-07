@@ -287,7 +287,7 @@ export default function AccountingPage() {
   }
 
   // Compute period-aware statistics from journal lines using period RPCs
-  const [periodStats, setPeriodStats] = useState({ totalAssets: 0, totalLiabilities: 0, netRevenue: 0, operatingExpenses: 0, cogs: 0, salesReturns: 0, grossProfit: 0, netProfit: 0 });
+  const [periodStats, setPeriodStats] = useState({ totalAssets: 0, totalLiabilities: 0, netRevenue: 0, operatingExpenses: 0, cogs: 0, salesReturns: 0, estimatedManualCogs: 0, manualCogsPercent: 90, grossProfit: 0, netProfit: 0 });
 
   useEffect(() => {
     if (accounts.length === 0) return;
@@ -322,7 +322,12 @@ export default function AccountingPage() {
       });
 
       let netRevenue = 0;
-      for (const a of revenue) netRevenue += await periodNet(a.id, 'credit');
+      let manualRevenue = 0; // 4001 Sales Revenue — Manual (no COGS)
+      for (const a of revenue) {
+        const netCredit = await periodNet(a.id, 'credit');
+        netRevenue += netCredit;
+        if (a.code === '4001') manualRevenue = netCredit;
+      }
 
       let operatingExpenses = 0;
       let cogs = 0;
@@ -338,10 +343,16 @@ export default function AccountingPage() {
         }
       }
 
-      const grossProfit = netRevenue - salesReturns - cogs;
+      // Estimated COGS for manual sales — same owner-set % as the P&L
+      // (Settings → P&L Estimates). Presentation-only, never posted to the GL.
+      const { data: estRes } = await supabase.from('app_settings').select('setting_value').eq('setting_key', 'pl_estimates').maybeSingle();
+      const manualCogsPercent = Number(estRes?.setting_value?.manual_cogs_percent ?? 90);
+      const estimatedManualCogs = manualRevenue > 0 ? Math.round(manualRevenue * manualCogsPercent) / 100 : 0;
+
+      const grossProfit = netRevenue - salesReturns - cogs - estimatedManualCogs;
       const netProfit = grossProfit - operatingExpenses;
 
-      setPeriodStats({ totalAssets, totalLiabilities, netRevenue, operatingExpenses, cogs, salesReturns, grossProfit, netProfit });
+      setPeriodStats({ totalAssets, totalLiabilities, netRevenue, operatingExpenses, cogs, salesReturns, estimatedManualCogs, manualCogsPercent, grossProfit, netProfit });
     }
     computePeriodStats();
   }, [accounts, dateRange]);
@@ -557,6 +568,14 @@ export default function AccountingPage() {
           </div>
         ))}
       </div>
+
+      {periodStats.estimatedManualCogs > 0 && (
+        <p className="text-xs text-muted-foreground -mt-2">
+          Gross / Net Profit include {formatCurrency(periodStats.estimatedManualCogs)} estimated COGS for manual sales
+          (no COGS posted) at the configured {periodStats.manualCogsPercent}% — a presentation estimate that is not
+          posted to the general ledger, so the balance sheet&apos;s Current Earnings stays GL-based.
+        </p>
+      )}
 
       {/* Income vs Expense Chart */}
       <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
