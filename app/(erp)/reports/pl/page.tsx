@@ -9,7 +9,8 @@ interface PnLData {
   salesRevenue: number;
   salesReturns: number;
   netSalesRevenue: number;
-  serviceRevenue: number;
+  otherRevenue: { name: string; amount: number }[];
+  totalOtherRevenue: number;
   totalRevenue: number;
   costOfGoodsSold: number;
   grossProfit: number;
@@ -30,7 +31,8 @@ export default function PLPage() {
     salesRevenue: 0,
     salesReturns: 0,
     netSalesRevenue: 0,
-    serviceRevenue: 0,
+    otherRevenue: [],
+    totalOtherRevenue: 0,
     totalRevenue: 0,
     costOfGoodsSold: 0,
     grossProfit: 0,
@@ -139,15 +141,24 @@ export default function PLPage() {
     const cogsAccount = allAccounts.find(a => a.code === '5000');
     const costOfGoodsSold = cogsAccount ? await periodNetDebit(cogsAccount.id) : 0;
 
-    // Service revenue (revenue accounts other than 4000 and 4100 if desired)
-    let serviceRevenue = 0;
-    const serviceRevenueAccounts = allAccounts.filter(a => a.account_type === 'revenue' && a.code !== '4000');
-    for (const acc of serviceRevenueAccounts) {
-      serviceRevenue += await periodNetCredit(acc.id);
+    // Non-4000 revenue accounts, each listed under its REAL name. The old
+    // single "Service Revenue" lump mislabeled 4001 (Sales Revenue - Manual,
+    // no COGS) as service revenue — 4001 manual sales are sales, not services.
+    const otherRevenueAccounts = allAccounts.filter(a => a.account_type === 'revenue' && a.code !== '4000');
+    const otherRevenue: { name: string; amount: number }[] = [];
+    let totalOtherRevenue = 0;
+    for (const acc of otherRevenueAccounts) {
+      const netCredit = await periodNetCredit(acc.id);
+      // keep non-zero rows including negatives (a contra credit nets the section)
+      if (netCredit !== 0) {
+        otherRevenue.push({ name: acc.name, amount: netCredit });
+        totalOtherRevenue += netCredit;
+      }
     }
+    otherRevenue.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 
     const netSalesRevenue = salesRevenue - salesReturns;
-    const totalRevenue = netSalesRevenue + serviceRevenue;
+    const totalRevenue = netSalesRevenue + totalOtherRevenue;
     const grossProfit = totalRevenue - costOfGoodsSold;
 
     // Operating expenses: all expense accounts except COGS (5000), Sales Returns (4050), Discount Given (4200)
@@ -174,7 +185,8 @@ export default function PLPage() {
       salesRevenue,
       salesReturns,
       netSalesRevenue,
-      serviceRevenue,
+      otherRevenue,
+      totalOtherRevenue,
       totalRevenue,
       costOfGoodsSold,
       grossProfit,
@@ -196,7 +208,7 @@ export default function PLPage() {
       ['Gross Sales Revenue', data.salesRevenue],
       ['Less: Sales Returns & Allowances', -data.salesReturns],
       ['Net Sales Revenue', data.netSalesRevenue],
-      ['Service Revenue', data.serviceRevenue],
+      ...data.otherRevenue.map(r => [r.name, r.amount]),
       ['Total Net Revenue', data.totalRevenue],
       [''],
       ['COST OF GOODS SOLD'],
@@ -328,7 +340,9 @@ export default function PLPage() {
                   <StatementRow label="Less: Sales Returns &amp; Allowances" amount={-data.salesReturns} isDeduction />
                 )}
                 <StatementRow label="Net Sales Revenue" amount={data.netSalesRevenue} isBold />
-                {data.serviceRevenue > 0 && <StatementRow label="Service Revenue" amount={data.serviceRevenue} />}
+                {data.otherRevenue.map(r => (
+                  <StatementRow key={r.name} label={r.name} amount={r.amount} />
+                ))}
                 <TotalRow label="Total Net Revenue" amount={data.totalRevenue} variant="blue" />
               </tbody>
             </table>
