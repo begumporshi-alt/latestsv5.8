@@ -13,11 +13,15 @@ interface PnLData {
   totalOtherRevenue: number;
   totalRevenue: number;
   costOfGoodsSold: number;
+  estimatedManualCogs: number;
+  totalCogs: number;
   grossProfit: number;
   operatingExpenses: { name: string; amount: number }[];
   totalOperatingExpenses: number;
   operatingProfit: number;
   netProfit: number;
+  netProfitBeforeEstimate: number;
+  manualCogsPercent: number;
 }
 
 export default function PLPage() {
@@ -35,11 +39,15 @@ export default function PLPage() {
     totalOtherRevenue: 0,
     totalRevenue: 0,
     costOfGoodsSold: 0,
+    estimatedManualCogs: 0,
+    totalCogs: 0,
     grossProfit: 0,
     operatingExpenses: [],
     totalOperatingExpenses: 0,
     operatingProfit: 0,
     netProfit: 0,
+    netProfitBeforeEstimate: 0,
+    manualCogsPercent: 90,
   });
 
   const [companySettings, setCompanySettings] = useState({ name: 'SI Building Solutions.', address: '' });
@@ -147,6 +155,7 @@ export default function PLPage() {
     const otherRevenueAccounts = allAccounts.filter(a => a.account_type === 'revenue' && a.code !== '4000');
     const otherRevenue: { name: string; amount: number }[] = [];
     let totalOtherRevenue = 0;
+    let manualRevenue = 0; // 4001 Sales Revenue - Manual (no COGS)
     for (const acc of otherRevenueAccounts) {
       const netCredit = await periodNetCredit(acc.id);
       // keep non-zero rows including negatives (a contra credit nets the section)
@@ -154,12 +163,23 @@ export default function PLPage() {
         otherRevenue.push({ name: acc.name, amount: netCredit });
         totalOtherRevenue += netCredit;
       }
+      if (acc.code === '4001') manualRevenue = netCredit;
     }
     otherRevenue.sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
 
     const netSalesRevenue = salesRevenue - salesReturns;
     const totalRevenue = netSalesRevenue + totalOtherRevenue;
-    const grossProfit = totalRevenue - costOfGoodsSold;
+
+    // Estimated COGS for manual sales — owner-set % in Settings (P&L Estimates).
+    // Presentation-only: nothing is posted to the GL (posting would fabricate
+    // inventory consumption and break the 1200-vs-FIFO tie-out).
+    const { data: estRes } = await supabase.from('app_settings').select('setting_value').eq('setting_key', 'pl_estimates').maybeSingle();
+    const manualCogsPercent = Number(estRes?.setting_value?.manual_cogs_percent ?? 90);
+    const estimatedManualCogs = manualRevenue > 0
+      ? Math.round(manualRevenue * manualCogsPercent) / 100
+      : 0;
+    const totalCogs = costOfGoodsSold + estimatedManualCogs;
+    const grossProfit = totalRevenue - totalCogs;
 
     // Operating expenses: all expense accounts except COGS (5000), Sales Returns (4050), Discount Given (4200)
     const EXCLUDED_CODES = new Set(['5000', '4050', '4200']);
@@ -180,6 +200,7 @@ export default function PLPage() {
 
     const operatingProfit = grossProfit - totalOperatingExpenses;
     const netProfit = operatingProfit;
+    const netProfitBeforeEstimate = netProfit + estimatedManualCogs;
 
     setData({
       salesRevenue,
@@ -189,11 +210,15 @@ export default function PLPage() {
       totalOtherRevenue,
       totalRevenue,
       costOfGoodsSold,
+      estimatedManualCogs,
+      totalCogs,
       grossProfit,
       operatingExpenses,
       totalOperatingExpenses,
       operatingProfit,
       netProfit,
+      netProfitBeforeEstimate,
+      manualCogsPercent,
     });
 
     setLoading(false);
@@ -213,6 +238,8 @@ export default function PLPage() {
       [''],
       ['COST OF GOODS SOLD'],
       ['Cost of Goods Sold', data.costOfGoodsSold],
+      ...(data.estimatedManualCogs > 0 ? [['Estimated COGS - Manual Sales (no COGS posted)', data.estimatedManualCogs]] : []),
+      ['Total COGS', data.totalCogs],
       [''],
       ['GROSS PROFIT', data.grossProfit],
       [''],
@@ -221,6 +248,7 @@ export default function PLPage() {
       ['Total Operating Expenses', data.totalOperatingExpenses],
       [''],
       ['OPERATING PROFIT / NET PROFIT', data.netProfit],
+      ...(data.estimatedManualCogs > 0 ? [['Memo: Net Profit before estimated manual COGS', data.netProfitBeforeEstimate]] : []),
     ];
     const csv = rows.map(r => r.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -352,7 +380,10 @@ export default function PLPage() {
             <table className="w-full text-sm">
               <tbody>
                 <StatementRow label="Cost of Goods Sold" amount={data.costOfGoodsSold} />
-                <TotalRow label="Total COGS" amount={data.costOfGoodsSold} variant="orange" />
+                {data.estimatedManualCogs > 0 && (
+                  <StatementRow label="Estimated COGS — Manual Sales (no COGS posted)" amount={data.estimatedManualCogs} />
+                )}
+                <TotalRow label="Total COGS" amount={data.totalCogs} variant="orange" />
               </tbody>
             </table>
 
@@ -377,6 +408,17 @@ export default function PLPage() {
               <span className="text-base font-bold text-white tracking-wide">NET PROFIT / (LOSS)</span>
               <span className="text-xl font-bold text-white">{formatMoney(data.netProfit)}</span>
             </div>
+
+            {data.estimatedManualCogs > 0 && (
+              <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-xs text-gray-500 leading-relaxed">
+                <p>
+                  <strong className="text-gray-700">Memo — Net Profit before estimated manual COGS: {formatMoney(data.netProfitBeforeEstimate)}.</strong>{' '}
+                  The &ldquo;Estimated COGS — Manual Sales&rdquo; line applies the configured {data.manualCogsPercent}% to this
+                  period&rsquo;s Sales Revenue — Manual (no COGS). It is a presentation estimate only and is not posted to
+                  the general ledger — the dashboard, balance sheet and trial balance remain GL-based.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

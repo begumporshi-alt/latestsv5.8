@@ -3,9 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
-import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt } from 'lucide-react';
+import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator } from 'lucide-react';
 
-type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'tax' | 'data';
+type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'tax' | 'estimates' | 'data';
 
 interface DeleteTarget {
   key: string;
@@ -51,6 +51,10 @@ interface VatSettingsState {
   rate: number;
   mode: 'exclusive' | 'inclusive';
   default_on: boolean;
+}
+
+interface PLEstimatesSettings {
+  manual_cogs_percent: number;
 }
 
 interface ProfileData {
@@ -101,6 +105,7 @@ export default function SettingsPage() {
     batch_allocation_method: 'fifo',
     allow_partial_add: true,
   });
+  const [plEstimates, setPlEstimates] = useState<PLEstimatesSettings>({ manual_cogs_percent: 90 });
   const [profile, setProfile] = useState<ProfileData>({
     full_name: '',
     email: '',
@@ -232,12 +237,13 @@ export default function SettingsPage() {
   async function loadSettings() {
     setLoading(true);
 
-    const [companyRes, notifRes, appearRes, invRes, vatRes, profileRes] = await Promise.all([
+    const [companyRes, notifRes, appearRes, invRes, vatRes, estRes, profileRes] = await Promise.all([
       supabase.from('app_settings').select('*').eq('setting_key', 'company').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'notifications').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'appearance').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'inventory').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'vat').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('setting_key', 'pl_estimates').maybeSingle(),
       supabase.from('profiles').select('*').limit(1).single(),
     ]);
 
@@ -255,6 +261,9 @@ export default function SettingsPage() {
     }
     if (vatRes.data?.setting_value) {
       setVatSettings(s => ({ ...s, ...vatRes.data.setting_value as VatSettingsState }));
+    }
+    if (estRes.data?.setting_value) {
+      setPlEstimates(s => ({ ...s, ...estRes.data.setting_value as PLEstimatesSettings }));
     }
     if (profileRes.data) {
       setProfile({
@@ -338,6 +347,7 @@ export default function SettingsPage() {
     { id: 'general', label: 'General', icon: Settings },
     { id: 'inventory', label: 'Inventory', icon: Package },
     { id: 'tax', label: 'Tax / VAT', icon: Receipt },
+    { id: 'estimates', label: 'P&L Estimates', icon: Calculator },
     { id: 'profile', label: 'Profile', icon: User },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'security', label: 'Security', icon: Shield },
@@ -650,6 +660,54 @@ export default function SettingsPage() {
                   <p><strong className="text-foreground">Withholding:</strong> supplier payments have an optional
                     &ldquo;Withholding deducted&rdquo; field that posts Dr 2000 (full) / Cr cash (paid) / Cr 2110 WHT Payable —
                     available now regardless of this toggle.</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'estimates' && (
+            <div>
+              <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-bold">P&amp;L Estimates</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Presentation estimates used by the Profit &amp; Loss statement</p>
+                </div>
+                <button
+                  onClick={() => saveSettings('pl_estimates', plEstimates)}
+                  disabled={saving}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition disabled:opacity-60"
+                >
+                  <Save className="w-4 h-4" />{saving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div className="border border-border rounded-xl p-4 max-w-2xl">
+                  <p className="text-sm font-medium text-foreground">Estimated COGS for manual sales (no COGS posted)</p>
+                  <p className="text-xs text-muted-foreground mt-1 max-w-xl">
+                    Sales Revenue — Manual (no COGS) is product revenue booked as manual receivables, so no cost of goods
+                    was ever posted for it. The P&amp;L multiplies this percentage by that revenue to show an
+                    &ldquo;Estimated COGS — Manual Sales&rdquo; line, so gross profit isn&apos;t overstated by the full amount.
+                  </p>
+                  <div className="mt-4 max-w-xs">
+                    <label className="block text-xs font-medium mb-1">Estimated cost (% of manual sales revenue)</label>
+                    <input
+                      type="number" min="0" max="100" step="0.5"
+                      value={plEstimates.manual_cogs_percent}
+                      onChange={e => setPlEstimates(s => ({ ...s, manual_cogs_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) }))}
+                      className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-muted/40 border border-border rounded-xl p-4 max-w-2xl text-xs text-muted-foreground space-y-1">
+                  <p><strong className="text-foreground">Presentation only:</strong> the estimate is never posted to the
+                    general ledger — no journal entry is created and inventory/GL accounts are untouched. The dashboard,
+                    balance sheet and trial balance stay GL-based.</p>
+                  <p><strong className="text-foreground">Where it appears:</strong> the P&amp;L shows it as a separate
+                    &ldquo;Estimated COGS — Manual Sales (no COGS posted)&rdquo; row with an adjusted Total COGS, and keeps the
+                    unadjusted net profit visible as a memo line.</p>
+                  <p><strong className="text-foreground">Rule of thumb:</strong> your invoiced sales currently run at
+                    roughly 90% cost (about 10% gross margin), so 90% is a sensible default.</p>
                 </div>
               </div>
             </div>
