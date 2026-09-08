@@ -22,6 +22,7 @@ import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { BatchAllocationEditor, type EditorBatch } from '@/components/batch-allocation-editor';
 import { useGlobalCart } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface CartItem {
   id: string;
@@ -65,6 +66,22 @@ interface ProductData {
 }
 
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
+
+function ProductNameTooltip({ name, sku, className }: { name: string; sku?: string; className?: string }) {
+  return (
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <p className={className}>{name}</p>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          <p className="text-sm font-semibold leading-snug break-words">{name}</p>
+          {sku ? <p className="text-xs text-muted-foreground mt-0.5">SKU: {sku}</p> : null}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 export default function POSPage() {
   const [products, setProducts] = useState<ProductData[]>([]);
@@ -1338,7 +1355,11 @@ export default function POSPage() {
               <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
                 <button onClick={() => removeFromCart(item.id, item.selected_unit?.id || undefined)} className="text-muted-foreground hover:text-red-500 transition shrink-0"><X className="w-4 h-4" /></button>
-                <p className="flex-1 min-w-0 text-sm font-semibold text-foreground truncate leading-tight">{item.name}</p>
+                <ProductNameTooltip
+                  name={item.name}
+                  sku={item.sku}
+                  className="flex-1 min-w-0 text-sm font-semibold text-foreground truncate leading-tight cursor-default"
+                />
                 <span className="text-sm font-bold text-blue-600 shrink-0 whitespace-nowrap">{formatCurrency(lineTotal)}</span>
               </div>
               <div className="flex items-end gap-2 mt-1.5 pl-6">
@@ -1477,7 +1498,11 @@ export default function POSPage() {
                       return (
                         <tr key={i} className="hover:bg-muted/20">
                           <td className="px-2 py-1.5">
-                            <p className="text-sm font-medium text-foreground truncate max-w-[100px]">{item.name}</p>
+                            <ProductNameTooltip
+                              name={item.name}
+                              sku={item.sku}
+                              className="text-sm font-medium text-foreground truncate max-w-[100px] cursor-default"
+                            />
                             <p className="text-xs text-muted-foreground">{item.selected_unit?.unit_name || 'pcs'}</p>
                           </td>
                           <td className="px-2 py-1.5 text-right text-sm text-foreground">{item.quantity}</td>
