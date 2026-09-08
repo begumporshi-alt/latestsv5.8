@@ -1611,105 +1611,46 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
     }
     // gateStock null (ledger lookup failed) → advisory gate fails open.
 
-    const { data: invoiceNum, error: numError } = await supabase.rpc('generate_invoice_number');
-    if (numError) { setError('Failed to generate invoice number: ' + numError.message); setSaving(false); return; }
-    const invoiceNumber = invoiceNum as string;
+    // Oversell-confirmed shortfall notes land on the invoice item rows so the
+    // acknowledged IOU is visible on the invoice itself.
+    const shortfallNotes: Record<string, string> = {};
+    if (gateStock) {
+      for (const item of items) {
+        const note = shortfallDescription(
+          { product_id: item.product_id, warehouse_id: null, base_quantity: (item as any).base_quantity || item.quantity },
+          gateStock,
+          'quote conversion'
+        );
+        if (note) shortfallNotes[item.product_id] = note;
+      }
+    }
 
-    const { data: invoice, error: invError } = await supabase
-      .from('invoices')
-      .insert({
-        invoice_number: invoiceNumber,
-        customer_id: quotation.customer_id,
-        quotation_id: quotation.id,
+    // One atomic RPC: invoice header + items + cost history + payment +
+    // quotation status, all or nothing. The sale-unit cost is derived
+    // server-side (product_units cost, or products.cost_price × the item's
+    // conversion factor). The previous multi-call flow committed the invoice
+    // header first, so a rejected items insert — e.g. the multi-unit
+    // cost-scale guard on a base-scale cost_price — left a husk invoice with
+    // an AR journal entry but no lines (see INV-940697).
+    const { data: converted, error: rpcError } = await supabase.rpc('convert_quotation_to_invoice', {
+      p_quotation_id: quotation.id,
+      p_options: {
         invoice_date: form.invoice_date,
-        subtotal: quotation.subtotal,
-        discount_amount: quotation.discount_amount,
-        tax_amount: quotation.tax_amount,
-        total_amount: totalAmount,
-        amount_paid: effectiveAmountPaid,
-        status: invoiceStatus,
-        is_pos: false,
-        reference: (quotation as any).reference || null,
-      })
-      .select()
-      .single();
-
-    if (invError) { setError(invError.message); setSaving(false); return; }
-
-    if (items && items.length > 0) {
-      const invoiceItems = items.map((item: any) => ({
-        invoice_id: invoice.id,
-        product_id: item.product_id,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        cost_price: (Array.isArray(item.product) ? item.product[0]?.cost_price : item.product?.cost_price) || 0,
-        discount_percent: item.discount_percent || 0,
-        tax_rate: item.tax_rate || 0,
-        subtotal: item.subtotal,
-        unit_name: (item as any).unit_name || null,
-        unit_conversion_factor: (item as any).unit_conversion_factor || null,
-        base_quantity: (item as any).base_quantity || item.quantity,
-        description: gateStock
-          ? shortfallDescription(
-              { product_id: item.product_id, warehouse_id: null, base_quantity: (item as any).base_quantity || item.quantity },
-              gateStock,
-              'quote conversion'
-            )
-          : null,
-      }));
-      const { data: insertedInvoiceItems, error: itemsInsertError } = await supabase.from('invoice_items').insert(invoiceItems).select();
-      if (itemsInsertError) {
-        setError('Failed to create invoice items: ' + itemsInsertError.message);
-        setSaving(false);
-        return;
-      }
-
-      // Record cost price history snapshot for each item at time of sale
-      if (insertedInvoiceItems && insertedInvoiceItems.length > 0) {
-        const costHistoryRecords = insertedInvoiceItems.map((ii: any) => {
-          const origItem = items.find((qi: any) => qi.product_id === ii.product_id);
-          const costPerUnit = Number(ii.cost_price) || 0;
-          const totalCostAdded = costPerUnit * Number(ii.quantity);
-          return {
-            product_id: ii.product_id,
-            product_name: Array.isArray(origItem?.product) ? origItem.product[0]?.name : origItem?.product?.name || '',
-            product_sku: '',
-            invoice_id: invoice.id,
-            unit: ii.unit_name || 'pcs',
-            quantity: ii.quantity,
-            unit_price: ii.unit_price,
-            cost_price_per_qty: costPerUnit,
-            cost_price_for_added_qty: totalCostAdded,
-            total_cost_price_single: costPerUnit,
-            total_cost_price_added: totalCostAdded,
-          };
-        });
-        if (costHistoryRecords.length > 0) {
-          await supabase.from('cost_price_history').insert(costHistoryRecords);
-        }
-      }
-    }
-
-    if (effectiveAmountPaid > 0) {
-      const paymentNumber = `PAY-${Date.now().toString().slice(-6)}`;
-      await supabase.from('payments').insert({
-        payment_number: paymentNumber,
-        payment_type: 'received',
-        reference_type: 'invoice',
-        reference_id: invoice.id,
-        customer_id: quotation.customer_id,
-        amount: effectiveAmountPaid,
+        payment_type: form.payment_type,
+        amount_paid: form.amount_paid,
         payment_method: form.payment_method,
-        payment_date: form.invoice_date,
         reference_number: form.reference_number || null,
-        notes: form.notes || (form.payment_type === 'full' ? 'Full payment at invoice conversion' : 'Partial payment at invoice conversion'),
-        payment_for: 'paid_invoice_pay',
-      });
+        notes: form.notes || null,
+        shortfall_notes: shortfallNotes,
+      },
+    });
+    if (rpcError) {
+      setError(rpcError.message);
+      setSaving(false);
+      return;
     }
 
-    await supabase.from('quotations').update({ status: 'converted' }).eq('id', quotation.id);
-
-    toast({ title: 'Success', description: `Invoice ${invoiceNumber} created from quotation` });
+    toast({ title: 'Success', description: `Invoice ${(converted as any)?.invoice_number} created from quotation` });
     onConverted();
   }
 
