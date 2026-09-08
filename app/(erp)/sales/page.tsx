@@ -87,6 +87,7 @@ export default function SalesPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
   const [showOutstandingModal, setShowOutstandingModal] = useState(false);
+  const [showCogsModal, setShowCogsModal] = useState(false);
   const [viewingInvoice, setViewingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [invoicePayments, setInvoicePayments] = useState<any[]>([]);
@@ -747,7 +748,7 @@ export default function SalesPage() {
           {[
             { label: 'Total Sales', value: formatCurrency(stats.total), icon: TrendingUp, color: 'text-blue-500 bg-blue-50', clickable: false, info: 'Sum of total_amount for all non-cancelled, non-draft invoices in the selected period.' },
             { label: 'Total Invoices', value: stats.invoiceCount.toLocaleString(), icon: FileText, color: 'text-sky-500 bg-sky-50', clickable: false, info: 'Number of non-cancelled, non-draft invoices in the selected period (same basis as Total Sales).' },
-            { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: false, info: 'Cost of Goods Sold: net of Cost of Goods Sold account 5000 in the ledger for the selected period.' },
+            { label: 'Total COGS', value: formatCurrency(stats.cogs), icon: TrendingDown, color: 'text-orange-500 bg-orange-50', clickable: true, info: 'Cost of Goods Sold: net of Cost of Goods Sold account 5000 in the ledger for the selected period. Click to see the breakdown by source (sales, edits, returns, cancellations).' },
             { label: 'Total Cost (History)', value: formatCurrency(stats.costHistoryTotal), icon: Calculator, color: 'text-amber-500 bg-amber-50', clickable: true, info: 'Sum of cost price history for the same invoices as Total Sales. Compare with Total COGS: a difference flags invoices whose booked COGS does not match their recorded cost history. Click to open the COGS Audit History Δ view ranked by difference.' },
             { label: 'Payment Collected at Sale', value: formatCurrency(stats.paymentCollectedAtSale), icon: Banknote, color: 'text-emerald-500 bg-emerald-50', clickable: false, info: 'Amount paid at the time of sale (POS and paid invoices). Excludes later payments and manual receivable collections.' },
             { label: 'Total Collection', value: formatCurrency(stats.paid), icon: CheckCircle2, color: 'text-green-500 bg-green-50', clickable: false, info: 'All payments received in the period: invoice payments + manual receivable collections. Excludes reversed payments from edits/cancels.' },
@@ -763,6 +764,7 @@ export default function SalesPage() {
               onClick={s.clickable ? () => {
                 if (s.label === 'Outstanding') setShowOutstandingModal(true);
                 else if (s.label === 'Total Cost (History)') router.push('/reports/cogs-audit?tab=history-diff');
+                else if (s.label === 'Total COGS') setShowCogsModal(true);
                 else setShowNetCollectedModal(true);
               } : undefined}
             >
@@ -1145,6 +1147,13 @@ export default function SalesPage() {
           stats={stats}
           periodRange={getPeriodRange()}
           onClose={() => setShowNetCollectedModal(false)}
+        />
+      )}
+
+      {showCogsModal && (
+        <CogsBreakdownModal
+          periodRange={getPeriodRange()}
+          onClose={() => setShowCogsModal(false)}
         />
       )}
 
@@ -2781,6 +2790,265 @@ function NetCollectedBreakdownModal({ stats, periodRange, onClose }: { stats: an
                 )}
               </div>
             </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Mirrors NetCollectedBreakdownModal: decomposes the Total COGS card (net
+// debit of account 5000 over the period) into its journal sources — sales,
+// edit reposts, returns, cancellations and manual entries — with the
+// individual journal entries expandable under each source.
+function CogsBreakdownModal({ periodRange, onClose }: { periodRange: { from: string; to: string }; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [families, setFamilies] = useState<{ key: string; label: string; amount: number; entries: { id: string; date: string; entryNumber: string; description: string; amount: number }[] }[]>([]);
+  const [totals, setTotals] = useState({ grossPosted: 0, reversed: 0, net: 0 });
+  const [timeline, setTimeline] = useState<{ id: string; date: string; entryNumber: string; description: string; amount: number; runningNet: number }[]>([]);
+  const [expandedFamily, setExpandedFamily] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const { from, to } = periodRange;
+
+        const { data: account, error: accountError } = await supabase
+          .from('accounts')
+          .select('id')
+          .eq('code', '5000')
+          .maybeSingle();
+        if (accountError) throw accountError;
+        if (!account) { setLoading(false); return; }
+
+        const buildLinesQuery = () => {
+          let q = supabase
+            .from('journal_lines')
+            .select('id, journal_entry_id, debit, credit, journal_entry:journal_entries!inner(entry_date, entry_number, description, reference_type, reference_id)')
+            .eq('account_id', account.id)
+            .order('journal_entry_id', { ascending: true })
+            .order('id', { ascending: true });
+          if (from) q = q.gte('journal_entries.entry_date', from);
+          if (to) q = q.lte('journal_entries.entry_date', to);
+          return q;
+        };
+
+        const [lines, invoices] = await Promise.all([
+          fetchAll(buildLinesQuery),
+          fetchAll(() => supabase.from('invoices').select('id, invoice_number, status').order('id')),
+        ]);
+        const invoiceById = new Map<string, any>(invoices.map((i: any) => [i.id, i]));
+
+        // Each COGS journal entry carries exactly one account-5000 line, but
+        // net per entry so multiple lines would still collapse correctly.
+        const byEntry = new Map<string, { id: string; date: string; entryNumber: string; description: string; family: string; amount: number }>();
+        (lines as any[]).forEach(l => {
+          const je = l.journal_entry;
+          const inv = ['invoice', 'invoice_edit'].includes(je.reference_type) ? invoiceById.get(je.reference_id) : null;
+          // Same family split as get_cogs_history_gap_breakdown, with edits
+          // kept separate from original sale postings.
+          const family =
+            je.reference_type === 'sales_return' ? 'returns'
+            : (je.reference_type === 'invoice_cancel' || (['invoice', 'invoice_edit'].includes(je.reference_type) && inv?.status === 'cancelled')) ? 'cancelled'
+            : je.reference_type === 'invoice_edit' ? 'edit'
+            : je.reference_type === 'invoice' ? 'sales'
+            : 'other';
+          const ex = byEntry.get(l.journal_entry_id) || {
+            id: l.journal_entry_id, date: je.entry_date, entryNumber: je.entry_number,
+            description: je.description || '', family, amount: 0,
+          };
+          ex.amount += Number(l.debit || 0) - Number(l.credit || 0);
+          byEntry.set(l.journal_entry_id, ex);
+        });
+
+        const entries = Array.from(byEntry.values()).sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+
+        const FAMILY_LABELS: Record<string, string> = {
+          sales: 'Invoice Sales', edit: 'Invoice Edits', returns: 'Sales Returns',
+          cancelled: 'Cancelled Invoices', other: 'Other / Manual',
+        };
+        const famMap = new Map<string, { amount: number; entries: typeof entries }>();
+        entries.forEach(e => {
+          const f = famMap.get(e.family) || { amount: 0, entries: [] };
+          f.amount += e.amount; f.entries.push(e);
+          famMap.set(e.family, f);
+        });
+        setFamilies(
+          Array.from(famMap.entries())
+            .map(([key, v]) => ({ key, label: FAMILY_LABELS[key] || key, ...v }))
+            .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+        );
+
+        setTotals({
+          grossPosted: entries.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0),
+          reversed: entries.filter(e => e.amount < 0).reduce((s, e) => s + e.amount, 0),
+          net: entries.reduce((s, e) => s + e.amount, 0),
+        });
+
+        let running = 0;
+        setTimeline(entries.map(e => { running += e.amount; return { ...e, runningNet: running }; }));
+      } catch (err: any) {
+        setError(err?.message || 'Failed to load COGS breakdown');
+      }
+      setLoading(false);
+    })();
+  }, [periodRange.from, periodRange.to]);
+
+  const netCogs = totals.net;
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-xl max-w-3xl w-full max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border sticky top-0 bg-white z-10">
+          <div>
+            <h3 className="font-bold text-foreground text-lg">Total COGS Breakdown</h3>
+            <p className="text-sm text-muted-foreground">How the journal builds the Total COGS card (account 5000, net debit)</p>
+          </div>
+          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="w-5 h-5" /></button>
+        </div>
+
+        {loading ? (
+          <div className="p-8 text-center text-muted-foreground">Loading...</div>
+        ) : error ? (
+          <div className="p-8 text-center text-sm text-red-600">{error}</div>
+        ) : (
+          <div className="p-4 space-y-5">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="p-3 bg-orange-50 rounded-lg">
+                <p className="text-xs text-muted-foreground">COGS Posted (Debits)</p>
+                <p className="text-lg font-bold text-orange-600">{formatCurrency(totals.grossPosted)}</p>
+              </div>
+              <div className="p-3 bg-purple-50 rounded-lg">
+                <p className="text-xs text-muted-foreground">COGS Reversed (Credits)</p>
+                <p className="text-lg font-bold text-purple-600">{formatCurrency(Math.abs(totals.reversed))}</p>
+              </div>
+              <div className="p-3 bg-teal-50 rounded-lg border border-teal-100">
+                <p className="text-xs text-muted-foreground">Net COGS</p>
+                <p className="text-lg font-bold text-teal-600">{formatCurrency(Math.max(0, netCogs))}</p>
+                {netCogs < 0 && <p className="text-xs text-purple-600">Reversals exceed postings; card shows ৳0</p>}
+              </div>
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-foreground mb-2 flex items-center gap-2">
+                <TrendingDown className="w-4 h-4 text-orange-500" />
+                COGS by Source
+                <span className="text-xs text-muted-foreground font-normal">(click a row to see journal entries)</span>
+              </p>
+              <div className="border border-border rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-muted/30 text-xs text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">Source</th>
+                      <th className="px-3 py-2 text-center font-medium">Entries</th>
+                      <th className="px-3 py-2 text-right font-medium">Net Amount</th>
+                      <th className="px-3 py-2 text-right font-medium">% of Net COGS</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {families.length === 0 ? (
+                      <tr><td colSpan={4} className="px-3 py-4 text-center text-sm text-muted-foreground">No COGS entries in this period</td></tr>
+                    ) : families.flatMap(f => {
+                      const isExpanded = expandedFamily === f.key;
+                      const mainRow = (
+                        <tr key={f.key} onClick={() => setExpandedFamily(isExpanded ? null : f.key)} className="cursor-pointer hover:bg-orange-50/40 transition">
+                          <td className="px-3 py-2 text-sm font-medium text-foreground flex items-center gap-1.5">
+                            <ChevronRight className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                            {f.label}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-center text-muted-foreground">{f.entries.length}</td>
+                          <td className={`px-3 py-2 text-sm text-right font-medium ${f.amount >= 0 ? 'text-orange-600' : 'text-purple-600'}`}>
+                            {f.amount >= 0 ? '' : '−'}{formatCurrency(Math.abs(f.amount))}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-right text-muted-foreground">
+                            {netCogs > 0.01 ? `${((f.amount / netCogs) * 100).toFixed(1)}%` : '—'}
+                          </td>
+                        </tr>
+                      );
+                      if (!isExpanded) return [mainRow];
+                      const detailRow = (
+                        <tr key={f.key + '-detail'}>
+                          <td colSpan={4} className="px-0 py-0 bg-orange-50/20">
+                            <div className="max-h-56 overflow-y-auto">
+                              <table className="w-full">
+                                <thead className="bg-orange-50/50 text-xs text-muted-foreground sticky top-0">
+                                  <tr>
+                                    <th className="px-4 py-1.5 text-left font-medium">Date</th>
+                                    <th className="px-4 py-1.5 text-left font-medium">Description</th>
+                                    <th className="px-4 py-1.5 text-left font-medium">Entry #</th>
+                                    <th className="px-4 py-1.5 text-right font-medium">Amount</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border/50">
+                                  {f.entries.map(e => (
+                                    <tr key={e.id} className="hover:bg-orange-50/40">
+                                      <td className="px-4 py-1.5 text-xs text-muted-foreground whitespace-nowrap">{new Date(e.date).toLocaleDateString()}</td>
+                                      <td className="px-4 py-1.5 text-xs text-foreground truncate max-w-[260px]" title={e.description}>{e.description}</td>
+                                      <td className="px-4 py-1.5 text-xs text-muted-foreground whitespace-nowrap">{e.entryNumber}</td>
+                                      <td className={`px-4 py-1.5 text-xs text-right font-medium ${e.amount >= 0 ? 'text-orange-600' : 'text-purple-600'}`}>
+                                        {e.amount >= 0 ? '' : '−'}{formatCurrency(Math.abs(e.amount))}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                      return [mainRow, detailRow];
+                    })}
+                  </tbody>
+                  {families.length > 0 && (
+                    <tfoot className="bg-muted/30">
+                      <tr>
+                        <td colSpan={2} className="px-3 py-2 text-sm font-bold">Net COGS</td>
+                        <td className="px-3 py-2 text-sm text-right font-bold text-teal-600">{formatCurrency(netCogs)}</td>
+                        <td className="px-3 py-2 text-sm text-right font-bold">100%</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+            </div>
+
+            <div>
+              <p className="text-sm font-medium text-foreground mb-2">COGS Posting History</p>
+              <p className="text-xs text-muted-foreground mb-3">Chronological log of every journal entry that changed the COGS balance in this period</p>
+              <div className="max-h-64 overflow-y-auto border border-border rounded-lg">
+                {timeline.length === 0 ? (
+                  <p className="px-3 py-4 text-center text-sm text-muted-foreground">No COGS entries recorded</p>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {timeline.map((e, i) => (
+                      <div key={e.id + '-' + i} className="flex items-center gap-3 px-3 py-2 text-sm hover:bg-muted/20">
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${e.amount >= 0 ? 'bg-orange-50 text-orange-600' : 'bg-purple-50 text-purple-600'}`}>
+                          {e.amount >= 0 ? <ArrowDownCircle className="w-3.5 h-3.5" /> : <ArrowUpCircle className="w-3.5 h-3.5" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-foreground truncate" title={e.description}>{e.description}</p>
+                          <p className="text-xs text-muted-foreground">{new Date(e.date).toLocaleDateString()} - {e.entryNumber}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className={`text-sm font-medium ${e.amount >= 0 ? 'text-orange-600' : 'text-purple-600'}`}>
+                            {e.amount >= 0 ? '+' : ''}{formatCurrency(e.amount)}
+                          </p>
+                          <p className="text-xs text-muted-foreground">Net: {formatCurrency(e.runningNet)}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Same basis as the card: journal entries on account 5000 dated in the selected period.{' '}
+              <Link href="/reports/cogs-audit?tab=history-diff" className="text-blue-600 hover:underline">Compare with cost history in COGS Audit →</Link>
+            </p>
           </div>
         )}
       </div>
