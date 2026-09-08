@@ -58,6 +58,7 @@ supabase/.temp/
 
 # Backup files
 supabase/migrations/*.backup
+/backups/
 
 # Mimosa internal tooling
 .mimosa/
