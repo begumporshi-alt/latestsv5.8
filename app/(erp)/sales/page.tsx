@@ -3077,10 +3077,10 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
                   <span className="text-muted-foreground">Journal Entries Reversed</span>
                   <span className="font-medium text-green-600">{result.journal_reversed ? 'Yes' : 'No'}</span>
                 </div>
-                {result.payments_reversed && (
+                {Number(result.payments_reversed) > 0 && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Payments Reversed</span>
-                    <span className="font-medium text-amber-600">{formatCurrency(Number(result.total_payments_reversed))}</span>
+                    <span className="font-medium text-amber-600">{formatCurrency(Number(result.payments_reversed))}</span>
                   </div>
                 )}
               </div>
