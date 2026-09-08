@@ -54,6 +54,9 @@ export interface PrintTemplateProps {
   cartDiscount?: number;
   cartDiscountPercent?: number;
   extraDiscount?: number;
+  taxAmount?: number;
+  taxLabel?: string;
+  shippingAmount?: number;
   hideDiscountPercent?: boolean;
   hideRate?: boolean;
   totalAmount: number;
@@ -130,6 +133,9 @@ export default function PrintTemplate({
   cartDiscount = 0,
   cartDiscountPercent = 0,
   extraDiscount = 0,
+  taxAmount = 0,
+  taxLabel = 'VAT',
+  shippingAmount = 0,
   hideDiscountPercent = false,
   hideRate = false,
   totalAmount,
@@ -670,14 +676,18 @@ export default function PrintTemplate({
                     <td style={{ padding: '2px 0', textAlign: 'right', fontWeight: '500' }}>-{fmt(extraDiscount)}</td>
                   </tr>
                 )}
-                <tr>
-                  <td style={{ padding: '2px 0', color: '#555' }}>VAT (0%)</td>
-                  <td style={{ padding: '2px 0', textAlign: 'right', fontWeight: '500' }}>৳0.00</td>
-                </tr>
-                <tr>
-                  <td style={{ padding: '2px 0 4px', color: '#555' }}>Shipping</td>
-                  <td style={{ padding: '2px 0 4px', textAlign: 'right', fontWeight: '500' }}>৳0.00</td>
-                </tr>
+                {(taxAmount || 0) > 0 && (
+                  <tr>
+                    <td style={{ padding: '2px 0', color: '#555' }}>{taxLabel}</td>
+                    <td style={{ padding: '2px 0', textAlign: 'right', fontWeight: '500' }}>+{fmt(taxAmount)}</td>
+                  </tr>
+                )}
+                {(shippingAmount || 0) > 0 && (
+                  <tr>
+                    <td style={{ padding: '2px 0 4px', color: '#555' }}>Shipping</td>
+                    <td style={{ padding: '2px 0 4px', textAlign: 'right', fontWeight: '500' }}>+{fmt(shippingAmount)}</td>
+                  </tr>
+                )}
                 <tr style={{ borderTop: `2px solid ${PRIMARY}` }}>
                   <td style={{ padding: '5px 0 3px', fontWeight: '800', color: PRIMARY, fontSize: '13px' }}>GRAND TOTAL</td>
                   <td style={{ padding: '5px 0 3px', textAlign: 'right', fontWeight: '800', color: PRIMARY, fontSize: '13px' }}>{fmt(totalAmount)}</td>

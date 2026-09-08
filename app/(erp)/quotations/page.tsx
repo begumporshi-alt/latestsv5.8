@@ -525,6 +525,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
     expiry_date: '',
     notes: '',
     extra_discount: 0,
+    shipping_cost: 0,
     cart_discount_percent: 0,
     reference: '',
   });
@@ -685,6 +686,8 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
   const quoteVat = computeVat(totalAmount, vatSettings, applyVat);
+  // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
+  const quoteGrandTotal = quoteVat.total + (form.shipping_cost || 0);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -710,7 +713,8 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
         extra_discount: form.extra_discount || 0,
         discount_amount: cartDiscountAmount,
         tax_amount: quoteVat.taxAmount,
-        total_amount: quoteVat.total,
+        shipping_cost: form.shipping_cost || 0,
+        total_amount: quoteGrandTotal,
         status: 'draft',
         notes: form.notes || null,
         reference: form.reference || null,
@@ -1042,6 +1046,23 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                     <span>-{formatCurrency(form.extra_discount || 0)}</span>
                   </div>
                 )}
+                <div className="flex justify-between items-center gap-2">
+                  <label className="text-xs text-muted-foreground">Shipping ৳</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.shipping_cost || 0}
+                    onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })}
+                    className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                </div>
+                {(form.shipping_cost || 0) > 0 && (
+                  <div className="flex justify-between text-xs text-blue-700">
+                    <span>Shipping</span>
+                    <span>+{formatCurrency(form.shipping_cost || 0)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between items-center pt-1 border-t border-border">
                   {vatSettings.enabled && (
                     <div className="flex justify-between items-center pt-1 border-t border-border">
@@ -1059,7 +1080,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                   )}
                   <div className="flex justify-between items-center pt-1 border-t border-border">
                     <p className="text-xs font-medium text-muted-foreground">Total</p>
-                    <p className="text-lg font-bold text-foreground">{formatCurrency(quoteVat.total)}</p>
+                    <p className="text-lg font-bold text-foreground">{formatCurrency(quoteGrandTotal)}</p>
                   </div>
                 </div>
               </div>
@@ -1105,9 +1126,20 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     expiry_date: quotation.expiry_date || '',
     notes: (quotation as any).notes || '',
     extra_discount: Number((quotation as any).extra_discount) || 0,
+    shipping_cost: Number((quotation as any).shipping_cost) || 0,
     cart_discount_percent: Number((quotation as any).cart_discount_percent) || 0,
     reference: (quotation as any).reference || '',
   });
+  const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
+  const [applyVat, setApplyVat] = useState(Number(quotation.tax_amount || 0) > 0);
+  useEffect(() => {
+    loadVatSettings(supabase).then(s => {
+      setVatSettings(s);
+      // keep the quotation's own VAT state when it already carries tax
+      if (Number(quotation.tax_amount || 0) > 0) setApplyVat(true);
+      else setApplyVat(s.enabled && s.default_on);
+    });
+  }, []);
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1270,6 +1302,9 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
   const subtotal = items.reduce((sum, item) => sum + (item.quantity * item.unit_price * (1 - item.discount_percent / 100)), 0);
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
+  const quoteVat = computeVat(totalAmount, vatSettings, applyVat);
+  // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
+  const quoteGrandTotal = quoteVat.total + (form.shipping_cost || 0);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -1286,7 +1321,9 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
       cart_discount_percent: form.cart_discount_percent || 0,
       extra_discount: form.extra_discount || 0,
       discount_amount: cartDiscountAmount,
-      total_amount: totalAmount,
+      tax_amount: quoteVat.taxAmount,
+      shipping_cost: form.shipping_cost || 0,
+      total_amount: quoteGrandTotal,
       notes: form.notes || null,
       reference: form.reference || null,
       updated_at: new Date().toISOString(),
@@ -1448,7 +1485,23 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               {(form.extra_discount || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>
               )}
-              <div className="flex justify-between items-center pt-1 border-t border-border"><p className="text-xs font-medium text-muted-foreground">Total</p><p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p></div>
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Shipping ৳</label>
+                <input type="number" min="0" step="0.01" value={form.shipping_cost || 0} onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              {(form.shipping_cost || 0) > 0 && (
+                <div className="flex justify-between text-xs text-blue-700"><span>Shipping</span><span>+{formatCurrency(form.shipping_cost || 0)}</span></div>
+              )}
+              {vatSettings.enabled && (
+                <div className="flex justify-between items-center pt-1 border-t border-border">
+                  <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+                    <input type="checkbox" checked={applyVat} onChange={e => setApplyVat(e.target.checked)} className="w-3.5 h-3.5 accent-blue-600" />
+                    VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
+                  </label>
+                  {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(quoteVat.taxAmount)}</span>}
+                </div>
+              )}
+              <div className="flex justify-between items-center pt-1 border-t border-border"><p className="text-xs font-medium text-muted-foreground">Total</p><p className="text-lg font-bold text-foreground">{formatCurrency(quoteGrandTotal)}</p></div>
             </div>
           </div>
           <div className="flex items-center justify-end gap-3 pt-2">
@@ -1811,6 +1864,9 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
   const printRef = useRef<HTMLDivElement>(null);
   const [hideDiscountPercent, setHideDiscountPercent] = useState(false);
   const [hideRate, setHideRate] = useState(false);
+  // VAT rate for the printed quotation's tax row label.
+  const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
+  useEffect(() => { loadVatSettings(supabase).then(setVatSettings); }, []);
 
   function buildShareText() {
     const lines = [
@@ -1924,6 +1980,9 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
             cartDiscount={Number((quotation as any).discount_amount) || 0}
             cartDiscountPercent={Number((quotation as any).cart_discount_percent) || 0}
             extraDiscount={Number((quotation as any).extra_discount) || 0}
+            taxAmount={Number(quotation.tax_amount) || 0}
+            taxLabel={vatSettings.rate > 0 ? `VAT (${vatSettings.rate}%)` : 'VAT'}
+            shippingAmount={Number((quotation as any).shipping_cost) || 0}
             hideDiscountPercent={hideDiscountPercent}
             hideRate={hideRate}
             totalAmount={Number(quotation.total_amount)}

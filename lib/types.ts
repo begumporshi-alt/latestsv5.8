@@ -246,6 +246,7 @@ export interface Quotation {
   subtotal: number;
   discount_amount: number;
   tax_amount: number;
+  shipping_cost: number;
   total_amount: number;
   notes?: string;
   reference?: string;
@@ -275,6 +276,7 @@ export interface Invoice {
   subtotal: number;
   discount_amount: number;
   tax_amount: number;
+  shipping_cost: number;
   total_amount: number;
   amount_paid: number;
   balance_due: number;

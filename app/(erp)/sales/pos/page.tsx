@@ -88,6 +88,7 @@ export default function POSPage() {
   const [partialAmount, setPartialAmount] = useState('');
   const [discount, setDiscount] = useState(0);
   const [extraDiscount, setExtraDiscount] = useState(0);
+  const [shipping, setShipping] = useState(0);
   const [orderComplete, setOrderComplete] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [lastInvoiceNumber, setLastInvoiceNumber] = useState('');
@@ -581,7 +582,8 @@ export default function POSPage() {
   const discountAmount = cartDiscountAmount;
   const total = Math.max(0, subtotal - cartDiscountAmount - extraDiscount);
   const posVat = computeVat(total, vatSettings, applyVat);
-  const grandTotal = posVat.total;
+  // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
+  const grandTotal = posVat.total + (shipping || 0);
 
   async function processOrder() {
     if (cart.length === 0) { toast({ title: 'Cart is empty', variant: 'destructive' }); return; }
@@ -701,6 +703,7 @@ export default function POSPage() {
           cart_discount_percent: discount,
           extra_discount: extraDiscount,
           tax_amount: posVat.taxAmount,
+          shipping_cost: shipping || 0,
           total_amount: grandTotal,
           amount_paid: paymentTerm === 'full' ? grandTotal : (paymentTerm === 'partial' ? amountPaid : 0),
           status: invoiceStatus,
@@ -831,6 +834,7 @@ export default function POSPage() {
       setCart([]);
       setDiscount(0);
       setExtraDiscount(0);
+      setShipping(0);
       setSelectedCustomer(walkInCustomerId);
       setStoreCreditBalance(0);
       setApplyStoreCredit(false);
@@ -1541,6 +1545,10 @@ export default function POSPage() {
                     <span className="text-sm text-muted-foreground">Extra ৳</span>
                     <input type="number" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="flex-1 min-w-0 border border-border rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
+                  <div className="flex-1 flex items-center gap-1">
+                    <span className="text-sm text-muted-foreground">Ship ৳</span>
+                    <input type="number" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="flex-1 min-w-0 border border-border rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                  </div>
                 </div>
 
                 <div className="space-y-0.5 text-sm">
@@ -1548,6 +1556,7 @@ export default function POSPage() {
                   {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item Discounts</span><span>-{formatCurrency(itemDiscountTotal)}</span></div>}
                   {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart Discount ({discount}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>}
                   {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>}
+                  {shipping > 0 && <div className="flex justify-between text-blue-700"><span>Shipping</span><span>+{formatCurrency(shipping)}</span></div>}
                   {vatSettings.enabled && (
                     <div className="flex justify-between items-center pt-1 border-t border-border">
                       <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
@@ -1621,6 +1630,7 @@ export default function POSPage() {
           discount={discount}
           discountAmount={discountAmount}
           extraDiscount={extraDiscount}
+          shipping={shipping}
           itemDiscountTotal={itemDiscountTotal}
           cartDiscountAmount={cartDiscountAmount}
           paymentMethod={paymentMethod}
@@ -2014,13 +2024,13 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
 }
 
 function CheckoutModal({
-  total, taxAmount, vatLabel, subtotal, discount, discountAmount, extraDiscount, itemDiscountTotal, cartDiscountAmount, paymentMethod, setPaymentMethod,
+  total, taxAmount, vatLabel, subtotal, discount, discountAmount, extraDiscount, shipping, itemDiscountTotal, cartDiscountAmount, paymentMethod, setPaymentMethod,
   displayMethods, paymentMethodIcons, paymentMethodColors,
   amountPaid, setAmountPaid, processing, onConfirm, onClose,
   storeCreditBalance, applyStoreCredit, setApplyStoreCredit, selectedCustomer, customers, cart,
   paymentTerm, setPaymentTerm, partialAmount, setPartialAmount,
 }: {
-  total: number; taxAmount: number; vatLabel: string; subtotal: number; discount: number; discountAmount: number; extraDiscount: number; itemDiscountTotal: number; cartDiscountAmount: number;
+  total: number; taxAmount: number; vatLabel: string; subtotal: number; discount: number; discountAmount: number; extraDiscount: number; shipping: number; itemDiscountTotal: number; cartDiscountAmount: number;
   paymentMethod: string; setPaymentMethod: (m: string) => void;
   displayMethods: any[]; paymentMethodIcons: Record<string, any>; paymentMethodColors: Record<string, string>;
   amountPaid: string; setAmountPaid: (v: string) => void;
@@ -2063,6 +2073,9 @@ function CheckoutModal({
             )}
             {extraDiscount > 0 && (
               <div className="flex justify-between text-red-600"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>
+            )}
+            {shipping > 0 && (
+              <div className="flex justify-between text-blue-700"><span>Shipping</span><span>+{formatCurrency(shipping)}</span></div>
             )}
             {taxAmount > 0 && vatLabel && (
               <div className="flex justify-between text-blue-700"><span>{vatLabel}</span><span>+{formatCurrency(taxAmount)}</span></div>

@@ -64,7 +64,7 @@ export default function ReportsPage() {
       invoicesRes, purchasesRes, customersRes, productsRes,
       topProductsRes, topCustomersRes, paymentsRes, accountsRes, invResult
     ] = await Promise.all([
-      applyDateRange(supabase.from('invoices').select('total_amount, tax_amount, subtotal, invoice_date, status').neq('status', 'cancelled').neq('status', 'draft'), 'invoice_date'),
+      applyDateRange(supabase.from('invoices').select('total_amount, tax_amount, shipping_cost, subtotal, invoice_date, status').neq('status', 'cancelled').neq('status', 'draft'), 'invoice_date'),
       applyDateRange(supabase.from('purchase_orders').select('total_amount'), 'order_date'),
       supabase.from('customers').select('total_purchases'),
       supabase.from('products').select('id, unit'),
@@ -75,9 +75,9 @@ export default function ReportsPage() {
       getInventoryValue(supabase),
     ]);
 
-    // Revenue net of VAT: the GL posts sales net of tax (Cr 4000 = total - VAT),
-    // so the P&L figure here must match that basis.
-    const totalRevenue = (invoicesRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount) - Number(i.tax_amount || 0), 0);
+    // Revenue net of VAT and shipping: the GL posts goods sales to 4000, VAT to
+    // 2100 and shipping to 4020, so the dashboard figure here must match that basis.
+    const totalRevenue = (invoicesRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount) - Number(i.tax_amount || 0) - Number(i.shipping_cost || 0), 0);
     const totalPurchases = (purchasesRes.data || []).reduce((s: number, p: any) => s + Number(p.total_amount), 0);
 
     // COGS from Chart of Accounts — use RPC for reliable DB-side date filtering
@@ -210,14 +210,14 @@ export default function ReportsPage() {
       // ledger is also what every other COGS figure on this page reports, so the
       // chart no longer contradicts the stat cards above it.
       const [invRes, poRes, cogsRes] = await Promise.all([
-        supabase.from('invoices').select('total_amount, tax_amount').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled'),
+        supabase.from('invoices').select('total_amount, tax_amount, shipping_cost').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled'),
         supabase.from('purchase_orders').select('total_amount').gte('order_date', startDate).lte('order_date', endDate),
         cogsAccountId
           ? supabase.rpc('period_net_debit', { p_account_id: cogsAccountId, p_start_date: startDate, p_end_date: endDate })
           : Promise.resolve({ data: 0 }),
       ]);
 
-      const sales = (invRes.data || []).reduce((s: number, inv: any) => s + Number(inv.total_amount) - Number(inv.tax_amount || 0), 0);
+      const sales = (invRes.data || []).reduce((s: number, inv: any) => s + Number(inv.total_amount) - Number(inv.tax_amount || 0) - Number(inv.shipping_cost || 0), 0);
       const purchases = (poRes.data || []).reduce((s: number, po: any) => s + Number(po.total_amount), 0);
       const cogs = Number(cogsRes.data || 0);
 

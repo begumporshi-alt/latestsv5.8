@@ -93,6 +93,7 @@ export default function SalesPage() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentInvoice, setPaymentInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [companySettings, setCompanySettings] = useState<any>({ name: '', address: '', phone: '', email: '', logo_url: '' });
+  const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
   const [convertingInvoice, setConvertingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [viewingChallan, setViewingChallan] = useState<any>(null);
   const [cogsGap, setCogsGap] = useState<any>(null);
@@ -112,6 +113,9 @@ export default function SalesPage() {
       setPeriod('all');
     }
   }, []);
+
+  // VAT rate for the printed invoice's tax row label (view/print modal).
+  useEffect(() => { loadVatSettings(supabase).then(setVatSettings); }, []);
 
   function getPeriodRange() {
     const today = new Date().toISOString().split('T')[0];
@@ -586,6 +590,9 @@ export default function SalesPage() {
               cartDiscount={Number((invoice as any).discount_amount) || 0}
               cartDiscountPercent={Number((invoice as any).cart_discount_percent) || 0}
               extraDiscount={Number((invoice as any).extra_discount) || 0}
+              taxAmount={Number(invoice.tax_amount) || 0}
+              taxLabel={vatSettings.rate > 0 ? `VAT (${vatSettings.rate}%)` : 'VAT'}
+              shippingAmount={Number((invoice as any).shipping_cost) || 0}
               hideDiscountPercent={hideDiscountPercent}
               hideRate={hideRate}
               totalAmount={Number(invoice.total_amount)}
@@ -1211,6 +1218,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     payment_method: 'cash' as PaymentMethod,
     payment_reference: '',
     extra_discount: 0,
+    shipping_cost: 0,
     cart_discount_percent: 0,
     reference: '',
   });
@@ -1493,7 +1501,8 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
   const vat = computeVat(totalAmount, vatSettings, applyVat);
-  const grandTotal = vat.total;
+  // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
+  const grandTotal = vat.total + (form.shipping_cost || 0);
   const amountPaid = form.payment_type === 'full' ? grandTotal : (form.payment_type === 'partial' ? form.amount_paid : 0);
 
   async function handleAddCustomer(newCustomerId: string) {
@@ -1575,6 +1584,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         extra_discount: form.extra_discount || 0,
         total_amount: grandTotal,
         tax_amount: vat.taxAmount,
+        shipping_cost: form.shipping_cost || 0,
         amount_paid: amountPaid,
         status: amountPaid >= grandTotal ? 'paid' : (amountPaid > 0 ? 'partially_paid' : 'draft'),
         is_pos: false,
@@ -1980,6 +1990,23 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                 <div className="flex justify-between text-xs text-red-500">
                   <span>Extra Discount</span>
                   <span>-{formatCurrency(form.extra_discount || 0)}</span>
+                </div>
+              )}
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Shipping ৳</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.shipping_cost || 0}
+                  onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })}
+                  className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </div>
+              {(form.shipping_cost || 0) > 0 && (
+                <div className="flex justify-between text-xs text-blue-700">
+                  <span>Shipping</span>
+                  <span>+{formatCurrency(form.shipping_cost || 0)}</span>
                 </div>
               )}
               {vatSettings.enabled && (

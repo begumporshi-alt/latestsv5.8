@@ -61,6 +61,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
     reference: (invoice as any).reference || '',
     cart_discount_percent: Number((invoice as any).cart_discount_percent) || 0,
     extra_discount: Number((invoice as any).extra_discount) || 0,
+    shipping_cost: Number((invoice as any).shipping_cost) || 0,
     payment_term: 'full' as 'full' | 'partial' | 'credit',
     payment_method: 'cash',
     partial_amount: 0,
@@ -255,10 +256,11 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
   const cartDiscountAmount = (subtotal * (form.cart_discount_percent || 0)) / 100;
   const totalAmount = Math.max(0, subtotal - cartDiscountAmount - (form.extra_discount || 0));
   const vat = computeVat(totalAmount, vatSettings, applyVat);
-  const grandTotal = vat.total;
+  // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
+  const grandTotal = vat.total + (form.shipping_cost || 0);
   const vatChanged = Math.abs(vat.taxAmount - Number((invoice as any).tax_amount || 0)) > 0.005;
   const hasItemChanges = JSON.stringify(items.map(i => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price, discount_percent: i.discount_percent, selected_unit_id: i.selected_unit?.id }))) !== JSON.stringify(originalItems.map(i => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.unit_price, discount_percent: i.discount_percent, selected_unit_id: i.selected_unit?.id })));
-  const hasHeaderChanges = form.customer_id !== originalHeader.customer_id || form.invoice_date !== originalHeader.invoice_date || form.due_date !== originalHeader.due_date || form.notes !== originalHeader.notes || form.reference !== originalHeader.reference || (form.cart_discount_percent || 0) !== (originalHeader.cart_discount_percent || 0) || (form.extra_discount || 0) !== (originalHeader.extra_discount || 0) || form.payment_term !== originalHeader.payment_term || form.payment_method !== originalHeader.payment_method || form.partial_amount !== originalHeader.partial_amount;
+  const hasHeaderChanges = form.customer_id !== originalHeader.customer_id || form.invoice_date !== originalHeader.invoice_date || form.due_date !== originalHeader.due_date || form.notes !== originalHeader.notes || form.reference !== originalHeader.reference || (form.cart_discount_percent || 0) !== (originalHeader.cart_discount_percent || 0) || (form.extra_discount || 0) !== (originalHeader.extra_discount || 0) || (form.shipping_cost || 0) !== (originalHeader.shipping_cost || 0) || form.payment_term !== originalHeader.payment_term || form.payment_method !== originalHeader.payment_method || form.partial_amount !== originalHeader.partial_amount;
   const hasChanges = hasItemChanges || hasHeaderChanges || vatChanged;
 
   useEffect(() => {
@@ -304,6 +306,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
         reference: form.reference || null,
         extra_discount: form.extra_discount || 0,
         cart_discount_percent: form.cart_discount_percent || 0,
+        shipping_cost: form.shipping_cost || 0,
         payment_term: form.payment_term,
         payment_method: form.payment_method,
         partial_amount: form.payment_term === 'partial' ? form.partial_amount : 0,
@@ -531,6 +534,23 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                 <div className="flex justify-between text-xs text-red-500">
                   <span>Extra Discount</span>
                   <span>-{formatCurrency(form.extra_discount || 0)}</span>
+                </div>
+              )}
+              <div className="flex justify-between items-center gap-2">
+                <label className="text-xs text-muted-foreground">Shipping ৳</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.shipping_cost || 0}
+                  onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })}
+                  className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </div>
+              {(form.shipping_cost || 0) > 0 && (
+                <div className="flex justify-between text-xs text-blue-700">
+                  <span>Shipping</span>
+                  <span>+{formatCurrency(form.shipping_cost || 0)}</span>
                 </div>
               )}
               {vatSettings.enabled && (

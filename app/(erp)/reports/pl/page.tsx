@@ -109,13 +109,14 @@ export default function PLPage() {
 
     const [invoicesRes, accountsRes] = await Promise.all([
       // Drafts post no journal entries, so they are not revenue yet
-      supabase.from('invoices').select('total_amount, tax_amount').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled').neq('status', 'draft'),
+      supabase.from('invoices').select('total_amount, tax_amount, shipping_cost').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled').neq('status', 'draft'),
       supabase.from('accounts').select('id, code, name, account_type'),
     ]);
 
-    // Gross sales revenue from non-cancelled invoices, NET of VAT — the GL
-    // posts sales net of tax (Cr 4000 = total - VAT), so this matches the ledger.
-    const salesRevenue = (invoicesRes.data || []).reduce((s, inv) => s + Number(inv.total_amount) - Number(inv.tax_amount || 0), 0);
+    // Gross sales revenue from non-cancelled invoices, NET of VAT and shipping —
+    // the GL posts goods sales to 4000, VAT to 2100 and shipping to 4020 (which
+    // appears below as its own revenue row), so this matches the ledger.
+    const salesRevenue = (invoicesRes.data || []).reduce((s, inv) => s + Number(inv.total_amount) - Number(inv.tax_amount || 0) - Number(inv.shipping_cost || 0), 0);
 
     // Helper: sum journal lines for an account within period (DB-side filtering via RPC)
     async function periodNetDebit(accountId: string): Promise<number> {
