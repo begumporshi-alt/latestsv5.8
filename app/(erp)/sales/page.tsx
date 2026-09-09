@@ -25,6 +25,23 @@ import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
 import { isInvoiceOverdue } from '@/lib/format';
+import { cachedQuery } from '@/lib/offline/cache';
+
+// Cached aggregate served offline — see loadData/fetchSalesData.
+interface SalesPageData {
+  invoicesWithReturns: InvoiceWithCustomer[];
+  paymentMethods: { code: string; name: string }[];
+  warehouses: any[];
+  customers: Customer[];
+  products: Product[];
+  companySettings: any;
+  cogsGap: any;
+  stats: {
+    total: number; paid: number; refunded: number; netCollected: number; outstanding: number;
+    overdue: number; storeCreditBalance: number; badDebt: number; cogs: number;
+    paymentCollectedAtSale: number; invoiceCount: number; costHistoryTotal: number;
+  };
+}
 
 const statusConfig: Record<InvoiceStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
@@ -101,6 +118,7 @@ export default function SalesPage() {
   const [editingInvoice, setEditingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [cancellingInvoice, setCancellingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [viewTab, setViewTab] = useState<'details' | 'history' | 'cost-history'>('details');
+  const [dataStale, setDataStale] = useState(false);
 
   useEffect(() => { loadData(); }, [period, filterDateFrom, filterDateTo]);
 
@@ -135,10 +153,30 @@ export default function SalesPage() {
     return { from: '', to: '' };
   }
 
+  // The full sales aggregate (invoices + customers + products + payments +
+  // returns + deliveries + stats inputs) is cached per period window, so the
+  // order list stays reviewable offline with a stale banner.
   async function loadData() {
     setLoading(true);
     const { from, to } = getPeriodRange();
+    const key = `sales:page-data:${period}:${from}:${to}`;
+    try {
+      const res = await cachedQuery<SalesPageData>(key, 60_000, () => fetchSalesData(from, to));
+      applySalesData(res.data);
+      setDataStale(!res.fresh);
+    } catch {
+      setInvoices([]);
+      toast({
+        title: 'Offline — no cached sales data',
+        description: 'Open this page once while online so this device builds its offline copy.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
 
+  async function fetchSalesData(from: string, to: string): Promise<SalesPageData> {
     // All completeness-dependent queries go through fetchAll so stats and
     // pickers are never silently truncated by Supabase's row caps (the
     // invoices query previously had .limit(500), which hid the oldest 80
@@ -225,15 +263,7 @@ export default function SalesPage() {
       cph_total: costMap.get(inv.id) || 0,
     }));
 
-    setInvoices(invoicesWithReturns);
-    setPaymentMethods(paymentMethodsRes.data || []);
-    setWarehouses(warehousesRes.data || []);
-    setCustomers(custRes || []);
-    setProducts(productsData || []);
-    if (settingsRes.data?.setting_value) setCompanySettings(settingsRes.data.setting_value);
-
-    const allInv = invoicesWithReturns;
-    const activeInv = allInv.filter((i: any) => i.status !== 'cancelled' && i.status !== 'draft');
+    const activeInv = invoicesWithReturns.filter((i: any) => i.status !== 'cancelled' && i.status !== 'draft');
 
     // Calculate collected amount from payments table filtered by payment_date,
     // so payments on old invoices collected today still show in today's stats.
@@ -272,28 +302,46 @@ export default function SalesPage() {
       p_start_date: from || null,
       p_end_date: to || null,
     });
-    setCogsGap((gapRows && gapRows.length > 0) ? gapRows[0] : null);
 
     // Payment collected at sale: total amount paid on invoices that were fully or partially paid at time of sale
     const paymentCollectedAtSale = activeInv
       .filter((i: any) => Number(i.amount_paid || 0) > 0)
       .reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0);
 
-    setStats({
-      total: activeInv.reduce((s: number, i: any) => s + Number(i.total_amount), 0),
-      paid: totalCollected,
-      refunded: periodRefunded,
-      netCollected: totalCollected - periodRefunded,
-      outstanding: activeInv.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0),
-      overdue: activeInv.filter((i: any) => isInvoiceOverdue(i)).length,
-      storeCreditBalance,
-      badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
-      cogs: cogsAmount,
-      paymentCollectedAtSale,
-      invoiceCount: activeInv.length,
-      costHistoryTotal: activeInv.reduce((s: number, i: any) => s + Number(i.cph_total || 0), 0),
-    });
-    setLoading(false);
+    return {
+      invoicesWithReturns,
+      paymentMethods: paymentMethodsRes.data || [],
+      warehouses: warehousesRes.data || [],
+      customers: custRes || [],
+      products: productsData || [],
+      companySettings: settingsRes.data?.setting_value || null,
+      cogsGap: (gapRows && gapRows.length > 0) ? gapRows[0] : null,
+      stats: {
+        total: activeInv.reduce((s: number, i: any) => s + Number(i.total_amount), 0),
+        paid: totalCollected,
+        refunded: periodRefunded,
+        netCollected: totalCollected - periodRefunded,
+        outstanding: activeInv.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0),
+        overdue: activeInv.filter((i: any) => isInvoiceOverdue(i)).length,
+        storeCreditBalance,
+        badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
+        cogs: cogsAmount,
+        paymentCollectedAtSale,
+        invoiceCount: activeInv.length,
+        costHistoryTotal: activeInv.reduce((s: number, i: any) => s + Number(i.cph_total || 0), 0),
+      },
+    };
+  }
+
+  function applySalesData(d: SalesPageData) {
+    setInvoices(d.invoicesWithReturns);
+    setPaymentMethods(d.paymentMethods);
+    setWarehouses(d.warehouses);
+    setCustomers(d.customers);
+    setProducts(d.products);
+    if (d.companySettings) setCompanySettings(d.companySettings);
+    setCogsGap(d.cogsGap);
+    setStats(d.stats);
   }
 
   async function viewDeliveryChallan(deliveryId: string) {
@@ -726,6 +774,12 @@ export default function SalesPage() {
 
   return (
     <div className="space-y-5 animate-fade-in">
+      {dataStale && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Showing cached sales data from the last online session. New sales made offline are queued in the Sync Center.
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Sales & Invoices</h1>

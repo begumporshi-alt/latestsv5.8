@@ -3,7 +3,10 @@
 import { useEffect, useState, Fragment } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
-import { ChevronLeft, ChevronRight, Search, CreditCard as Edit, Users, Calendar, TrendingUp } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Search, CreditCard as Edit, Users, Calendar, TrendingUp, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { networkMonitor } from '@/lib/offline/network';
+import { cachedQuery, cacheGet, mutateCache } from '@/lib/offline/cache';
+import { enqueueOp } from '@/lib/offline/outbox';
 
 interface Employee {
   id: string;
@@ -69,24 +72,40 @@ export default function AttendancePage() {
   const [editCheckOut, setEditCheckOut] = useState('');
   const [editNotes, setEditNotes] = useState('');
   const [showSummary, setShowSummary] = useState(false);
+  const [dataStale, setDataStale] = useState(false);
 
   const today = new Date().toISOString().split('T')[0];
   const isToday = date === today;
 
   useEffect(() => { loadData(); }, [date]);
 
+  // Employees use a dedicated active-only cache key (the /employees page
+  // caches all rows incl. terminated under CACHE_KEYS.employees); attendance
+  // is cached per date and the monthly summary per month, so any visited
+  // date stays usable offline.
   async function loadData() {
     setLoading(true);
-    const [empRes, attRes] = await Promise.all([
-      supabase.from('employees').select('id, employee_id, full_name, designation, department').eq('status', 'active').order('full_name'),
-      supabase.from('attendance').select('*').eq('date', date),
-    ]);
-    setEmployees(empRes.data || []);
-    const map = new Map<string, AttendanceRecord>();
-    (attRes.data || []).forEach((r: AttendanceRecord) => map.set(r.employee_id, r));
-    setAttendance(map);
-    await loadMonthlySummary();
-    setLoading(false);
+    try {
+      const emp = await cachedQuery<Employee[]>('attendance:employees', 300_000, async () =>
+        (await supabase.from('employees').select('id, employee_id, full_name, designation, department').eq('status', 'active').order('full_name')).data || []);
+      setEmployees(emp.data);
+      const att = await cachedQuery<AttendanceRecord[]>(`attendance:date:${date}`, 60_000, async () =>
+        (await supabase.from('attendance').select('*').eq('date', date)).data || []);
+      const map = new Map<string, AttendanceRecord>();
+      att.data.forEach((r: AttendanceRecord) => map.set(r.employee_id, r));
+      setAttendance(map);
+      setDataStale(att.offline || !att.fresh || emp.offline || !emp.fresh);
+      await loadMonthlySummary();
+    } catch {
+      setEmployees([]);
+      toast({
+        title: 'Offline — no cached attendance data',
+        description: 'Open this page once while online so this device builds its offline copy.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function loadMonthlySummary() {
@@ -94,25 +113,57 @@ export default function AttendancePage() {
     const monthStart = `${year}-${month}-01`;
     const nextMonth = month === '12' ? `${parseInt(year) + 1}-01-01` : `${year}-${String(parseInt(month) + 1).padStart(2, '0')}-01`;
 
-    const { data } = await supabase
-      .from('attendance')
-      .select('employee_id, status')
-      .gte('date', monthStart)
-      .lt('date', nextMonth);
+    try {
+      const res = await cachedQuery<{ employee_id: string; status: AttendanceStatus }[]>(`attendance:month:${year}-${month}`, 60_000, async () =>
+        (await supabase
+          .from('attendance')
+          .select('employee_id, status')
+          .gte('date', monthStart)
+          .lt('date', nextMonth)).data || []);
 
-    const summary = new Map<string, MonthlySummary>();
-    (data || []).forEach((r: { employee_id: string; status: AttendanceStatus }) => {
-      const s = summary.get(r.employee_id) || { present: 0, late: 0, absent: 0, half_day: 0, leave: 0, total_days: 0 };
-      s[r.status]++;
-      s.total_days++;
-      summary.set(r.employee_id, s);
-    });
-    setMonthlyData(summary);
+      const summary = new Map<string, MonthlySummary>();
+      res.data.forEach((r: { employee_id: string; status: AttendanceStatus }) => {
+        const s = summary.get(r.employee_id) || { present: 0, late: 0, absent: 0, half_day: 0, leave: 0, total_days: 0 };
+        s[r.status]++;
+        s.total_days++;
+        summary.set(r.employee_id, s);
+      });
+      setMonthlyData(summary);
+    } catch {
+      setMonthlyData(new Map());
+    }
   }
 
   async function markAttendance(employeeId: string, status: AttendanceStatus) {
     setSavingId(employeeId);
     const existing = attendance.get(employeeId);
+
+    // Offline: queue the op and apply it to the local caches so the sheet
+    // and the monthly summary reflect it immediately.
+    if (!networkMonitor.getState().online) {
+      try {
+        const empName = employees.find(e => e.id === employeeId)?.full_name || 'employee';
+        await enqueueOp('attendance.mark', { employee_id: employeeId, date, status },
+          `Attendance ${status.replace('_', ' ')} — ${empName} (${date})`);
+        const local: AttendanceRecord = {
+          ...(existing ?? { id: `local-${employeeId}-${date}`, check_in: null, check_out: null, notes: null }),
+          employee_id: employeeId,
+          date,
+          status,
+        };
+        setAttendance(prev => new Map(prev).set(employeeId, local));
+        await mutateCache<AttendanceRecord[]>(`attendance:date:${date}`, list =>
+          [...(list || []).filter(r => r.employee_id !== employeeId), local]);
+        await mutateCache<{ employee_id: string; status: AttendanceStatus }[]>(`attendance:month:${date.slice(0, 7)}`, list =>
+          [...(list || []).filter(r => r.employee_id !== employeeId), { employee_id: employeeId, status }]);
+        void recomputeMonthlyFromCache();
+      } catch (err: any) {
+        toast({ title: 'Could not queue', description: err?.message || 'Offline storage error', variant: 'destructive' });
+      }
+      setSavingId(null);
+      return;
+    }
+
     let updated: AttendanceRecord | null = null;
 
     if (existing) {
@@ -136,9 +187,25 @@ export default function AttendancePage() {
 
     if (updated) {
       setAttendance(prev => new Map(prev).set(employeeId, updated!));
+      void mutateCache<AttendanceRecord[]>(`attendance:date:${date}`, list =>
+        [...(list || []).filter(r => r.employee_id !== employeeId), updated!]);
       await loadMonthlySummary();
     }
     setSavingId(null);
+  }
+
+  // Recompute the monthly summary from the just-patched month cache after an
+  // offline mark (reading the `attendance` state here would race the setState).
+  async function recomputeMonthlyFromCache() {
+    const rows = await cacheGet<{ employee_id: string; status: AttendanceStatus }[]>(`attendance:month:${date.slice(0, 7)}`);
+    const summary = new Map<string, MonthlySummary>();
+    (rows || []).forEach(r => {
+      const s = summary.get(r.employee_id) || { present: 0, late: 0, absent: 0, half_day: 0, leave: 0, total_days: 0 };
+      s[r.status]++;
+      s.total_days++;
+      summary.set(r.employee_id, s);
+    });
+    setMonthlyData(summary);
   }
 
   async function saveDetails(employeeId: string) {
@@ -159,6 +226,41 @@ export default function AttendancePage() {
       payload.check_out = makeTimestamp(date, editCheckOut);
     } else {
       payload.check_out = null;
+    }
+
+    // Offline: queue a details op (status preserved / defaults to present on
+    // creation) and patch the local record.
+    if (!networkMonitor.getState().online) {
+      try {
+        const empName = employees.find(e => e.id === employeeId)?.full_name || 'employee';
+        await enqueueOp('attendance.details', {
+          employee_id: employeeId,
+          date,
+          status: existing?.status ?? 'present',
+          check_in: payload.check_in,
+          check_out: payload.check_out,
+          notes: payload.notes,
+        }, `Attendance times — ${empName} (${date})`);
+        const local: AttendanceRecord = {
+          ...(existing ?? { id: `local-${employeeId}-${date}`, status: 'present' as AttendanceStatus }),
+          employee_id: employeeId,
+          date,
+          check_in: payload.check_in,
+          check_out: payload.check_out,
+          notes: payload.notes,
+        } as AttendanceRecord;
+        setAttendance(prev => new Map(prev).set(employeeId, local));
+        await mutateCache<AttendanceRecord[]>(`attendance:date:${date}`, list =>
+          [...(list || []).filter(r => r.employee_id !== employeeId), local]);
+      } catch (err: any) {
+        toast({ title: 'Could not queue', description: err?.message || 'Offline storage error', variant: 'destructive' });
+        setSavingId(null);
+        return;
+      }
+      setEditingId(null);
+      toast({ title: 'Queued offline', description: 'Check-in/out times will sync automatically.' });
+      setSavingId(null);
+      return;
     }
 
     let updated: AttendanceRecord | null = null;
@@ -196,6 +298,8 @@ export default function AttendancePage() {
 
     if (updated) {
       setAttendance(prev => new Map(prev).set(employeeId, updated!));
+      void mutateCache<AttendanceRecord[]>(`attendance:date:${date}`, list =>
+        [...(list || []).filter(r => r.employee_id !== employeeId), updated!]);
       setEditingId(null);
       toast({ title: 'Saved', description: 'Check-in/out times saved successfully' });
     }
@@ -251,6 +355,12 @@ export default function AttendancePage() {
 
   return (
     <div className="space-y-5 animate-fade-in">
+      {dataStale && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Showing cached attendance data. Marks made here are queued and will sync automatically.
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>

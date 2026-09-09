@@ -4,8 +4,12 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { UserRound, Plus, Search, Edit, Users, DollarSign, Briefcase, X, Trash2 } from 'lucide-react';
+import { UserRound, Plus, Search, Edit, Users, DollarSign, Briefcase, X, Trash2, TriangleAlert as AlertTriangle } from 'lucide-react';
 import type { Employee } from '@/lib/types';
+import { networkMonitor } from '@/lib/offline/network';
+import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
+import { enqueueOp } from '@/lib/offline/outbox';
 
 const deptColors: Record<string, string> = {
   Sales: 'bg-blue-100 text-blue-700',
@@ -27,24 +31,61 @@ export default function EmployeesPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
   const [deletingEmployee, setDeletingEmployee] = useState<Employee | null>(null);
+  const [dataStale, setDataStale] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
-  async function loadData() {
+  async function loadData(force = false) {
     setLoading(true);
-    const { data } = await supabase.from('employees').select('*').order('full_name');
-    setEmployees(data || []);
-    setLoading(false);
+    if (force) await cacheDelete(CACHE_KEYS.employees);
+    try {
+      const res = await cachedQuery<Employee[]>(CACHE_KEYS.employees, 60_000, async () =>
+        (await supabase.from('employees').select('*').order('full_name')).data || []);
+      setEmployees(res.data);
+      setDataStale(!res.fresh);
+    } catch {
+      setEmployees([]);
+      toast({
+        title: 'Offline — no cached employee data',
+        description: 'Open this page once while online so this device builds its offline copy.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function handleDelete() {
     if (!deletingEmployee) return;
-    const { error } = await supabase.from('employees').update({ status: 'terminated' }).eq('id', deletingEmployee.id);
+    // Offline: termination is an employee.update op carrying the full field
+    // set, version-checked against the cached row.
+    if (!networkMonitor.getState().online) {
+      const row = deletingEmployee;
+      try {
+        await enqueueOp('employee.update', {
+          id: row.id,
+          expected_updated_at: (row as any).updated_at ?? null,
+          data: {
+            employee_id: row.employee_id, full_name: row.full_name, designation: row.designation,
+            department: row.department, email: row.email ?? null, phone: row.phone ?? null,
+            salary: Number(row.salary) || 0, join_date: row.join_date, status: 'terminated',
+          },
+        }, `Terminate employee — ${row.full_name}`);
+      } catch (err: any) {
+        toast({ title: 'Could not queue', description: err?.message || 'Offline storage error', variant: 'destructive' });
+        setDeletingEmployee(null);
+        return;
+      }
+      toast({ title: 'Queued offline', description: `${row.full_name} will be terminated on sync.` });
+      setDeletingEmployee(null);
+      return;
+    }
+    const { error } = await supabase.from('employees').update({ status: 'terminated', updated_at: new Date().toISOString() }).eq('id', deletingEmployee.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: 'Employee terminated successfully' });
-      loadData();
+      loadData(true);
     }
     setDeletingEmployee(null);
   }
@@ -66,6 +107,12 @@ export default function EmployeesPage() {
 
   return (
     <div className="space-y-5 animate-fade-in">
+      {dataStale && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Showing cached data from the last online session. Changes made here are queued and will sync automatically.
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Employees</h1>
@@ -148,10 +195,10 @@ export default function EmployeesPage() {
       </div>
 
       {showAddModal && (
-        <EmployeeModal onClose={() => setShowAddModal(false)} onSaved={loadData} />
+        <EmployeeModal onClose={() => setShowAddModal(false)} onSaved={() => loadData(true)} />
       )}
       {editingEmployee && (
-        <EmployeeModal employee={editingEmployee} onClose={() => setEditingEmployee(null)} onSaved={loadData} />
+        <EmployeeModal employee={editingEmployee} onClose={() => setEditingEmployee(null)} onSaved={() => loadData(true)} />
       )}
       {deletingEmployee && (
         <DeleteConfirmModal name={deletingEmployee.full_name} onClose={() => setDeletingEmployee(null)} onConfirm={handleDelete} />
@@ -194,8 +241,29 @@ function EmployeeModal({ employee, onClose, onSaved }: { employee?: Employee | n
       status: form.status as Employee['status'],
     };
 
+    // Offline: queue the same field set for atomic server-side application.
+    if (!networkMonitor.getState().online) {
+      const payload: any = { data };
+      if (isEdit) {
+        payload.id = employee!.id;
+        payload.expected_updated_at = (employee as any).updated_at ?? null;
+      }
+      try {
+        await enqueueOp(isEdit ? 'employee.update' : 'employee.create', payload,
+          `${isEdit ? 'Employee edit' : 'New employee'} — ${form.full_name}`);
+      } catch (err: any) {
+        setError(err?.message || 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+      toast({ title: 'Queued offline', description: `${form.full_name} will sync automatically when you're back online.` });
+      onSaved();
+      onClose();
+      return;
+    }
+
     const { error } = isEdit
-      ? await supabase.from('employees').update(data).eq('id', employee!.id)
+      ? await supabase.from('employees').update({ ...data, updated_at: new Date().toISOString() }).eq('id', employee!.id)
       : await supabase.from('employees').insert(data);
 
     if (error) { setError(error.message); setSaving(false); return; }

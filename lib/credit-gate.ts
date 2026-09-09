@@ -8,6 +8,8 @@
 // only means something once the business sets it.
 
 import { supabase } from '@/lib/supabase';
+import { cacheGet, isNetworkError } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
 
 export interface CreditCheck {
   limit: number;
@@ -15,6 +17,8 @@ export interface CreditCheck {
   newReceivable: number;
   afterSale: number;
   shortfall: number;
+  /** true when computed from the offline customer snapshot, not a live read */
+  stale?: boolean;
 }
 
 // newReceivable = the part of this sale the customer will owe after whatever
@@ -30,9 +34,10 @@ export function newReceivableFor(
 }
 
 // Fetches the customer's credit fields fresh at gate time (the list-loaded
-// outstanding_balance can be stale). Returns null when the lookup fails so
-// callers fail open with a notice — the gate is advisory and the DB allows
-// the sale either way.
+// outstanding_balance can be stale). Offline, falls back to the cached
+// customer snapshot and marks the result stale. Returns null when there is
+// no data either way, so callers fail open with a notice — the gate is
+// advisory and the DB allows the sale either way.
 export async function checkCreditLimit(
   customerId: string,
   newReceivable: number
@@ -43,10 +48,24 @@ export async function checkCreditLimit(
     .select('credit_limit, outstanding_balance')
     .eq('id', customerId)
     .single();
-  if (error || !data) return null;
 
-  const limit = Number(data.credit_limit) || 0;
-  const outstanding = Number(data.outstanding_balance) || 0;
+  let limit: number;
+  let outstanding: number;
+  let stale = false;
+
+  if (error || !data) {
+    if (!isNetworkError(error)) return null;
+    const cachedList = await cacheGet<Array<Record<string, unknown>>>(CACHE_KEYS.customers);
+    const cached = cachedList?.find((c) => c.id === customerId);
+    if (!cached) return null;
+    limit = Number(cached.credit_limit) || 0;
+    outstanding = Number(cached.outstanding_balance) || 0;
+    stale = true;
+  } else {
+    limit = Number(data.credit_limit) || 0;
+    outstanding = Number(data.outstanding_balance) || 0;
+  }
+
   if (limit <= 0) return null; // no limit set — nothing to enforce
 
   const afterSale = outstanding + newReceivable;
@@ -58,5 +77,6 @@ export async function checkCreditLimit(
     newReceivable,
     afterSale,
     shortfall: afterSale - limit,
+    stale,
   };
 }

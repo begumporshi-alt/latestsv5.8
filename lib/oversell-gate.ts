@@ -7,11 +7,15 @@
 // creating a negative inventory layer (an IOU) via consume_fifo.
 
 import { supabase } from '@/lib/supabase';
+import { cacheGet, cachePut, isNetworkError } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
 
 export interface LedgerStock {
   // `${productId}|${warehouseId}` → base-unit qty remaining in FIFO batches
   byPair: Record<string, number>;
   defaultWarehouseId: string | null;
+  /** true when served from the offline snapshot instead of a live lookup */
+  stale?: boolean;
 }
 
 export interface OversellItemInput {
@@ -41,8 +45,12 @@ export interface Shortfall {
 // Supabase caps responses at 1000, silently dropping the tail — which made
 // ~400 products read as "ledger 0" and fired false oversell warnings.
 //
-// Returns null when the lookup itself fails, so callers can fail open with
-// a notice: the gate is advisory and the DB allows the sale either way.
+// Every successful lookup is merged into an offline snapshot (per
+// product|warehouse pairs, so coverage accumulates across carts over time).
+// When the network is unreachable the snapshot is served with stale=true so
+// callers can soften hard blocks into warnings — offline data is advisory.
+// Returns null only when there is no snapshot either, so callers fail open
+// with a notice: the gate is advisory and the DB allows the sale either way.
 export async function fetchLedgerStockFor(
   productIds: string[],
   defaultWarehouseId?: string | null
@@ -54,22 +62,43 @@ export async function fetchLedgerStockFor(
   const { data, error } = await supabase.rpc('get_batch_stock_by_product_warehouse', {
     p_product_ids: ids,
   });
-  if (error || !data) return null;
+
+  if (error || !data) {
+    if (isNetworkError(error)) {
+      const cached = await cacheGet<LedgerStock>(CACHE_KEYS.gateStock);
+      if (cached) {
+        return { byPair: cached.byPair ?? {}, defaultWarehouseId: cached.defaultWarehouseId ?? defaultWh, stale: true };
+      }
+    }
+    return null;
+  }
 
   const byPair: Record<string, number> = {};
   for (const r of data as Array<{ product_id: string; warehouse_id: string | null; qty: number | string }>) {
     byPair[`${r.product_id}|${r.warehouse_id}`] = Number(r.qty);
   }
-  return { byPair, defaultWarehouseId: defaultWh };
+  // Merge over the previous snapshot: fresh pairs win, older pairs survive,
+  // so the offline snapshot grows to cover everything this device has sold.
+  const prev = await cacheGet<LedgerStock>(CACHE_KEYS.gateStock);
+  const stock: LedgerStock = {
+    byPair: { ...(prev?.byPair ?? {}), ...byPair },
+    defaultWarehouseId: defaultWh,
+  };
+  await cachePut(CACHE_KEYS.gateStock, stock);
+  return stock;
 }
 
 async function resolveDefaultWarehouseId(): Promise<string | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('warehouses')
     .select('id')
     .eq('is_default', true)
     .eq('is_active', true)
     .limit(1);
+  if ((error || !data) && isNetworkError(error)) {
+    const cached = await cacheGet<Array<{ id: string; is_default: boolean; is_active: boolean }>>(CACHE_KEYS.warehouses);
+    return cached?.find((w) => w.is_default && w.is_active)?.id ?? null;
+  }
   return data?.[0]?.id ?? null;
 }
 

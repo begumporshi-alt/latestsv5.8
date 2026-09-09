@@ -23,6 +23,13 @@ import { BatchAllocationEditor, type EditorBatch } from '@/components/batch-allo
 import { useGlobalCart } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { networkMonitor } from '@/lib/offline/network';
+import { cachedQuery, cacheGet, cachePut, mutateCache, isNetworkError } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
+import { enqueueOp } from '@/lib/offline/outbox';
+import { fetchAll } from '@/lib/fetch-all';
+import { REPLICA, replicaRows, buildPosSnapshotFromReplica } from '@/lib/offline/replica';
+import type { LedgerStock } from '@/lib/oversell-gate';
 
 interface CartItem {
   id: string;
@@ -240,27 +247,37 @@ export default function POSPage() {
   useEffect(() => {
     loadProducts('');
     loadCustomers();
-    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
-      .then(({ data }) => { if (data && data.length > 0) setPaymentMethods(data); });
-    supabase.from('brands').select('id, name').eq('is_active', true).order('name')
-      .then(({ data }) => setBrands(data || []));
-    supabase.from('categories').select('id, name').eq('is_active', true).order('name')
-      .then(({ data }) => setCategories(data || []));
-    supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('is_default', { ascending: false }).order('name')
-      .then(({ data }) => { if (data) setWarehouses(data); });
+    // Reference data goes through the offline cache (small tables, long TTL):
+    // online it refetches and refreshes the snapshot; offline it serves the
+    // last copy so filters, warehouses and payment methods keep working.
+    void loadCached(CACHE_KEYS.paymentMethods, 300_000, async () =>
+      (await supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')).data || [])
+      .then(d => { if (d && d.length > 0) setPaymentMethods(d); });
+    void loadCached(CACHE_KEYS.brands, 300_000, async () =>
+      (await supabase.from('brands').select('id, name').eq('is_active', true).order('name')).data || [])
+      .then(d => setBrands(d || []));
+    void loadCached(CACHE_KEYS.categories, 300_000, async () =>
+      (await supabase.from('categories').select('id, name').eq('is_active', true).order('name')).data || [])
+      .then(d => setCategories(d || []));
+    void loadCached(CACHE_KEYS.warehouses, 300_000, async () =>
+      (await supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('is_default', { ascending: false }).order('name')).data || [])
+      .then(d => { if (d) setWarehouses(d); });
     supabase.from('app_settings').select('setting_value').eq('setting_key', 'product_defaults').maybeSingle()
       .then(({ data }) => {
         if (data?.setting_value?.default_image_url) setDefaultProductImage(data.setting_value.default_image_url);
       });
-    // Fetch actual walk-in customer from DB
-    supabase.from('customers').select('id, name').ilike('name', '%walk%').limit(1)
-      .then(({ data }) => {
-        if (data && data.length > 0) {
-          setWalkInCustomerId(data[0].id);
-          setSelectedCustomer(data[0].id);
-        }
-      });
   }, []);
+
+  // Small helper: cachedQuery with the state-setter lifted out. Returns null
+  // when offline with no cached copy — callers keep their previous state.
+  async function loadCached<T>(key: string, ttl: number, fetcher: () => Promise<T>): Promise<T | null> {
+    try {
+      const res = await cachedQuery(key, ttl, fetcher);
+      return res.data;
+    } catch {
+      return null;
+    }
+  }
 
   // Load store credit balance when customer changes
   useEffect(() => {
@@ -277,12 +294,27 @@ export default function POSPage() {
       // credits past their expiry date are no longer redeemable — exclude them
       // from the balance so the checkout never offers money that can't be used
       .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
-      .then(({ data }) => {
+      .then(({ data, error }) => {
+        if (error) {
+          // Offline: offer the last cached balance (the sync handler re-checks
+          // live credits server-side before booking redemptions anyway).
+          if (isNetworkError(error)) {
+            void cacheGet<number>(`store-credits:${selectedCustomer}`).then(cached => {
+              if (cached != null) setStoreCreditBalance(cached);
+              else { setStoreCreditBalance(0); setApplyStoreCredit(false); }
+            });
+          } else {
+            setStoreCreditBalance(0);
+            setApplyStoreCredit(false);
+          }
+          return;
+        }
         const total = (data || []).reduce((s: number, c: any) => s + Number(c.balance), 0);
         setStoreCreditBalance(total);
+        void cachePut(`store-credits:${selectedCustomer}`, total);
         if (total === 0) setApplyStoreCredit(false);
       });
-  }, [selectedCustomer]);
+  }, [selectedCustomer, walkInCustomerId]);
 
   // Any cart change invalidates a prior "Sell anyway" confirmation.
   useEffect(() => { shortfallConfirmedRef.current = false; creditConfirmedRef.current = false; }, [cart]);
@@ -312,8 +344,60 @@ export default function POSPage() {
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
   }, [search, selectedBrand, selectedCategory]);
 
+  // TTL for the full-product offline snapshot (also used by the inventory
+  // page). While online, a stale snapshot refreshes in the background — the
+  // visible grid always uses the fast 60-row query exactly as before.
+  const PRODUCT_SNAPSHOT_TTL = 10 * 60_000;
+
+  async function refreshProductSnapshot() {
+    void cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, () =>
+      fetchAll(() => supabase
+        .from('products')
+        .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, brand_id, category_id,
+          inventory_items(id, warehouse_id, quantity_on_hand),
+          units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
+        .eq('is_active', true)
+        .order('name')))
+      .catch(() => {});
+  }
+
   async function loadProducts(q: string) {
     setLoading(true);
+
+    // Offline: serve the encrypted local snapshot, applying the same
+    // search/brand/category filters client-side.
+    if (!networkMonitor.getState().online) {
+      let cached = await cacheGet<ProductData[]>(CACHE_KEYS.products).catch(() => null);
+      if (!cached || cached.length === 0) {
+        // Page snapshot never built (page never visited online) — the local
+        // database replica still has the full catalog.
+        const fromReplica = await buildPosSnapshotFromReplica();
+        if (fromReplica && fromReplica.length > 0) {
+          cached = fromReplica as ProductData[];
+          void cachePut(CACHE_KEYS.products, cached);
+        }
+      }
+      if (cached && cached.length > 0) {
+        let list = cached;
+        if (q.trim()) {
+          const needle = q.trim().toLowerCase();
+          list = list.filter(p => (p.name || '').toLowerCase().includes(needle) || (p.sku || '').toLowerCase().includes(needle));
+        }
+        if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
+        if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
+        setProducts(list.slice(0, 60));
+      } else {
+        setProducts([]);
+        toast({
+          title: 'Offline — no product cache yet',
+          description: 'Open the POS once while online so this device builds its offline product list.',
+          variant: 'destructive',
+        });
+      }
+      setLoading(false);
+      return;
+    }
+
     let query = supabase
       .from('products')
       .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit,
@@ -332,18 +416,74 @@ export default function POSPage() {
       query = query.eq('category_id', selectedCategory);
     }
 
-    const { data } = await query.limit(60);
+    const { data, error: loadError } = await query.limit(60);
+
+    // Silent network drop (or a monitor race at mount): fall back to the
+    // cached snapshot with the same client-side filters as the offline path.
+    if ((loadError && isNetworkError(loadError)) || (!loadError && !data)) {
+      networkMonitor.markOffline();
+      let cached = await cacheGet<ProductData[]>(CACHE_KEYS.products).catch(() => null);
+      if (!cached || cached.length === 0) {
+        const fromReplica = await buildPosSnapshotFromReplica();
+        if (fromReplica && fromReplica.length > 0) {
+          cached = fromReplica as ProductData[];
+          void cachePut(CACHE_KEYS.products, cached);
+        }
+      }
+      if (cached && cached.length > 0) {
+        let list = cached;
+        if (q.trim()) {
+          const needle = q.trim().toLowerCase();
+          list = list.filter(p => (p.name || '').toLowerCase().includes(needle) || (p.sku || '').toLowerCase().includes(needle));
+        }
+        if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
+        if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
+        setProducts(list.slice(0, 60));
+      } else {
+        setProducts([]);
+        toast({
+          title: 'Offline — no product cache yet',
+          description: 'Open the POS once while online so this device builds its offline product list.',
+          variant: 'destructive',
+        });
+      }
+      setLoading(false);
+      return;
+    }
+
     setProducts((data || []) as ProductData[]);
+    // Keep the offline snapshot warm (no-op while fresh).
+    void refreshProductSnapshot();
     setLoading(false);
   }
 
+  // Full customer list through the offline cache (also feeds the credit-gate
+  // fallback and the walk-in resolution). Full rows so updated_at is captured
+  // for conflict checks when a queued offline edit syncs.
   async function loadCustomers() {
-    const { data } = await supabase
-      .from('customers')
-      .select('id, name, code, phone, outstanding_balance')
-      .eq('is_active', true)
-      .order('name');
-    setCustomers(data || []);
+    try {
+      const res = await cachedQuery<any[]>(CACHE_KEYS.customers, 60_000, () =>
+        fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name')));
+      setCustomers(res.data || []);
+      const walkIn = (res.data || []).find((c: any) => (c.name || '').toLowerCase().includes('walk'));
+      if (walkIn) {
+        setWalkInCustomerId(walkIn.id);
+        setSelectedCustomer(prev => (prev === WALK_IN_CUSTOMER_ID || prev === '') ? walkIn.id : prev);
+      }
+    } catch {
+      // Last resort: the local database replica.
+      const replicaCustomers = await replicaRows<any>(REPLICA['Customers']);
+      if (replicaCustomers.length > 0) {
+        setCustomers(replicaCustomers.filter((c: any) => c.is_active));
+        const walkIn = replicaCustomers.find((c: any) => (c.name || '').toLowerCase().includes('walk'));
+        if (walkIn) {
+          setWalkInCustomerId(walkIn.id);
+          setSelectedCustomer(prev => (prev === WALK_IN_CUSTOMER_ID || prev === '') ? walkIn.id : prev);
+        }
+      } else {
+        setCustomers([]);
+      }
+    }
   }
 
   const filteredProducts = products;
@@ -635,7 +775,7 @@ export default function POSPage() {
 
         if (shortfalls.length > 0) {
           const blocked = shortfalls.filter(s => s.bothEmpty);
-          if (blocked.length > 0) {
+          if (blocked.length > 0 && !gateStock.stale) {
             toast({
               title: 'Cannot sell — no stock record at all',
               description: `${blocked.map(s => s.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`,
@@ -643,6 +783,9 @@ export default function POSPage() {
             });
             return;
           }
+          // With a stale (offline) snapshot, "no record" may just mean "never
+          // cached on this device" — downgrade the hard block to a warning
+          // that requires the same explicit confirmation as any shortfall.
           setPendingShortfalls(shortfalls);
           setShortfallConfirmOpen(true);
           return;
@@ -675,6 +818,19 @@ export default function POSPage() {
     setProcessing(true);
 
     try {
+      // Offline checkout: the gates above already ran against cached
+      // snapshots (advisory, same warn-and-confirm policy). Queue the exact
+      // same payload the online path would have written; the server applies
+      // it atomically via sync_apply when connectivity returns.
+      if (!networkMonitor.getState().online) {
+        const queued = await queueOfflineOrder();
+        if (queued) {
+          setProcessing(false);
+          setTimeout(() => setOrderComplete(false), 4000);
+        }
+        return;
+      }
+
       const { data: posNum } = await supabase.rpc('generate_pos_number');
       const invoiceNumber = posNum || `POS-${Date.now().toString().slice(-8)}`;
       setLastInvoiceNumber(invoiceNumber);
@@ -876,6 +1032,164 @@ export default function POSPage() {
 
     setProcessing(false);
     setTimeout(() => setOrderComplete(false), 4000);
+  }
+
+  // Offline checkout: mirror processOrder's number computation and payload
+  // construction, queue it encrypted in the local outbox, and apply the same
+  // optimistic stock effects the server triggers would apply. The server-side
+  // sync_invoice_create handler replays this atomically (invoice → items →
+  // cost history → store credit → payment, with FIFO/journal triggers firing
+  // exactly as in the online path).
+  async function queueOfflineOrder(): Promise<boolean> {
+    const customerId = selectedCustomer;
+    const creditToApply = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
+
+    let amountPaid = 0;
+    let invoiceStatus = 'draft';
+    if (paymentTerm === 'full') {
+      amountPaid = grandTotal;
+      invoiceStatus = creditToApply > 0 && (grandTotal - creditToApply) > 0 ? 'partially_paid' : 'paid';
+    } else if (paymentTerm === 'partial') {
+      amountPaid = parseFloat(partialAmount) || 0;
+      if (amountPaid <= 0) {
+        toast({ title: 'Invalid amount', description: 'Please enter a partial payment amount', variant: 'destructive' });
+        setProcessing(false);
+        return false;
+      }
+      if (amountPaid >= grandTotal) {
+        toast({ title: 'Invalid amount', description: 'Partial payment must be less than total. Use Full Payment.', variant: 'destructive' });
+        setProcessing(false);
+        return false;
+      }
+      invoiceStatus = 'partially_paid';
+    } else {
+      amountPaid = 0;
+      invoiceStatus = 'sent';
+    }
+    const cashToPay = paymentTerm === 'full' ? (grandTotal - creditToApply) : (paymentTerm === 'partial' ? amountPaid : 0);
+
+    const tempNumber = `OFF-${Date.now().toString().slice(-8)}`;
+    const customerName = customers.find(c => c.id === customerId)?.name || 'customer';
+
+    const items = cart.map(item => ({
+      product_id: item.id,
+      quantity: item.quantity,
+      unit_price: item.unit_price,
+      cost_price: item.cost_price || 0,
+      discount_percent: item.discount_percent || 0,
+      tax_rate: 0,
+      subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
+      unit_name: item.selected_unit?.unit_name ?? null,
+      unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
+      base_quantity: item.base_quantity,
+      warehouse_id: item.warehouse_id || null,
+      description: null,
+    }));
+
+    const cost_history = cart.map(item => {
+      const unitName = item.selected_unit?.unit_name || 'pcs';
+      const costPerUnit = item.cost_price || 0;
+      const totalCostAdded = costPerUnit * item.quantity;
+      return {
+        product_id: item.id,
+        product_name: item.name,
+        product_sku: item.sku || '',
+        unit: unitName,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        cost_price_per_qty: costPerUnit,
+        cost_price_for_added_qty: totalCostAdded,
+        total_cost_price_single: costPerUnit,
+        total_cost_price_added: totalCostAdded,
+      };
+    });
+
+    try {
+      await enqueueOp('invoice.create', {
+        customer_id: customerId,
+        invoice_date: invoiceDate,
+        subtotal,
+        discount_amount: cartDiscountAmount,
+        cart_discount_percent: discount,
+        extra_discount: extraDiscount,
+        tax_amount: posVat.taxAmount,
+        shipping_cost: shipping || 0,
+        total_amount: grandTotal,
+        amount_paid: amountPaid,
+        status: invoiceStatus,
+        reference: reference || null,
+        items,
+        cost_history,
+        store_credit_amount: creditToApply,
+        cash_payment: { amount: cashToPay, method: paymentMethod },
+      }, `POS sale ${formatCurrency(grandTotal)} — ${customerName}`);
+    } catch (err: any) {
+      toast({ title: 'Could not queue order', description: err?.message || 'Offline storage error', variant: 'destructive' });
+      setProcessing(false);
+      return false;
+    }
+
+    // Optimistic local effects so this session stays consistent: decrement
+    // the cached product snapshot (counter stock) and the oversell-gate
+    // ledger snapshot by exactly what was sold.
+    await mutateCache<ProductData[]>(CACHE_KEYS.products, list => {
+      if (!list) return list;
+      return list.map(p => {
+        const lines = cart.filter(i => i.id === p.id);
+        if (lines.length === 0) return p;
+        const perWh: Record<string, number> = {};
+        for (const l of lines) {
+          const wh = l.warehouse_id || defaultWarehouseId;
+          if (wh) perWh[wh] = (perWh[wh] || 0) + l.base_quantity;
+        }
+        let touched = false;
+        const inventory_items = (p.inventory_items || []).map(inv => {
+          if (perWh[inv.warehouse_id] != null) {
+            touched = true;
+            return { ...inv, quantity_on_hand: Number(inv.quantity_on_hand) - perWh[inv.warehouse_id] };
+          }
+          return inv;
+        });
+        return touched ? { ...p, inventory_items } : p;
+      });
+    });
+    await mutateCache<LedgerStock>(CACHE_KEYS.gateStock, stock => {
+      const base = stock ?? { byPair: {}, defaultWarehouseId };
+      const byPair = { ...base.byPair };
+      for (const l of cart) {
+        const wh = l.warehouse_id || defaultWarehouseId;
+        if (!wh) continue;
+        const key = `${l.id}|${wh}`;
+        byPair[key] = (byPair[key] ?? 0) - l.base_quantity;
+      }
+      return { ...base, byPair };
+    });
+
+    // Same cart reset as the online path.
+    setCart([]);
+    setDiscount(0);
+    setExtraDiscount(0);
+    setShipping(0);
+    setSelectedCustomer(walkInCustomerId);
+    setStoreCreditBalance(0);
+    setApplyStoreCredit(false);
+    setPaymentTerm('full');
+    setPartialAmount('');
+    setShowCheckout(false);
+    setAmountPaid('');
+    setCartTab('items');
+    setInvoiceDate(new Date().toISOString().split('T')[0]);
+    setReference('');
+    shortfallConfirmedRef.current = false;
+    creditConfirmedRef.current = false;
+    setOrderComplete(true);
+    setLastInvoiceNumber(tempNumber);
+    toast({
+      title: 'Order queued offline',
+      description: `${tempNumber} (${formatCurrency(grandTotal)}) saved on this device — it will sync automatically when you're back online.`,
+    });
+    loadProducts(search);
+    return true;
   }
 
   const paymentMethodIcons: Record<string, any> = {
@@ -1768,7 +2082,17 @@ export default function POSPage() {
       {showAddCustomer && (
         <AddCustomerModal
           onClose={() => setShowAddCustomer(false)}
-          onSaved={(id) => { loadCustomers(); setSelectedCustomer(id); }}
+          onSaved={(id, row) => {
+            // Patch the row into the local list + cache directly — a
+            // cachedQuery reload could serve a pre-insert snapshot.
+            if (row) {
+              setCustomers(prev => [row, ...prev]);
+              void mutateCache<any[]>(CACHE_KEYS.customers, list => [row, ...(list || [])]);
+            } else {
+              loadCustomers();
+            }
+            setSelectedCustomer(id);
+          }}
         />
       )}
 
@@ -1922,7 +2246,7 @@ export default function POSPage() {
   );
 }
 
-function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }) {
+function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string, row?: any) => void }) {
   const [form, setForm] = useState({
     name: '',
     phone: '',
@@ -1940,24 +2264,48 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setError('');
 
     const code = `CUST-${Date.now().toString().slice(-6)}`;
-    const { data, error: insertError } = await supabase
-      .from('customers')
-      .insert({
-        code,
-        name: form.name.trim(),
-        phone: form.phone || null,
-        email: form.email || null,
-        address: form.address || null,
-        type: form.type,
-        country: 'Bangladesh',
-        is_active: true,
-        credit_limit: 0,
-        credit_days: 0,
+    const data = {
+      code,
+      name: form.name.trim(),
+      phone: form.phone || null,
+      email: form.email || null,
+      address: form.address || null,
+      type: form.type,
+      country: 'Bangladesh',
+      is_active: true,
+      credit_limit: 0,
+      credit_days: 0,
+      loyalty_points: 0,
+      discount_percent: 0,
+    };
+
+    // Offline: queue with a client-generated id so the POS can sell to this
+    // customer immediately — the queued invoice references the same id and
+    // syncs after the customer row lands (queue is strictly ordered).
+    if (!networkMonitor.getState().online) {
+      const id = crypto.randomUUID();
+      const offlineRow = {
+        id,
+        ...data,
         outstanding_balance: 0,
         total_purchases: 0,
-        loyalty_points: 0,
-        discount_percent: 0,
-      })
+      };
+      try {
+        await enqueueOp('customer.create', { id, data }, `New customer — ${form.name.trim()}`);
+      } catch (err: any) {
+        setError(err?.message || 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+      toast({ title: 'Customer queued offline', description: `${form.name.trim()} will sync with your next order.` });
+      onSaved(id, offlineRow);
+      onClose();
+      return;
+    }
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('customers')
+      .insert(data)
       .select('id')
       .single();
 
@@ -1968,7 +2316,7 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     }
 
     toast({ title: 'Success', description: 'Customer added successfully' });
-    onSaved(data.id);
+    onSaved(inserted.id, { id: inserted.id, ...data, outstanding_balance: 0, total_purchases: 0 });
     onClose();
   }
 

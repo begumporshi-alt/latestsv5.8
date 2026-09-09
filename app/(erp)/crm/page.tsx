@@ -4,11 +4,16 @@ import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown, HandCoins, ChevronLeft, ChevronRight, FileDown } from 'lucide-react';
+import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown, HandCoins, ChevronLeft, ChevronRight, FileDown, TriangleAlert as AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
 import type { Customer, CustomerType } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
 import RecordButton from '@/components/RecordButton';
+import { networkMonitor } from '@/lib/offline/network';
+import { cachedQuery, cacheGet, cachePut, cacheDelete } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
+import { enqueueOp } from '@/lib/offline/outbox';
+import { REPLICA, replicaRows } from '@/lib/offline/replica';
 
 const typeConfig: Record<CustomerType, { label: string; color: string; icon: React.ElementType }> = {
   retail: { label: 'Retail', color: 'bg-gray-100 text-gray-700', icon: Users },
@@ -27,6 +32,16 @@ type CustomerWithOutstanding = Customer & {
   return_total: number;
   total_purchases_calc: number;
 };
+
+interface CRMStats {
+  total: number;
+  totalRevenue: number;
+  outstanding: number;
+  active: number;
+  totalRefunds: number;
+  invoiceOutstanding: number;
+  manualOutstanding: number;
+}
 
 const PERIODS = [
   { value: '', label: 'All Time' },
@@ -56,7 +71,8 @@ export default function CRMPage() {
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
   const [deletingCustomer, setDeletingCustomer] = useState<Customer | null>(null);
   const [collectingCustomer, setCollectingCustomer] = useState<CustomerWithOutstanding | null>(null);
-  const [stats, setStats] = useState({ total: 0, totalRevenue: 0, outstanding: 0, active: 0, totalRefunds: 0, invoiceOutstanding: 0, manualOutstanding: 0 });
+  const [stats, setStats] = useState<CRMStats>({ total: 0, totalRevenue: 0, outstanding: 0, active: 0, totalRefunds: 0, invoiceOutstanding: 0, manualOutstanding: 0 });
+  const [dataStale, setDataStale] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const PAGE_SIZE = 25;
 
@@ -73,8 +89,61 @@ export default function CRMPage() {
     }
   }, [customers]);
 
-  async function loadData() {
+  // The enriched list + stats are cached as one aggregate. Offline with no
+  // CRM aggregate, the canonical full-row customer list (kept warm by the POS)
+  // still renders the page — without invoice/return enrichment.
+  async function loadData(force = false) {
     setLoading(true);
+    if (force) await cacheDelete(CACHE_KEYS.crmPage);
+    try {
+      const res = await cachedQuery<{ enriched: CustomerWithOutstanding[]; stats: CRMStats; custRows: Customer[] }>(
+        CACHE_KEYS.crmPage, 60_000, fetchCrmData);
+      setCustomers(res.data.enriched);
+      setStats(res.data.stats);
+      setDataStale(!res.fresh);
+      // Keep the canonical full-row list warm for the POS and credit gate.
+      void cachePut(CACHE_KEYS.customers, res.data.custRows);
+    } catch {
+      let canonical = await cacheGet<Customer[]>(CACHE_KEYS.customers);
+      if (!canonical || canonical.length === 0) {
+        // Local database replica — data exists even if this page was never
+        // opened online.
+        canonical = await replicaRows<Customer>(REPLICA['Customers']);
+      }
+      if (canonical && canonical.length > 0) {
+        const enriched: CustomerWithOutstanding[] = canonical.map(c => ({
+          ...c,
+          invoice_outstanding: 0,
+          manual_outstanding: Math.max(0, Number(c.outstanding_balance) || 0),
+          return_count: 0,
+          return_total: 0,
+          total_purchases_calc: 0,
+        }));
+        setCustomers(enriched);
+        setStats({
+          total: canonical.length,
+          totalRevenue: 0,
+          outstanding: canonical.reduce((s, c) => s + (Number(c.outstanding_balance) || 0), 0),
+          active: canonical.filter(c => c.is_active).length,
+          totalRefunds: 0,
+          invoiceOutstanding: 0,
+          manualOutstanding: canonical.reduce((s, c) => s + Math.max(0, Number(c.outstanding_balance) || 0), 0),
+        });
+        setDataStale(true);
+      } else {
+        setCustomers([]);
+        toast({
+          title: 'Offline — no cached customer data',
+          description: 'Open this page (or the POS) once while online to build the offline copy.',
+          variant: 'destructive',
+        });
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function fetchCrmData() {
     const [{ data: custData }, { data: invoiceData }, { data: returnsData }] = await Promise.all([
       supabase.from('customers').select('*').order('name'),
       supabase.from('invoices')
@@ -117,23 +186,25 @@ export default function CRMPage() {
       };
     });
 
-    setCustomers(enriched);
-
     const totalRev = Object.values(purchasesMap).reduce((s, v) => s + v, 0);
     const totalOut = (custData || []).reduce((s: number, c: Customer) => s + Number(c.outstanding_balance), 0);
     const totalRef = Object.values(returnsMap).reduce((s, v) => s + v.total, 0);
     const totalInvOut = Object.values(invoiceOutstandingMap).reduce((s, v) => s + v, 0);
     const totalManualOut = Math.max(0, totalOut - totalInvOut);
-    setStats({
-      total: custData?.length || 0,
-      totalRevenue: totalRev,
-      outstanding: totalOut,
-      active: (custData || []).filter((c: Customer) => c.is_active).length,
-      totalRefunds: totalRef,
-      invoiceOutstanding: totalInvOut,
-      manualOutstanding: totalManualOut,
-    });
-    setLoading(false);
+
+    return {
+      enriched,
+      custRows: (custData || []) as Customer[],
+      stats: {
+        total: custData?.length || 0,
+        totalRevenue: totalRev,
+        outstanding: totalOut,
+        active: (custData || []).filter((c: Customer) => c.is_active).length,
+        totalRefunds: totalRef,
+        invoiceOutstanding: totalInvOut,
+        manualOutstanding: totalManualOut,
+      },
+    };
   }
 
   // Unique cities for filter dropdown
@@ -192,12 +263,40 @@ export default function CRMPage() {
 
   async function handleDelete() {
     if (!deletingCustomer) return;
-    const { error } = await supabase.from('customers').update({ is_active: false }).eq('id', deletingCustomer.id);
+    // Offline: soft-delete is a customer.update op (is_active: false) with the
+    // full field set, version-checked against the cached row.
+    if (!networkMonitor.getState().online) {
+      const { ...row } = deletingCustomer;
+      try {
+        await enqueueOp('customer.update', {
+          id: row.id,
+          expected_updated_at: (row as any).updated_at ?? null,
+          data: {
+            name: row.name, code: row.code, type: row.type, phone: row.phone ?? null,
+            mobile: row.mobile ?? null, email: row.email ?? null, company_name: row.company_name ?? null,
+            city: row.city ?? null, address: row.address ?? null, tax_id: row.tax_id ?? null,
+            tags: row.tags ?? [], notes: row.notes ?? null,
+            credit_limit: Number(row.credit_limit) || 0, credit_days: Number(row.credit_days) || 0,
+            loyalty_points: Number(row.loyalty_points) || 0, discount_percent: Number(row.discount_percent) || 0,
+            is_active: false, country: row.country || 'Bangladesh',
+          },
+        }, `Deactivate customer — ${row.name}`);
+      } catch (err: any) {
+        toast({ title: 'Could not queue', description: err?.message || 'Offline storage error', variant: 'destructive' });
+        setDeletingCustomer(null);
+        return;
+      }
+      toast({ title: 'Queued offline', description: `${deletingCustomer.name} will be deactivated on sync.` });
+      setDeletingCustomer(null);
+      loadData();
+      return;
+    }
+    const { error } = await supabase.from('customers').update({ is_active: false, updated_at: new Date().toISOString() }).eq('id', deletingCustomer.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: 'Customer deactivated successfully' });
-      loadData();
+      loadData(true);
     }
     setDeletingCustomer(null);
   }
@@ -241,6 +340,12 @@ export default function CRMPage() {
 
   return (
     <div className="space-y-5 animate-fade-in">
+      {dataStale && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Showing cached data — dues and purchase totals are from the last online session.
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">CRM - Customers</h1>
@@ -250,7 +355,7 @@ export default function CRMPage() {
           <button onClick={exportCsv} className="flex items-center justify-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition whitespace-nowrap">
             <FileDown className="w-4 h-4" />Export CSV
           </button>
-          <RecordButton variant="receivable" onSaved={loadData} />
+          <RecordButton variant="receivable" onSaved={() => loadData(true)} />
           <button onClick={() => setShowAddModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition whitespace-nowrap">
             <Plus className="w-4 h-4" />Add Customer
           </button>
@@ -489,8 +594,8 @@ export default function CRMPage() {
         </div>
       </div>
 
-      {showAddModal && <CustomerModal onClose={() => setShowAddModal(false)} onSaved={loadData} />}
-      {editingCustomer && <CustomerModal customer={editingCustomer} onClose={() => setEditingCustomer(null)} onSaved={loadData} />}
+      {showAddModal && <CustomerModal onClose={() => setShowAddModal(false)} onSaved={() => loadData(true)} />}
+      {editingCustomer && <CustomerModal customer={editingCustomer} onClose={() => setEditingCustomer(null)} onSaved={() => loadData(true)} />}
       {deletingCustomer && (
         <DeleteConfirmModal
           name={deletingCustomer.name}
@@ -506,7 +611,7 @@ export default function CRMPage() {
           invoiceOutstanding={collectingCustomer.invoice_outstanding}
           manualOutstanding={collectingCustomer.manual_outstanding}
           onClose={() => setCollectingCustomer(null)}
-          onSaved={loadData}
+          onSaved={() => loadData(true)}
         />
       )}
     </div>
@@ -574,8 +679,30 @@ function CustomerModal({ customer, onClose, onSaved }: { customer?: Customer | n
       // send them from the client, a stale value would overwrite the recompute
     };
 
+    // Offline: queue the same field set. Code generation happens server-side
+    // at sync time when the code is empty.
+    if (!networkMonitor.getState().online) {
+      const payload: any = { data };
+      if (isEdit) {
+        payload.id = customer!.id;
+        payload.expected_updated_at = (customer as any).updated_at ?? null;
+      }
+      try {
+        await enqueueOp(isEdit ? 'customer.update' : 'customer.create', payload,
+          `${isEdit ? 'Customer edit' : 'New customer'} — ${form.name}`);
+      } catch (err: any) {
+        setError(err?.message || 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+      toast({ title: 'Queued offline', description: `${form.name} will sync automatically when you're back online.` });
+      onSaved();
+      onClose();
+      return;
+    }
+
     const { error } = isEdit
-      ? await supabase.from('customers').update(data).eq('id', customer!.id)
+      ? await supabase.from('customers').update({ ...data, updated_at: new Date().toISOString() }).eq('id', customer!.id)
       : await supabase.from('customers').insert(data);
 
     if (error) { setError(error.message); setSaving(false); return; }

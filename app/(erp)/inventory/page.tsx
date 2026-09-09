@@ -12,6 +12,11 @@ import { Package, Plus, Search, CreditCard as Edit, Trash2, TriangleAlert as Ale
 import type { Product, Category, Brand, Warehouse as WarehouseType, ProductColor, ProductSize, ProductUnit } from '@/lib/types';
 import { LABEL_SIZES, resolveLabelConfig, describeProductLabelSize, type LabelSize } from '@/lib/label-sizes';
 import Pagination from '@/components/ui/AppPagination';
+import { networkMonitor } from '@/lib/offline/network';
+import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
+import { enqueueOp } from '@/lib/offline/outbox';
+import { patchInventoryAggregateAfterProductOp, patchPosSnapshotAfterProductOp } from '@/lib/offline/optimistic';
 
 // ─── Searchable combobox ──────────────────────────────────────────────────────
 interface SearchableSelectOption { value: string; label: string; group?: string }
@@ -141,6 +146,20 @@ interface ProductWithStock extends Omit<Product, 'category' | 'brand'> {
   stock_by_warehouse?: { warehouse_id: string; quantity: number }[];
 }
 
+// The cached aggregate served offline — see loadData/fetchInventoryData.
+interface InventoryPageData {
+  prods: any[];
+  categories: any[];
+  brands: any[];
+  warehouses: any[];
+  byWarehouse: Record<string, Record<string, number>>;
+  uniqueColors: { id: string; name: string; hex_code: string }[];
+  uniqueSizes: { id: string; name: string }[];
+  unitTypes: { id: string; unit_name: string; unit_short: string }[];
+  fMap: Record<string, number>;
+  stats: { total: number; lowStock: number; outOfStock: number; value: number };
+}
+
 export default function InventoryPage() {
   const router = useRouter();
   const [products, setProducts] = useState<ProductWithStock[]>([]);
@@ -170,12 +189,33 @@ export default function InventoryPage() {
   const [stats, setStats] = useState({ total: 0, lowStock: 0, outOfStock: 0, value: 0 });
   const [fifoValueMap, setFifoValueMap] = useState<Record<string, number>>({});
   const [unitTypes, setUnitTypes] = useState<{ id: string; unit_name: string; unit_short: string }[]>([]);
+  const [dataStale, setDataStale] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
-  async function loadData() {
+  // The whole aggregate (products + stock + stats + FIFO values) is cached
+  // under one key: offline, the page renders the last snapshot with a stale
+  // banner instead of an error. `force` bypasses the TTL (post-save reloads,
+  // the refresh button) so edits are never masked by a fresh cache copy.
+  async function loadData(force = false) {
     setLoading(true);
+    if (force) await cacheDelete(CACHE_KEYS.inventoryPage);
+    try {
+      const res = await cachedQuery<InventoryPageData>(CACHE_KEYS.inventoryPage, 60_000, fetchInventoryData);
+      applyInventoryData(res.data, res.offline || !res.fresh);
+    } catch {
+      setProducts([]);
+      toast({
+        title: 'Offline — no cached inventory data',
+        description: 'Open this page once while online so this device builds its offline copy.',
+        variant: 'destructive',
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
 
+  async function fetchInventoryData(): Promise<InventoryPageData> {
     // Supabase caps queries at 1000 rows by default. Paginate to fetch all products.
     let allProds: any[] = [];
     let page = 0;
@@ -256,19 +296,12 @@ export default function InventoryPage() {
       })),
     }));
 
-    setProducts(prods);
-    setCategories(catRes.data || []);
-    setBrands(brandRes.data || []);
-    setWarehouses(whRes.data || []);
-    setInventoryByWarehouse(byWarehouse);
-
     const seenColors = new Set<string>();
     const uniqueColors = (colorRes.data || []).filter((c: any) => {
       if (seenColors.has(c.name)) return false;
       seenColors.add(c.name);
       return true;
     });
-    setAllColors(uniqueColors);
 
     const seenSizes = new Set<string>();
     const uniqueSizes = (sizeRes.data || []).filter((s: any) => {
@@ -276,8 +309,6 @@ export default function InventoryPage() {
       seenSizes.add(s.name);
       return true;
     });
-    setAllSizes(uniqueSizes);
-    setUnitTypes(unitTypeRes.data || []);
 
     const activeProds = prods.filter((p: any) => p.is_active);
     const lowStock = activeProds.filter((p: any) => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length;
@@ -306,13 +337,40 @@ export default function InventoryPage() {
         pg++;
       }
     }
-    setFifoValueMap(fMap);
 
     const invResult = await getInventoryValue(supabase);
-    const value = invResult.total;
 
-    setStats({ total: activeProds.length, lowStock, outOfStock, value });
-    setLoading(false);
+    return {
+      prods,
+      categories: catRes.data || [],
+      brands: brandRes.data || [],
+      warehouses: whRes.data || [],
+      byWarehouse,
+      uniqueColors,
+      uniqueSizes,
+      unitTypes: unitTypeRes.data || [],
+      fMap,
+      stats: {
+        total: activeProds.length,
+        lowStock,
+        outOfStock,
+        value: invResult.total,
+      },
+    };
+  }
+
+  function applyInventoryData(d: InventoryPageData, stale: boolean) {
+    setProducts(d.prods as ProductWithStock[]);
+    setCategories(d.categories as Category[]);
+    setBrands(d.brands as Brand[]);
+    setWarehouses(d.warehouses as WarehouseType[]);
+    setInventoryByWarehouse(d.byWarehouse);
+    setAllColors(d.uniqueColors);
+    setAllSizes(d.uniqueSizes);
+    setUnitTypes(d.unitTypes);
+    setFifoValueMap(d.fMap);
+    setStats(d.stats);
+    setDataStale(stale);
   }
 
   const filtered = products.filter(p => {
@@ -395,13 +453,19 @@ export default function InventoryPage() {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: 'Product deleted successfully' });
-      loadData();
+      loadData(true);
     }
     setDeletingProduct(null);
   }
 
   return (
     <div className="space-y-5 animate-fade-in">
+      {dataStale && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Showing cached data — stock levels and stats are from the last online session. Changes made here are queued and will sync automatically.
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Inventory</h1>
@@ -524,7 +588,7 @@ export default function InventoryPage() {
             options={[{ value: '', label: 'All Units' }, ...unitTypes.map(u => ({ value: u.unit_name, label: u.unit_name }))]}
           />
         )}
-        <button onClick={loadData} className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 text-sm hover:bg-muted transition">
+        <button onClick={() => loadData(true)} className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 text-sm hover:bg-muted transition">
           <RefreshCw className="w-3.5 h-3.5" />
           Refresh
         </button>
@@ -649,10 +713,10 @@ export default function InventoryPage() {
       </div>
 
       {showAddModal && (
-        <ProductModal categories={categories} brands={brands} warehouses={warehouses} unitTypes={unitTypes} onClose={() => setShowAddModal(false)} onSaved={loadData} />
+        <ProductModal categories={categories} brands={brands} warehouses={warehouses} unitTypes={unitTypes} onClose={() => setShowAddModal(false)} onSaved={() => loadData(true)} />
       )}
       {editingProduct && (
-        <ProductModal categories={categories} brands={brands} warehouses={warehouses} unitTypes={unitTypes} product={editingProduct} onClose={() => setEditingProduct(null)} onSaved={loadData} />
+        <ProductModal categories={categories} brands={brands} warehouses={warehouses} unitTypes={unitTypes} product={editingProduct} onClose={() => setEditingProduct(null)} onSaved={() => loadData(true)} />
       )}
       {deletingProduct && (
         <DeleteConfirmModal product={deletingProduct} onClose={() => setDeletingProduct(null)} onConfirm={handleDelete} />
@@ -661,7 +725,7 @@ export default function InventoryPage() {
         <BarcodeModal product={barcodeProduct} onClose={() => setBarcodeProduct(null)} />
       )}
       {showManageModal && (
-        <ManageCatalogModal categories={categories} brands={brands} unitTypes={unitTypes} onClose={() => setShowManageModal(false)} onSaved={loadData} />
+        <ManageCatalogModal categories={categories} brands={brands} unitTypes={unitTypes} onClose={() => setShowManageModal(false)} onSaved={() => loadData(true)} />
       )}
       {showImportModal && (
         <ImportModal
@@ -670,7 +734,7 @@ export default function InventoryPage() {
           warehouses={warehouses}
           existingSkus={products.map(p => p.sku)}
           onClose={() => setShowImportModal(false)}
-          onImported={loadData}
+          onImported={() => loadData(true)}
         />
       )}
     </div>
@@ -873,9 +937,53 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
 
     let productId = product?.id;
 
+    // Offline: queue the same payload the online path writes. The server-side
+    // sync handler applies it atomically and recomputes stock diffs against
+    // live data, so a stale offline baseline can never corrupt an adjustment.
+    if (!networkMonitor.getState().online) {
+      const validColors = colors.filter(c => c.name.trim());
+      const validSizes = sizes.filter(s => s.name.trim());
+      const validUnits = units.filter(u => u.unit_name.trim());
+      const stock = Object.entries(stockByWarehouse)
+        .map(([warehouseId, qty]) => ({
+          warehouse_id: warehouseId,
+          quantity: Number(qty) || 0,
+          unit_cost: Number(form.cost_price) || 0,
+        }))
+        .filter(s => (isEdit ? true : s.quantity > 0));
+
+      const newProductId = isEdit ? product!.id : crypto.randomUUID();
+      const payload: any = { data, colors: validColors, sizes: validSizes, units: validUnits, stock };
+      if (isEdit) {
+        payload.id = product!.id;
+        payload.expected_updated_at = (product as any).updated_at ?? null;
+      } else {
+        payload.id = newProductId;
+      }
+
+      try {
+        const op = isEdit ? 'product.update' : 'product.create';
+        await enqueueOp(op, payload, `${isEdit ? 'Product edit' : 'New product'} — ${form.name}`);
+        await patchInventoryAggregateAfterProductOp(op, payload, newProductId);
+        await patchPosSnapshotAfterProductOp(op, payload, newProductId);
+      } catch (err: any) {
+        setError(err?.message || 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+
+      toast({
+        title: isEdit ? 'Product edit queued offline' : 'Product queued offline',
+        description: `${form.name} will sync automatically when you're back online.`,
+      });
+      onSaved();
+      onClose();
+      return;
+    }
+
     try {
       if (isEdit) {
-        const { error } = await supabase.from('products').update(data).eq('id', product!.id);
+        const { error } = await supabase.from('products').update({ ...data, updated_at: new Date().toISOString() }).eq('id', product!.id);
         if (error) throw error;
       } else {
         const { data: newProduct, error } = await supabase.from('products').insert(data).select('id').single();
