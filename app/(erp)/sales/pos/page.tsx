@@ -925,7 +925,7 @@ export default function POSPage() {
   }, [customerDropdownOpen]);
 
   return (
-    <div className="flex flex-col lg:flex-row lg:h-[calc(100vh-120px)] gap-4 animate-fade-in">
+    <div className="flex flex-col lg:flex-row lg:h-[calc(100vh-104px)] gap-4 animate-fade-in">
       {/* Mobile Cart Overlay */}
       {showMobileCart && (
         <div
@@ -1278,7 +1278,7 @@ export default function POSPage() {
         z-50
         transition-transform duration-300 ease-out lg:transition-none
         ${showMobileCart || cartMaximized ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}
-        ${cartMaximized ? '' : 'h-[70vh] lg:h-auto lg:max-h-none'}
+        ${cartMaximized ? '' : 'h-[85vh] lg:h-auto lg:max-h-none'}
       `}>
         {/* Drag handle for mobile */}
         <div className="flex justify-center pt-2 pb-1 lg:hidden">
@@ -1561,18 +1561,18 @@ export default function POSPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 flex items-center gap-1">
-                    <span className="text-sm text-muted-foreground">Cart Disc %</span>
-                    <input type="number" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="flex-1 min-w-0 border border-border rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-muted-foreground">Cart Discount %</span>
+                    <input type="number" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
-                  <div className="flex-1 flex items-center gap-1">
-                    <span className="text-sm text-muted-foreground">Extra ৳</span>
-                    <input type="number" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="flex-1 min-w-0 border border-border rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-muted-foreground">Extra Discount ৳</span>
+                    <input type="number" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
-                  <div className="flex-1 flex items-center gap-1">
-                    <span className="text-sm text-muted-foreground">Ship ৳</span>
-                    <input type="number" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="flex-1 min-w-0 border border-border rounded-lg px-1.5 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-muted-foreground">Shipping ৳</span>
+                    <input type="number" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
                 </div>
 
