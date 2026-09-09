@@ -1193,6 +1193,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
         const prod = Array.isArray(it.product) ? it.product[0] : it.product;
         const units = Array.isArray(it.units) ? it.units : (prod?.units || []);
         const selectedUnit = units.find((u: any) => u.unit_name === it.unit_name) || null;
+        const stock = prod?.inventory_items?.reduce((s: number, i: any) => s + Number(i.quantity_on_hand), 0) ?? null;
         return {
           id: it.id,
           product_id: it.product_id,
@@ -1200,7 +1201,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
           product_sku: prod?.sku || '',
           product_unit: prod?.unit,
           product_base_unit: prod?.base_unit,
-          stock_qty: null,
+          stock_qty: stock,
           quantity: Number(it.quantity),
           unit_price: Number(it.unit_price),
           discount_percent: Number(it.discount_percent) || 0,
@@ -1242,7 +1243,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
         inventory_item_id: i.id,
       }));
     const bestWh = availableWhs.length > 0 ? availableWhs.reduce((a, b) => a.stock > b.stock ? a : b) : null;
-    const stock = bestWh ? bestWh.stock : (invItems.length > 0 ? 0 : null);
+    const stock = invItems.length > 0 ? invItems.reduce((s: number, i: any) => s + Number(i.quantity_on_hand), 0) : null;
 
     if (stock !== null && stock <= 0) {
       toast({ title: 'Warning', description: `${product.name} is currently out of stock`, variant: 'destructive' });
@@ -1435,6 +1436,11 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                         <td className="px-3 py-2">
                           <p className="text-sm font-medium text-foreground">{item.product_name}</p>
                           <p className="text-[10px] text-muted-foreground">{item.product_sku}</p>
+                          {item.stock_qty !== null && (
+                            <p className={`text-[10px] font-medium ${item.stock_qty > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                              {item.stock_qty} {item.product_base_unit || 'units'} available
+                            </p>
+                          )}
                           {item.available_units && item.available_units.length > 0 && item.selected_unit && (
                             <select
                               value={item.selected_unit.id}
