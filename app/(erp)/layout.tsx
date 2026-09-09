@@ -7,6 +7,8 @@ import Sidebar from '@/components/layout/Sidebar';
 import Header from '@/components/layout/Header';
 import QuickActionDrawer from '@/components/ui/QuickActionDrawer';
 import { Toaster } from '@/components/ui/toaster';
+import { OfflineProvider } from '@/lib/offline/provider';
+import OfflineBanner from '@/components/offline/OfflineBanner';
 import { Menu, PanelLeftClose, PanelLeft } from 'lucide-react';
 
 export default function ERPLayout({ children }: { children: React.ReactNode }) {
@@ -58,6 +60,7 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
+    <OfflineProvider>
     <div className="flex min-h-screen bg-background">
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
@@ -104,6 +107,8 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
 
         <Header onMenuToggle={() => setSidebarOpen(!sidebarOpen)} />
 
+        <OfflineBanner />
+
         <main className="flex-1 overflow-auto p-4 md:p-6 animate-fade-in">
           {children}
         </main>
@@ -113,5 +118,6 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
       <QuickActionDrawer />
       <Toaster />
     </div>
+    </OfflineProvider>
   );
 }

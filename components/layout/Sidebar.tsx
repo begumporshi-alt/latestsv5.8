@@ -110,6 +110,7 @@ const navItems: NavItem[] = [
     icon: Settings,
     children: [
       { title: 'General Settings', href: '/settings' },
+      { title: 'Sync Center', href: '/sync' },
       { title: 'Guide', href: '/guide' },
     ],
   },

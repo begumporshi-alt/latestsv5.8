@@ -9,6 +9,8 @@ import { Search, Bell, MessageSquare, ChevronDown, User, LogOut, Settings, Circl
 import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
+import OfflineStatusPill from '@/components/offline/OfflineStatusPill';
+import { clearLocalData } from '@/lib/offline/db';
 import { toast } from '@/hooks/use-toast';
 
 interface HeaderProps {
@@ -132,6 +134,9 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   }, [searchQuery]);
 
   async function handleLogout() {
+    // Wipe the offline cache, queued changes and the local encryption key —
+    // signing out must not leave sealed business data on a shared device.
+    await clearLocalData();
     await supabase.auth.signOut();
     router.push('/login');
   }
@@ -238,6 +243,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
 
       {/* Right actions */}
       <div className="flex items-center gap-1 ml-auto">
+        <OfflineStatusPill />
         <button
           onClick={() => setShowScanner(true)}
           title="Scan Barcode"
