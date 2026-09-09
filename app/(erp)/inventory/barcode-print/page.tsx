@@ -7,31 +7,12 @@ import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Barcode, QrCode, Printer, Search, Package, FileText, X, ChevronDown, CircleCheck as CheckCircle2, Settings, Layers, Boxes, ShoppingCart, Eye, Download } from 'lucide-react';
+import { Barcode, QrCode, Printer, Search, Package, FileText, X, ChevronDown, CircleCheck as CheckCircle2, Settings, Layers, Boxes, ShoppingCart, Eye, Download, Ruler } from 'lucide-react';
 import type { Product, Category, Brand, Invoice } from '@/lib/types';
+import { LABEL_SIZES, resolveLabelConfig, describeProductLabelSize, type LabelSize, type ProductLabelOverride } from '@/lib/label-sizes';
 
 type CodeType = 'barcode' | 'qrcode';
-type LabelSize = 'xs' | 'small' | 'medium' | 'large' | 'xl' | 'custom';
 type Mode = 'products' | 'invoices';
-
-interface LabelSizeConfig {
-  label: string;
-  width: string;
-  height: string;
-  fontSize: string;
-  barcodeWidth: number;
-  barcodeHeight: number;
-  qrSize: number;
-}
-
-const LABEL_SIZES: Record<LabelSize, LabelSizeConfig> = {
-  xs: { label: '1.2" × 0.6"', width: '1.2in', height: '0.6in', fontSize: '7px', barcodeWidth: 1, barcodeHeight: 22, qrSize: 40 },
-  small: { label: '1.5" × 0.8"', width: '1.5in', height: '0.8in', fontSize: '8px', barcodeWidth: 1, barcodeHeight: 28, qrSize: 50 },
-  medium: { label: '2" × 1.1"', width: '2in', height: '1.1in', fontSize: '9px', barcodeWidth: 1.5, barcodeHeight: 40, qrSize: 65 },
-  large: { label: '2.5" × 1.4"', width: '2.5in', height: '1.4in', fontSize: '10px', barcodeWidth: 2, barcodeHeight: 50, qrSize: 80 },
-  xl: { label: '3" × 1.6"', width: '3in', height: '1.6in', fontSize: '12px', barcodeWidth: 2.5, barcodeHeight: 60, qrSize: 100 },
-  custom: { label: 'Custom', width: '2in', height: '1in', fontSize: '9px', barcodeWidth: 1.5, barcodeHeight: 40, qrSize: 65 },
-};
 
 interface SelectedProduct {
   id: string;
@@ -40,6 +21,9 @@ interface SelectedProduct {
   sale_price: number;
   barcode?: string;
   quantity: number;
+  barcode_label_size?: string | null;
+  barcode_label_width?: number | null;
+  barcode_label_height?: number | null;
 }
 
 interface SelectedInvoice {
@@ -71,16 +55,8 @@ export default function BarcodePrintPage() {
   const [priceFontSize, setPriceFontSize] = useState(0);
   const [mrpLabelFontSize, setMrpLabelFontSize] = useState(0);
 
-  const effWidth = labelSize === 'custom' ? `${customWidth}in` : LABEL_SIZES[labelSize].width;
-  const effHeight = labelSize === 'custom' ? `${customHeight}in` : LABEL_SIZES[labelSize].height;
-  const effBaseFontSize = LABEL_SIZES[labelSize].fontSize;
-  const effBarcodeWidth = LABEL_SIZES[labelSize].barcodeWidth;
-  const effBarcodeHeight = LABEL_SIZES[labelSize].barcodeHeight;
-  const effQrSize = LABEL_SIZES[labelSize].qrSize;
-  const effNameFontSize = nameFontSize > 0 ? `${nameFontSize}px` : effBaseFontSize;
-  const effSkuFontSize = skuFontSize > 0 ? `${skuFontSize}px` : '7px';
-  const effPriceFontSize = priceFontSize > 0 ? `${priceFontSize}px` : '12px';
-  const effMrpLabelFontSize = mrpLabelFontSize > 0 ? `${mrpLabelFontSize}px` : '6px';
+  // Page-level label settings; per-product saved overrides win over these.
+  const pageSettings = { size: labelSize, customWidth, customHeight, nameFontSize, skuFontSize, priceFontSize, mrpLabelFontSize };
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -95,6 +71,7 @@ export default function BarcodePrintPage() {
 
   const [selectedProducts, setSelectedProducts] = useState<Map<string, SelectedProduct>>(new Map());
   const [selectedInvoices, setSelectedInvoices] = useState<Map<string, SelectedInvoice>>(new Map());
+  const [labelSizeProduct, setLabelSizeProduct] = useState<Product | null>(null);
 
   const previewSvgRef = useRef<SVGSVGElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -151,6 +128,9 @@ export default function BarcodePrintPage() {
         sale_price: product.sale_price,
         barcode: product.barcode,
         quantity: 1,
+        barcode_label_size: product.barcode_label_size,
+        barcode_label_width: product.barcode_label_width,
+        barcode_label_height: product.barcode_label_height,
       });
     }
     setSelectedProducts(next);
@@ -192,7 +172,7 @@ export default function BarcodePrintPage() {
     const next = new Map(selectedProducts);
     filteredProducts.forEach(p => {
       if (!next.has(p.id)) {
-        next.set(p.id, { id: p.id, name: p.name, sku: p.sku, sale_price: p.sale_price, barcode: p.barcode, quantity: 1 });
+        next.set(p.id, { id: p.id, name: p.name, sku: p.sku, sale_price: p.sale_price, barcode: p.barcode, quantity: 1, barcode_label_size: p.barcode_label_size, barcode_label_width: p.barcode_label_width, barcode_label_height: p.barcode_label_height });
       }
     });
     setSelectedProducts(next);
@@ -210,9 +190,24 @@ export default function BarcodePrintPage() {
   }
   function clearAllInvoices() { setSelectedInvoices(new Map()); }
 
+  function handleLabelSizeSaved(id: string, override: { barcode_label_size: string | null; barcode_label_width: number | null; barcode_label_height: number | null }) {
+    setProducts(prev => prev.map(p => (p.id === id ? { ...p, ...override } : p)));
+    setSelectedProducts(prev => {
+      const item = prev.get(id);
+      if (!item) return prev;
+      const next = new Map(prev);
+      next.set(id, { ...item, ...override });
+      return next;
+    });
+  }
+
   const totalLabels = mode === 'products'
     ? Array.from(selectedProducts.values()).reduce((s, p) => s + p.quantity, 0)
     : Array.from(selectedInvoices.values()).reduce((s, i) => s + i.quantity, 0);
+
+  // Preview mirrors what would print for the first filtered product —
+  // including that product's saved size override, when it has one.
+  const previewCfg = resolveLabelConfig(pageSettings, mode === 'products' ? filteredProducts[0] : null);
 
   // Generate preview
   useEffect(() => {
@@ -224,8 +219,8 @@ export default function BarcodePrintPage() {
       try {
         JsBarcode(previewSvgRef.current, sampleData, {
           format: 'CODE128',
-          width: effBarcodeWidth,
-          height: effBarcodeHeight,
+          width: previewCfg.barcodeWidth,
+          height: previewCfg.barcodeHeight,
           displayValue: false,
           margin: 0,
           background: '#ffffff',
@@ -234,20 +229,20 @@ export default function BarcodePrintPage() {
       } catch (e) { /* ignore */ }
     } else if (codeType === 'qrcode' && previewCanvasRef.current) {
       QRCode.toCanvas(previewCanvasRef.current, sampleData, {
-        width: effQrSize,
+        width: previewCfg.qrSize,
         margin: 1,
         color: { dark: '#000000', light: '#ffffff' },
       }, () => {});
     }
-  }, [codeType, labelSize, mode, filteredProducts, filteredInvoices, customWidth, customHeight]);
+  }, [codeType, mode, filteredProducts, filteredInvoices, previewCfg.barcodeWidth, previewCfg.barcodeHeight, previewCfg.qrSize]);
 
-  function generateBarcodeSVG(data: string): string {
+  function generateBarcodeSVG(data: string, barcodeWidth: number, barcodeHeight: number): string {
     const canvas = document.createElement('canvas');
     try {
       JsBarcode(canvas, data, {
         format: 'CODE128',
-        width: effBarcodeWidth,
-        height: effBarcodeHeight,
+        width: barcodeWidth,
+        height: barcodeHeight,
         displayValue: false,
         margin: 0,
         background: '#ffffff',
@@ -259,10 +254,10 @@ export default function BarcodePrintPage() {
     }
   }
 
-  function generateQRDataURL(data: string): string {
+  function generateQRDataURL(data: string, qrSize: number): string {
     const canvas = document.createElement('canvas');
     QRCode.toCanvas(canvas, data, {
-      width: effQrSize,
+      width: qrSize,
       margin: 1,
       color: { dark: '#000000', light: '#ffffff' },
     }, () => {});
@@ -270,11 +265,11 @@ export default function BarcodePrintPage() {
   }
 
   function handlePrint() {
-    const items: { data: string; name: string; sku: string; price: number; invoiceNumber: string; customer: string; amount: number; }[] = [];
+    const items: { data: string; name: string; sku: string; price: number; invoiceNumber: string; customer: string; amount: number; labelOverride?: ProductLabelOverride }[] = [];
     if (mode === 'products') {
       selectedProducts.forEach(p => {
         for (let i = 0; i < p.quantity; i++) {
-          items.push({ data: p.barcode || p.sku, name: p.name, sku: p.sku, price: p.sale_price, invoiceNumber: '', customer: '', amount: 0 });
+          items.push({ data: p.barcode || p.sku, name: p.name, sku: p.sku, price: p.sale_price, invoiceNumber: '', customer: '', amount: 0, labelOverride: p });
         }
       });
     } else {
@@ -292,29 +287,33 @@ export default function BarcodePrintPage() {
 
     const cols = columnsPerPage;
     const labelsHTML = items.map(item => {
+      // Each label resolves its own size: a product's saved override wins,
+      // otherwise the page-level settings apply.
+      const cfg = resolveLabelConfig(pageSettings, item.labelOverride);
+
       let codeHTML = '';
       if (codeType === 'barcode') {
-        const imgSrc = generateBarcodeSVG(item.data);
+        const imgSrc = generateBarcodeSVG(item.data, cfg.barcodeWidth, cfg.barcodeHeight);
         codeHTML = `<img src="${imgSrc}" style="max-width:100%;height:auto;" />`;
       } else {
-        const imgSrc = generateQRDataURL(item.data);
+        const imgSrc = generateQRDataURL(item.data, cfg.qrSize);
         codeHTML = `<img src="${imgSrc}" style="max-width:100%;height:auto;" />`;
       }
 
       let infoHTML = '';
       if (mode === 'products') {
-        const nameLine = showProductName ? `<div class="name">${escapeHtml(item.name)}</div>` : '';
-        const skuLine = showSku ? `<div class="code">${escapeHtml(item.sku)}</div>` : '';
-        const priceLine = showPrice ? `<div class="price-row"><span class="mrp-label">MRP</span><span class="mrp">${formatCurrency(item.price)}</span></div>` : '';
+        const nameLine = showProductName ? `<div class="name" style="font-size:${cfg.nameFontSize};">${escapeHtml(item.name)}</div>` : '';
+        const skuLine = showSku ? `<div class="code" style="font-size:${cfg.skuFontSize};">${escapeHtml(item.sku)}</div>` : '';
+        const priceLine = showPrice ? `<div class="price-row"><span class="mrp-label" style="font-size:${cfg.mrpLabelFontSize};">MRP</span><span class="mrp" style="font-size:${cfg.priceFontSize};">${formatCurrency(item.price)}</span></div>` : '';
         infoHTML = nameLine + skuLine + priceLine;
       } else {
-        const invLine = showInvoiceNumber ? `<div class="name">${escapeHtml(item.invoiceNumber)}</div>` : '';
-        const custLine = showCustomer ? `<div class="code">${escapeHtml(item.customer)}</div>` : '';
-        const amtLine = showAmount ? `<div class="price-row"><span class="mrp-label">Amount</span><span class="mrp">${formatCurrency(item.amount)}</span></div>` : '';
+        const invLine = showInvoiceNumber ? `<div class="name" style="font-size:${cfg.nameFontSize};">${escapeHtml(item.invoiceNumber)}</div>` : '';
+        const custLine = showCustomer ? `<div class="code" style="font-size:${cfg.skuFontSize};">${escapeHtml(item.customer)}</div>` : '';
+        const amtLine = showAmount ? `<div class="price-row"><span class="mrp-label" style="font-size:${cfg.mrpLabelFontSize};">Amount</span><span class="mrp" style="font-size:${cfg.priceFontSize};">${formatCurrency(item.amount)}</span></div>` : '';
         infoHTML = invLine + custLine + amtLine;
       }
 
-      return `<div class="label">${codeHTML}${infoHTML}</div>`;
+      return `<div class="label" style="width:${cfg.width};height:${cfg.height};">${codeHTML}${infoHTML}</div>`;
     }).join('');
 
     const w = window.open('', '_blank', 'width=800,height=600');
@@ -328,15 +327,14 @@ export default function BarcodePrintPage() {
       body { margin: 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; }
       .grid { display: grid; grid-template-columns: repeat(${cols}, 1fr); gap: 4px; }
       .label {
-        width: ${effWidth}; height: ${effHeight};
         display: flex; flex-direction: column; align-items: center; justify-content: space-between;
         padding: 4px 6px; box-sizing: border-box;
         border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       }
-      .name { font-size: ${effNameFontSize}; font-weight: 600; text-align: center; line-height: 1.2; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-      .code { font-size: ${effSkuFontSize}; font-family: 'Courier New', monospace; color: #666; letter-spacing: 0.5px; }
-      .mrp { font-size: ${effPriceFontSize}; font-weight: 700; color: #1a1a1a; }
-      .mrp-label { font-size: ${effMrpLabelFontSize}; font-weight: 600; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+      .name { font-weight: 600; text-align: center; line-height: 1.2; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+      .code { font-family: 'Courier New', monospace; color: #1a1a1a; letter-spacing: 0.5px; }
+      .mrp { font-weight: 700; color: #1a1a1a; }
+      .mrp-label { font-weight: 600; color: #1a1a1a; text-transform: uppercase; letter-spacing: 1px; }
       .price-row { display: flex; align-items: baseline; gap: 3px; }
       img { display: block; }
     </style></head><body>
@@ -476,15 +474,16 @@ export default function BarcodePrintPage() {
                       <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Product</th>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">SKU</th>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Category</th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Label Size</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Price</th>
                       <th className="text-center text-xs font-semibold text-muted-foreground px-4 py-3 w-28">Qty</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {loading ? Array.from({ length: 8 }).map((_, i) => (
-                      <tr key={i}><td colSpan={6} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
+                      <tr key={i}><td colSpan={7} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td></tr>
                     )) : filteredProducts.length === 0 ? (
-                      <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">No products found</td></tr>
+                      <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No products found</td></tr>
                     ) : filteredProducts.map(p => {
                       const sel = selectedProducts.get(p.id);
                       const isSel = !!sel;
@@ -496,6 +495,16 @@ export default function BarcodePrintPage() {
                           <td className="px-4 py-3 text-sm font-medium text-foreground">{p.name}</td>
                           <td className="px-4 py-3 text-sm text-muted-foreground font-mono">{p.sku}</td>
                           <td className="px-4 py-3 text-sm text-muted-foreground">{(p as any).category?.name || '—'}</td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <button
+                              onClick={() => setLabelSizeProduct(p)}
+                              title="Set barcode/QR label size for this product"
+                              className={`flex items-center gap-1.5 text-xs transition ${p.barcode_label_size ? 'text-blue-600 font-medium' : 'text-muted-foreground hover:text-blue-600'}`}
+                            >
+                              <Ruler className="w-3.5 h-3.5" />
+                              {p.barcode_label_size ? describeProductLabelSize(p) : 'Default'}
+                            </button>
+                          </td>
                           <td className="px-4 py-3 text-right text-sm font-semibold text-foreground">{formatCurrency(p.sale_price)}</td>
                           <td className="px-4 py-3 text-center">
                             {isSel ? (
@@ -666,15 +675,15 @@ export default function BarcodePrintPage() {
             <div className="flex justify-center">
               <div
                 className="border border-gray-200 rounded-lg bg-white flex flex-col items-center justify-between gap-1 p-2"
-                style={{ width: effWidth, minHeight: effHeight }}
+                style={{ width: previewCfg.width, minHeight: previewCfg.height }}
               >
                 {mode === 'products' && showProductName && (
-                  <p className="text-center font-semibold text-foreground leading-tight line-clamp-2" style={{ fontSize: effNameFontSize }}>
+                  <p className="text-center font-semibold text-foreground leading-tight line-clamp-2" style={{ fontSize: previewCfg.nameFontSize }}>
                     {filteredProducts[0]?.name || 'Sample Product'}
                   </p>
                 )}
                 {mode === 'invoices' && showInvoiceNumber && (
-                  <p className="text-center font-semibold text-foreground leading-tight" style={{ fontSize: effNameFontSize }}>
+                  <p className="text-center font-semibold text-foreground leading-tight" style={{ fontSize: previewCfg.nameFontSize }}>
                     {filteredInvoices[0]?.invoice_number || 'INV-0001'}
                   </p>
                 )}
@@ -684,31 +693,32 @@ export default function BarcodePrintPage() {
                   <canvas ref={previewCanvasRef} className="max-w-full h-auto" />
                 )}
                 {mode === 'products' && showSku && (
-                  <p className="font-mono text-muted-foreground tracking-wide" style={{ fontSize: effSkuFontSize }}>
+                  <p className="font-mono text-foreground tracking-wide" style={{ fontSize: previewCfg.skuFontSize }}>
                     {filteredProducts[0]?.sku || 'SAMPLE-001'}
                   </p>
                 )}
                 {mode === 'invoices' && showCustomer && (
-                  <p className="font-mono text-muted-foreground" style={{ fontSize: effSkuFontSize }}>
+                  <p className="font-mono text-foreground" style={{ fontSize: previewCfg.skuFontSize }}>
                     {filteredInvoices[0]?.customer?.name || 'Walk-in Customer'}
                   </p>
                 )}
                 {mode === 'products' && showPrice && (
                   <div className="flex items-baseline gap-1 pt-0.5 border-t border-gray-100 w-full justify-center">
-                    <span className="font-semibold text-gray-400 uppercase tracking-wider" style={{ fontSize: effMrpLabelFontSize }}>MRP</span>
-                    <span className="font-bold text-foreground" style={{ fontSize: effPriceFontSize }}>{formatCurrency(filteredProducts[0]?.sale_price || 0)}</span>
+                    <span className="font-semibold text-foreground uppercase tracking-wider" style={{ fontSize: previewCfg.mrpLabelFontSize }}>MRP</span>
+                    <span className="font-bold text-foreground" style={{ fontSize: previewCfg.priceFontSize }}>{formatCurrency(filteredProducts[0]?.sale_price || 0)}</span>
                   </div>
                 )}
                 {mode === 'invoices' && showAmount && (
                   <div className="flex items-baseline gap-1 pt-0.5 border-t border-gray-100 w-full justify-center">
-                    <span className="font-semibold text-gray-400 uppercase tracking-wider" style={{ fontSize: effMrpLabelFontSize }}>Amount</span>
-                    <span className="font-bold text-foreground" style={{ fontSize: effPriceFontSize }}>{formatCurrency(filteredInvoices[0]?.total_amount || 0)}</span>
+                    <span className="font-semibold text-foreground uppercase tracking-wider" style={{ fontSize: previewCfg.mrpLabelFontSize }}>Amount</span>
+                    <span className="font-bold text-foreground" style={{ fontSize: previewCfg.priceFontSize }}>{formatCurrency(filteredInvoices[0]?.total_amount || 0)}</span>
                   </div>
                 )}
               </div>
             </div>
             <p className="text-xs text-center text-muted-foreground">
-              {codeType === 'barcode' ? 'CODE128' : 'QR Code'} · {labelSize === 'custom' ? `${customWidth}"×${customHeight}"` : LABEL_SIZES[labelSize].label} · {columnsPerPage} cols
+              {codeType === 'barcode' ? 'CODE128' : 'QR Code'} · {previewCfg.sizeKey === 'custom' ? `${parseFloat(previewCfg.width)}"×${parseFloat(previewCfg.height)}"` : LABEL_SIZES[previewCfg.sizeKey].label} · {columnsPerPage} cols
+              {previewCfg.fromProductOverride && <span className="text-blue-600 font-medium"> · saved size</span>}
             </p>
           </div>
 
@@ -722,7 +732,10 @@ export default function BarcodePrintPage() {
               <div className="max-h-40 overflow-y-auto space-y-1">
                 {mode === 'products' && Array.from(selectedProducts.values()).map(p => (
                   <div key={p.id} className="flex items-center justify-between text-xs">
-                    <span className="text-foreground truncate flex-1">{p.name}</span>
+                    <span className="text-foreground truncate flex-1">
+                      {p.name}
+                      {p.barcode_label_size && <span className="ml-1.5 text-blue-600 whitespace-nowrap">{describeProductLabelSize(p)}</span>}
+                    </span>
                     <span className="text-muted-foreground ml-2">×{p.quantity}</span>
                   </div>
                 ))}
@@ -739,6 +752,101 @@ export default function BarcodePrintPage() {
               </div>
             </div>
           )}
+        </div>
+      </div>
+
+      {labelSizeProduct && (
+        <ProductLabelSizeModal
+          product={labelSizeProduct}
+          onClose={() => setLabelSizeProduct(null)}
+          onSaved={handleLabelSizeSaved}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProductLabelSizeModal({ product, onClose, onSaved }: {
+  product: Product;
+  onClose: () => void;
+  onSaved: (id: string, override: { barcode_label_size: string | null; barcode_label_width: number | null; barcode_label_height: number | null }) => void;
+}) {
+  const [size, setSize] = useState<string>(product.barcode_label_size || '');
+  const [customWidth, setCustomWidth] = useState(product.barcode_label_width != null ? String(product.barcode_label_width) : '2');
+  const [customHeight, setCustomHeight] = useState(product.barcode_label_height != null ? String(product.barcode_label_height) : '1');
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    setSaving(true);
+    const patch = !size
+      ? { barcode_label_size: null, barcode_label_width: null, barcode_label_height: null }
+      : size === 'custom'
+        ? { barcode_label_size: 'custom', barcode_label_width: Number(customWidth) || 2, barcode_label_height: Number(customHeight) || 1 }
+        : { barcode_label_size: size, barcode_label_width: null, barcode_label_height: null };
+    const { error } = await supabase.from('products').update(patch).eq('id', product.id);
+    setSaving(false);
+    if (error) {
+      toast({ title: 'Failed to save label size', description: error.message, variant: 'destructive' });
+      return;
+    }
+    onSaved(product.id, patch);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div>
+            <h2 className="text-base font-bold flex items-center gap-2"><Ruler className="w-4 h-4 text-blue-600" /> Label Size</h2>
+            <p className="text-xs text-muted-foreground truncate max-w-[240px]">{product.name}</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">Saved size for this product</label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setSize('')}
+                className={`px-2 py-2 rounded-lg text-xs font-medium border transition ${size === '' ? 'border-blue-500 text-blue-600 bg-blue-50' : 'border-border text-muted-foreground hover:border-blue-300'}`}
+              >
+                Page Default
+              </button>
+              {(['xs', 'small', 'medium', 'large', 'xl', 'custom'] as LabelSize[]).map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setSize(s)}
+                  className={`px-2 py-2 rounded-lg text-xs font-medium border transition ${size === s ? 'border-blue-500 text-blue-600 bg-blue-50' : 'border-border text-muted-foreground hover:border-blue-300'}`}
+                >
+                  {LABEL_SIZES[s].label}
+                </button>
+              ))}
+            </div>
+            {size === 'custom' && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <div>
+                  <label className="block text-[10px] font-medium text-muted-foreground mb-1">Width (in)</label>
+                  <input type="number" min="0.5" max="5" step="0.1" value={customWidth} onChange={e => setCustomWidth(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-muted-foreground mb-1">Height (in)</label>
+                  <input type="number" min="0.3" max="3" step="0.1" value={customHeight} onChange={e => setCustomHeight(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                </div>
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            The saved size is used whenever this product's barcode/QR label is printed — from this page and from the product's barcode in inventory — instead of the page settings.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-border">
+          <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+          <button type="button" onClick={save} disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+            {saving ? 'Saving...' : 'Save Size'}
+          </button>
         </div>
       </div>
     </div>

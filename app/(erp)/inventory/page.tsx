@@ -10,6 +10,7 @@ import { useRouter } from 'next/navigation';
 import JsBarcode from 'jsbarcode';
 import { Package, Plus, Search, CreditCard as Edit, Trash2, TriangleAlert as AlertTriangle, ChartBar as BarChart3, Boxes, TrendingDown, RefreshCw, X, Warehouse, Palette, Ruler, ChevronDown, ChevronUp, ChevronRight, Info, Settings, Barcode, Camera, Printer, Download, Upload, CircleCheck as CheckCircle2 } from 'lucide-react';
 import type { Product, Category, Brand, Warehouse as WarehouseType, ProductColor, ProductSize, ProductUnit } from '@/lib/types';
+import { LABEL_SIZES, resolveLabelConfig, describeProductLabelSize, type LabelSize } from '@/lib/label-sizes';
 import Pagination from '@/components/ui/AppPagination';
 
 // ─── Searchable combobox ──────────────────────────────────────────────────────
@@ -700,6 +701,9 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
     enable_multi_unit: product?.enable_multi_unit ?? false,
     enable_colors: product?.enable_colors ?? false,
     enable_sizes: product?.enable_sizes ?? false,
+    barcode_label_size: product?.barcode_label_size || '',
+    barcode_label_width: product?.barcode_label_width != null ? String(product.barcode_label_width) : '2',
+    barcode_label_height: product?.barcode_label_height != null ? String(product.barcode_label_height) : '1',
   });
   const [stockByWarehouse, setStockByWarehouse] = useState<Record<string, string>>(
     warehouses.reduce((acc, w) => ({ ...acc, [w.id]: '0' }), {})
@@ -862,6 +866,9 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
       min_stock_level: Number(form.min_stock_level),
       description: form.description || null,
       is_active: form.is_active,
+      barcode_label_size: form.barcode_label_size || null,
+      barcode_label_width: form.barcode_label_size === 'custom' ? (Number(form.barcode_label_width) || null) : null,
+      barcode_label_height: form.barcode_label_size === 'custom' ? (Number(form.barcode_label_height) || null) : null,
     };
 
     let productId = product?.id;
@@ -1313,6 +1320,45 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
           <div>
             <label className="block text-xs font-medium mb-1">Min Stock Level</label>
             <input type="number" min="0" value={form.min_stock_level} onChange={e => setForm({ ...form, min_stock_level: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+          </div>
+
+          <div className="border-t border-border pt-4 mt-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Barcode className="w-4 h-4 text-muted-foreground" />
+              <label className="text-xs font-medium">Barcode / QR Label Size</label>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, barcode_label_size: '' })}
+                className={`px-2 py-2 rounded-lg text-xs font-medium border transition ${form.barcode_label_size === '' ? 'border-blue-500 text-blue-600 bg-blue-50' : 'border-border text-muted-foreground hover:border-blue-300'}`}
+              >
+                Default
+              </button>
+              {(['xs', 'small', 'medium', 'large', 'xl', 'custom'] as LabelSize[]).map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setForm({ ...form, barcode_label_size: s })}
+                  className={`px-2 py-2 rounded-lg text-xs font-medium border transition ${form.barcode_label_size === s ? 'border-blue-500 text-blue-600 bg-blue-50' : 'border-border text-muted-foreground hover:border-blue-300'}`}
+                >
+                  {LABEL_SIZES[s].label}
+                </button>
+              ))}
+            </div>
+            {form.barcode_label_size === 'custom' && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <div>
+                  <label className="block text-[10px] font-medium text-muted-foreground mb-1">Width (in)</label>
+                  <input type="number" min="0.5" max="5" step="0.1" value={form.barcode_label_width} onChange={e => setForm({ ...form, barcode_label_width: e.target.value })} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-medium text-muted-foreground mb-1">Height (in)</label>
+                  <input type="number" min="0.3" max="3" step="0.1" value={form.barcode_label_height} onChange={e => setForm({ ...form, barcode_label_height: e.target.value })} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                </div>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground mt-2">Saved for this product — its barcode/QR label prints at this size instead of the print page's default.</p>
           </div>
 
           {!isEdit && (
@@ -2084,13 +2130,17 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
 function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose: () => void }) {
   const svgRef = useRef<SVGSVGElement>(null);
 
+  // This modal has no page-level settings, so the product's saved size (if
+  // any) resolves against the medium default.
+  const cfg = resolveLabelConfig({ size: 'medium', customWidth: 2, customHeight: 1 }, product);
+
   useEffect(() => {
     if (svgRef.current) {
       try {
         JsBarcode(svgRef.current, product.sku, {
           format: 'CODE128',
-          width: 1.5,
-          height: 40,
+          width: cfg.barcodeWidth,
+          height: cfg.barcodeHeight,
           displayValue: false,
           margin: 0,
           background: '#ffffff',
@@ -2100,7 +2150,7 @@ function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose
         console.error('Barcode generation error:', e);
       }
     }
-  }, [product.sku]);
+  }, [product.sku, cfg.barcodeWidth, cfg.barcodeHeight]);
 
   function handlePrint() {
     const svgEl = svgRef.current;
@@ -2112,13 +2162,13 @@ function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose
     w.document.write(`<!DOCTYPE html><html><head><title>Barcode - ${product.sku}</title><style>
       @page { margin: 0; }
       body { margin: 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; }
-      .label { width: 2in; height: 1.1in; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 6px 8px; box-sizing: border-box; border: 1px solid #e0e0e0; border-radius: 4px; }
-      .name { font-size: 9px; font-weight: 600; text-align: center; line-height: 1.2; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+      .label { width: ${cfg.width}; height: ${cfg.height}; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 6px 8px; box-sizing: border-box; border: 1px solid #e0e0e0; border-radius: 4px; }
+      .name { font-size: ${cfg.nameFontSize}; font-weight: 600; text-align: center; line-height: 1.2; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
       .barcode-wrap { display: flex; justify-content: center; max-width: 100%; overflow: hidden; }
       .barcode-wrap svg { display: block; max-width: 100%; height: auto; }
-      .code { font-size: 8px; font-family: 'Courier New', monospace; color: #666; letter-spacing: 0.5px; }
-      .mrp { font-size: 14px; font-weight: 700; color: #1a1a1a; }
-      .mrp-label { font-size: 7px; font-weight: 600; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+      .code { font-size: ${cfg.skuFontSize}; font-family: 'Courier New', monospace; color: #1a1a1a; letter-spacing: 0.5px; }
+      .mrp { font-size: ${cfg.priceFontSize}; font-weight: 700; color: #1a1a1a; }
+      .mrp-label { font-size: ${cfg.mrpLabelFontSize}; font-weight: 600; color: #1a1a1a; text-transform: uppercase; letter-spacing: 1px; }
       .price-row { display: flex; align-items: baseline; gap: 4px; }
     </style></head><body>
       <div class="label">
@@ -2144,20 +2194,24 @@ function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose
         </div>
         <div className="p-6 flex flex-col items-center">
           {/* Professional label preview */}
-          <div className="border border-gray-200 rounded-lg p-4 bg-white w-full max-w-[240px] flex flex-col items-center gap-1.5 shadow-sm">
-            <p className="text-xs font-semibold text-foreground text-center leading-tight line-clamp-2">{product.name}</p>
+          <div className="border border-gray-200 rounded-lg p-4 bg-white flex flex-col items-center gap-1.5 shadow-sm" style={{ width: cfg.width, minHeight: cfg.height, maxWidth: '100%' }}>
+            <p className="font-semibold text-foreground text-center leading-tight line-clamp-2" style={{ fontSize: cfg.nameFontSize }}>{product.name}</p>
             <div className="flex justify-center w-full overflow-hidden">
               <svg ref={svgRef} className="max-w-full h-auto" />
             </div>
-            <p className="text-[10px] font-mono text-muted-foreground tracking-wide">{product.sku}</p>
+            <p className="font-mono text-foreground tracking-wide" style={{ fontSize: cfg.skuFontSize }}>{product.sku}</p>
             <div className="flex items-baseline gap-1.5 pt-0.5 border-t border-gray-100 w-full justify-center">
-              <span className="text-[8px] font-semibold text-gray-400 uppercase tracking-wider">MRP</span>
-              <span className="text-lg font-bold text-foreground">{formatCurrency(product.sale_price)}</span>
+              <span className="font-semibold text-foreground uppercase tracking-wider" style={{ fontSize: cfg.mrpLabelFontSize }}>MRP</span>
+              <span className="font-bold text-foreground" style={{ fontSize: cfg.priceFontSize }}>{formatCurrency(product.sale_price)}</span>
             </div>
           </div>
+          <p className="text-xs text-muted-foreground mt-3">
+            Label size: {cfg.sizeKey === 'custom' ? `${parseFloat(cfg.width)}" × ${parseFloat(cfg.height)}"` : LABEL_SIZES[cfg.sizeKey].label}
+            {cfg.fromProductOverride ? ' (saved for this product)' : ' (default)'}
+          </p>
           <button
             onClick={handlePrint}
-            className="mt-5 flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition"
+            className="mt-3 flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition"
           >
             <Printer className="w-4 h-4" />Print Barcode
           </button>

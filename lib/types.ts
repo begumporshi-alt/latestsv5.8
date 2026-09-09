@@ -69,6 +69,9 @@ export interface Product {
   is_active: boolean;
   is_online: boolean;
   warranty_months: number;
+  barcode_label_size?: string | null;
+  barcode_label_width?: number | null;
+  barcode_label_height?: number | null;
   created_at: string;
   updated_at: string;
   category?: Category;
