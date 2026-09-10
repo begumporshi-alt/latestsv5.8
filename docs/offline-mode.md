@@ -189,3 +189,58 @@ journals, correct FIFO batch, payment, idempotency).
 | Service worker + manifest | `public/sw.js`, `public/manifest.json` |
 | Server: sync_apply + handlers + idempotency ledger | `supabase/migrations/20260909233000_offline_sync.sql` |
 | Unit tests | `lib/offline/__tests__/offline-lib.test.ts` |
+
+## 7. PWA — installing SI ERP as an app
+
+The offline work ships the full installability stack, so SI ERP can be
+installed like a native app: its own window (no browser chrome), a
+dock/desktop/home-screen icon, launch straight to `/dashboard`, and offline
+start-up via the service worker.
+
+**What was added (2026-09-10):**
+
+- `app/layout.tsx` metadata: `themeColor`, `appleWebApp`
+  (`apple-mobile-web-app-capable`, status-bar style, title), the unprefixed
+  `mobile-web-app-capable` (Chrome's replacement for the deprecated
+  apple-prefixed meta), and the icon set.
+- `public/manifest.json`: stable `id`, `orientation: any` (POS tablets run
+  landscape), **maskable icon variants** (Android crops "any"-purpose icons
+  into a white circle; maskable ones fill the shape), and app **shortcuts**
+  (long-press the icon → POS / Inventory / Sales / Sync Center).
+- Regenerated icon set from the company logo's circular emblem
+  (`icon-192/512.png` — the previous icons were a center-square crop that cut
+  the wordmark's sides), plus `apple-touch-icon.png` (180×180, iOS),
+  `favicon.ico` (48/32/16 — fixes a 404 `sw.js` already special-cased), and
+  `icon-{192,512}-maskable.png`.
+- `lib/pwa/install.ts` — `useInstallPrompt()` hook. The
+  `beforeinstallprompt` listener lives at **module scope** because the event
+  can fire before React mounts (it follows SW activation); the hook also
+  tracks `appinstalled`, standalone display-mode (suppresses prompts when
+  already installed), and a persisted dismissal.
+- `components/pwa/InstallButton.tsx` — Header pill next to the offline
+  status pill. Renders only on Chromium-family browsers once the browser
+  actually offers the install flow.
+- `components/pwa/InstallCard.tsx` — permanent "Install as app" section in
+  the Sync Center (ignores the pill's dismissal): install button on
+  Chromium, manual steps on iOS (Share → Add to Home Screen — Safari has no
+  prompt API) and macOS Safari (File → Add to Dock…), and an
+  already-installed confirmation.
+- `ServiceWorkerRegistrar` shows an **"App updated — refresh"** toast when a
+  new service worker takes over a running page (guarded so the very first
+  control doesn't fire a false positive).
+
+**Platform notes:**
+
+| Browser | Install path |
+|---|---|
+| Chrome / Edge / Opera (desktop + Android) | Header pill or Sync Center button → native install dialog |
+| Safari on iOS/iPadOS | Share → Add to Home Screen (steps shown in Sync Center) |
+| Safari on macOS | File → Add to Dock… (steps shown in Sync Center) |
+| Firefox | Not supported — Sync Center says so |
+
+**Dev-mode caveat:** the service worker registers production-only (stale
+dev-chunk hazard, §6 finding 4), so installability — including the install
+pill — only exists in production builds (`npm run build && npx next start`).
+
+**Code map additions:** `lib/pwa/install.ts`, `components/pwa/*`,
+icon/manifest assets in `public/`.

@@ -24,6 +24,7 @@ import {
 import type { OutboxItem } from '@/lib/offline/db';
 import { replicaStatus, replicateAll, type ReplicaStatus } from '@/lib/offline/replica';
 import { Database, RefreshCw as RefreshIcon } from 'lucide-react';
+import InstallCard from '@/components/pwa/InstallCard';
 
 const OP_LABELS: Record<string, string> = {
   'invoice.create': 'POS sale',
@@ -291,6 +292,9 @@ export default function SyncCenterPage() {
           </p>
         )}
       </section>
+
+      {/* Install as app */}
+      <InstallCard />
 
       {/* Security card */}
       <section className="bg-white rounded-xl border border-border p-4 shadow-sm">

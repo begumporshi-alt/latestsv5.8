@@ -10,6 +10,7 @@ import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import OfflineStatusPill from '@/components/offline/OfflineStatusPill';
+import InstallButton from '@/components/pwa/InstallButton';
 import { clearLocalData } from '@/lib/offline/db';
 import { toast } from '@/hooks/use-toast';
 
@@ -243,6 +244,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
 
       {/* Right actions */}
       <div className="flex items-center gap-1 ml-auto">
+        <InstallButton />
         <OfflineStatusPill />
         <button
           onClick={() => setShowScanner(true)}

@@ -147,3 +147,41 @@ server-side (psql, bumping `updated_at`); reconnect.
 - The local database is a point-in-time snapshot (≤ 15 min staleness while
   online; refreshed on reconnect).
 - Service worker does not register in dev mode (stale-chunk hazard).
+
+---
+
+# PWA addendum — 2026-09-10
+
+Verified against a production build (`npm run build && npx next start -p
+3001`) with a minted Supabase session in headed Chromium (Playwright).
+
+| # | Check | Result |
+|---|---|---|
+| P1 | All PWA assets served: `manifest.json`, `sw.js`, both maskable icons, `apple-touch-icon.png`, `favicon.ico` (200, correct content types) | PASS |
+| P2 | `<head>` metas: manifest link, `theme-color`, `apple-touch-icon`, `apple-mobile-web-app-capable/status-bar-style/title`, `mobile-web-app-capable`, favicon + icon links | PASS |
+| P3 | Service worker registers, activates, controls the page (`navigator.serviceWorker.controller` set) | PASS |
+| P4 | `beforeinstallprompt` fires (Chromium's own installability confirmation — captured by a pre-load listener across a reload) | PASS |
+| P5 | Header "Install app" pill renders next to the offline status pill once the event is captured; hidden when unavailable/installed/dismissed | PASS |
+| P6 | Sync Center "Install as app" card: button on Chromium, hint while unavailable, iOS/Safari manual steps, installed confirmation branch | PASS |
+| P7 | Install click flow (stubbed `beforeinstallprompt` with instrumented `prompt()`/`userChoice`): click → `prompt()` called → accepted → pill + button hide, card flips to hint state | PASS |
+| P8 | Offline launch: `context.setOffline(true)` + reload → page served by the service worker (`transferSize: 0`), app renders with data from the encrypted cache layer (expected burst of `ERR_INTERNET_DISCONNECTED` console noise from prefetch probes) | PASS |
+| P9 | `npx tsc --noEmit`, `npx jest` (12/12), `next build` (54 routes) after all changes | PASS |
+
+**Findings fixed during verification:**
+
+1. `getInstallPlatform()` could never return `'chromium'` (only `ios` /
+   `other`), so the Header pill's platform gate could never pass — the pill
+   never rendered despite the event firing. Rewritten to return `chromium`
+   (default), `ios`, `safari` (macOS, manual Add to Dock), or `other`
+   (Firefox).
+2. Chrome deprecation warning on `apple-mobile-web-app-capable` — added the
+   unprefixed `mobile-web-app-capable` meta via metadata `other`.
+3. `next start` does not serve `public/` files added after boot (the
+   session-plant recipe 404s on production builds) — verification now serves
+   the plant JSON from a throwaway CORS-enabled local server instead.
+
+**Not automatable here (verified by construction):** completing the native
+install dialog (needs real browser UI; criteria confirmed by P4), and the
+SW-update toast (requires deploying a new `sw.js` mid-session). The iOS
+"Safari has no prompt event" behavior is covered by the platform matrix in
+docs/offline-mode.md §7.
