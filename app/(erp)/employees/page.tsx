@@ -9,6 +9,7 @@ import type { Employee } from '@/lib/types';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
+import { readData } from '@/lib/offline/read-result';
 import { enqueueOp } from '@/lib/offline/outbox';
 
 const deptColors: Record<string, string> = {
@@ -40,7 +41,7 @@ export default function EmployeesPage() {
     if (force) await cacheDelete(CACHE_KEYS.employees);
     try {
       const res = await cachedQuery<Employee[]>(CACHE_KEYS.employees, 60_000, async () =>
-        (await supabase.from('employees').select('*').order('full_name')).data || []);
+        readData(await supabase.from('employees').select('*').order('full_name'), [] as Employee[]));
       setEmployees(res.data);
       setDataStale(!res.fresh);
     } catch {

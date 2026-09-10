@@ -18,12 +18,13 @@
  * visited while online.
  */
 
-import { supabase } from '../supabase'
+import { supabaseRaw } from '../supabase-raw'
 import { fetchAll } from '../fetch-all'
 import { getDB, getMeta, setMeta } from './db'
 import { getUserKey, seal, unseal } from './crypto'
 import { networkMonitor } from './network'
 import { isNetworkError } from './cache'
+import { resolveUserId } from './session'
 
 export const REPLICA_INTERVAL_MS = 15 * 60_000
 
@@ -37,21 +38,26 @@ export interface ReplicaTableSpec {
 }
 
 export const REPLICA_TABLES: ReplicaTableSpec[] = [
-  { name: 'Products', store: 'replica_products', fetch: () => fetchAll(() => supabase.from('products').select('*').order('id')) },
-  { name: 'Stock counters', store: 'replica_inventory_items', fetch: () => fetchAll(() => supabase.from('inventory_items').select('*').order('id')) },
-  { name: 'Product units', store: 'replica_product_units', fetch: () => fetchAll(() => supabase.from('product_units').select('*').order('id')) },
-  { name: 'Customers', store: 'replica_customers', fetch: () => fetchAll(() => supabase.from('customers').select('*').order('id')) },
-  { name: 'Invoices', store: 'replica_invoices', fetch: () => fetchAll(() => supabase.from('invoices').select('*').order('id')) },
-  { name: 'Invoice items', store: 'replica_invoice_items', fetch: () => fetchAll(() => supabase.from('invoice_items').select('*').order('id')) },
-  { name: 'Payments', store: 'replica_payments', fetch: () => fetchAll(() => supabase.from('payments').select('*').order('id')) },
-  { name: 'Sales returns', store: 'replica_sales_returns', fetch: () => fetchAll(() => supabase.from('sales_returns').select('*').order('id')) },
-  { name: 'Employees', store: 'replica_employees', fetch: () => fetchAll(() => supabase.from('employees').select('*').order('id')) },
-  { name: 'Attendance', store: 'replica_attendance', fetch: () => fetchAll(() => supabase.from('attendance').select('*').order('id')) },
-  { name: 'Warehouses', store: 'replica_warehouses', fetch: () => fetchAll(() => supabase.from('warehouses').select('*').order('id')) },
-  { name: 'Brands', store: 'replica_brands', fetch: () => fetchAll(() => supabase.from('brands').select('*').order('id')) },
-  { name: 'Categories', store: 'replica_categories', fetch: () => fetchAll(() => supabase.from('categories').select('*').order('id')) },
-  { name: 'Payment methods', store: 'replica_payment_methods', fetch: () => fetchAll(() => supabase.from('payment_methods').select('*').order('id')) },
-  { name: 'Suppliers', store: 'replica_suppliers', fetch: () => fetchAll(() => supabase.from('suppliers').select('*').order('id')) },
+  { name: 'Products', store: 'replica_products', fetch: () => fetchAll(() => supabaseRaw.from('products').select('*').order('id')) },
+  { name: 'Stock counters', store: 'replica_inventory_items', fetch: () => fetchAll(() => supabaseRaw.from('inventory_items').select('*').order('id')) },
+  { name: 'Product units', store: 'replica_product_units', fetch: () => fetchAll(() => supabaseRaw.from('product_units').select('*').order('id')) },
+  { name: 'Customers', store: 'replica_customers', fetch: () => fetchAll(() => supabaseRaw.from('customers').select('*').order('id')) },
+  { name: 'Invoices', store: 'replica_invoices', fetch: () => fetchAll(() => supabaseRaw.from('invoices').select('*').order('id')) },
+  { name: 'Invoice items', store: 'replica_invoice_items', fetch: () => fetchAll(() => supabaseRaw.from('invoice_items').select('*').order('id')) },
+  { name: 'Payments', store: 'replica_payments', fetch: () => fetchAll(() => supabaseRaw.from('payments').select('*').order('id')) },
+  { name: 'Sales returns', store: 'replica_sales_returns', fetch: () => fetchAll(() => supabaseRaw.from('sales_returns').select('*').order('id')) },
+  { name: 'Employees', store: 'replica_employees', fetch: () => fetchAll(() => supabaseRaw.from('employees').select('*').order('id')) },
+  { name: 'Attendance', store: 'replica_attendance', fetch: () => fetchAll(() => supabaseRaw.from('attendance').select('*').order('id')) },
+  { name: 'Warehouses', store: 'replica_warehouses', fetch: () => fetchAll(() => supabaseRaw.from('warehouses').select('*').order('id')) },
+  { name: 'Brands', store: 'replica_brands', fetch: () => fetchAll(() => supabaseRaw.from('brands').select('*').order('id')) },
+  { name: 'Categories', store: 'replica_categories', fetch: () => fetchAll(() => supabaseRaw.from('categories').select('*').order('id')) },
+  { name: 'Payment methods', store: 'replica_payment_methods', fetch: () => fetchAll(() => supabaseRaw.from('payment_methods').select('*').order('id')) },
+  { name: 'Suppliers', store: 'replica_suppliers', fetch: () => fetchAll(() => supabaseRaw.from('suppliers').select('*').order('id')) },
+  // Operational data the POS and the shared gates read while offline: VAT /
+  // POS defaults, store credit balances, and the FIFO batch ledger.
+  { name: 'App settings', store: 'replica_app_settings', fetch: () => fetchAll(() => supabaseRaw.from('app_settings').select('*').order('id')) },
+  { name: 'Store credits', store: 'replica_customer_store_credits', fetch: () => fetchAll(() => supabaseRaw.from('customer_store_credits').select('*').order('id')) },
+  { name: 'Inventory batches', store: 'replica_inventory_batches', fetch: () => fetchAll(() => supabaseRaw.from('inventory_batches').select('*').order('id')) },
 ]
 
 /** Named access for page fallbacks — keeps callers independent of array order. */
@@ -87,8 +93,7 @@ export async function replicateAll(): Promise<void> {
   if (replicating) return
   if (!networkMonitor.getState().online) return
 
-  const { data } = await supabase.auth.getSession()
-  const userId = data.session?.user?.id
+  const userId = await resolveUserId()
   if (!userId) return
 
   replicating = true
@@ -126,8 +131,9 @@ export async function replicateAll(): Promise<void> {
 /** Decrypt and return every row of a replica table. */
 export async function replicaRows<T>(spec: ReplicaTableSpec): Promise<T[]> {
   try {
-    const { data } = await supabase.auth.getSession()
-    const userId = data.session?.user?.id
+    // resolveUserId keeps replica reads working offline even when the access
+    // token has expired (the local rows are sealed with this user's key).
+    const userId = await resolveUserId()
     if (!userId) return []
     const key = await getUserKey(userId)
     const rows = await getDB().table(spec.store).toArray()

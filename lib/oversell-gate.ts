@@ -6,7 +6,7 @@
 // quote→invoice conversion, so all three paths warn identically before
 // creating a negative inventory layer (an IOU) via consume_fifo.
 
-import { supabase } from '@/lib/supabase';
+import { supabaseRaw } from '@/lib/supabase-raw';
 import { cacheGet, cachePut, isNetworkError } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 
@@ -59,7 +59,7 @@ export async function fetchLedgerStockFor(
   const defaultWh = defaultWarehouseId ?? (await resolveDefaultWarehouseId());
   if (ids.length === 0) return { byPair: {}, defaultWarehouseId: defaultWh };
 
-  const { data, error } = await supabase.rpc('get_batch_stock_by_product_warehouse', {
+  const { data, error } = await supabaseRaw.rpc('get_batch_stock_by_product_warehouse', {
     p_product_ids: ids,
   });
 
@@ -89,7 +89,7 @@ export async function fetchLedgerStockFor(
 }
 
 async function resolveDefaultWarehouseId(): Promise<string | null> {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseRaw
     .from('warehouses')
     .select('id')
     .eq('is_default', true)

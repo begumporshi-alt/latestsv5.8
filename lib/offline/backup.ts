@@ -33,11 +33,11 @@
  *    truth; the file restores offline-read coverage and unsynced writes
  */
 
-import { supabase } from '../supabase'
 import { getDB, setMeta, type OutboxItem } from './db'
 import { getUserKey, seal, unseal, subtle, randomBytes, toB64, fromB64, type SealedBlob } from './crypto'
 import { REPLICA_TABLES, replicateAll, replicaRows } from './replica'
 import { notifyOutboxChanged } from './outbox'
+import { resolveUserId } from './session'
 
 export const BACKUP_FORMAT = 'sisolution-offline-backup'
 export const BACKUP_VERSION = 1
@@ -89,8 +89,9 @@ export interface BackupImportSummary {
 }
 
 async function requireUserId(): Promise<string> {
-  const { data } = await supabase.auth.getSession()
-  const userId = data.session?.user?.id
+  // Backups must work offline (that is what they are for), so this accepts
+  // the remembered user when the live session has expired.
+  const userId = await resolveUserId()
   if (!userId) {
     throw new Error('Exporting or restoring a backup requires a signed-in session')
   }

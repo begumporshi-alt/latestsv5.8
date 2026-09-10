@@ -6,6 +6,7 @@ import { toast } from '@/hooks/use-toast';
 import { ChevronLeft, ChevronRight, Search, CreditCard as Edit, Users, Calendar, TrendingUp, TriangleAlert as AlertTriangle } from 'lucide-react';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheGet, mutateCache } from '@/lib/offline/cache';
+import { readData } from '@/lib/offline/read-result';
 import { enqueueOp } from '@/lib/offline/outbox';
 
 interface Employee {
@@ -87,10 +88,13 @@ export default function AttendancePage() {
     setLoading(true);
     try {
       const emp = await cachedQuery<Employee[]>('attendance:employees', 300_000, async () =>
-        (await supabase.from('employees').select('id, employee_id, full_name, designation, department').eq('status', 'active').order('full_name')).data || []);
+        readData(
+          await supabase.from('employees').select('id, employee_id, full_name, designation, department').eq('status', 'active').order('full_name'),
+          [] as Employee[],
+        ));
       setEmployees(emp.data);
       const att = await cachedQuery<AttendanceRecord[]>(`attendance:date:${date}`, 60_000, async () =>
-        (await supabase.from('attendance').select('*').eq('date', date)).data || []);
+        readData(await supabase.from('attendance').select('*').eq('date', date), [] as AttendanceRecord[]));
       const map = new Map<string, AttendanceRecord>();
       att.data.forEach((r: AttendanceRecord) => map.set(r.employee_id, r));
       setAttendance(map);
@@ -115,11 +119,14 @@ export default function AttendancePage() {
 
     try {
       const res = await cachedQuery<{ employee_id: string; status: AttendanceStatus }[]>(`attendance:month:${year}-${month}`, 60_000, async () =>
-        (await supabase
-          .from('attendance')
-          .select('employee_id, status')
-          .gte('date', monthStart)
-          .lt('date', nextMonth)).data || []);
+        readData(
+          await supabase
+            .from('attendance')
+            .select('employee_id, status')
+            .gte('date', monthStart)
+            .lt('date', nextMonth),
+          [] as { employee_id: string; status: AttendanceStatus }[],
+        ));
 
       const summary = new Map<string, MonthlySummary>();
       res.data.forEach((r: { employee_id: string; status: AttendanceStatus }) => {

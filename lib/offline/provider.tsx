@@ -45,7 +45,7 @@ const EMPTY_COUNTS: OutboxCounts = {
 
 const DEFAULT_VALUE: OfflineContextValue = {
   online: true,
-  engine: { running: false, lastSyncAt: null, lastError: null },
+  engine: { running: false, lastSyncAt: null, lastError: null, notice: null },
   counts: EMPTY_COUNTS,
   syncNow: () => {},
   refreshCounts: () => {},

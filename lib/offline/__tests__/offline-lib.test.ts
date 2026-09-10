@@ -65,8 +65,7 @@ describe('network-error classification (lib/offline/cache)', () => {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||= 'test-anon-key';
     // Dynamic require: lib/supabase creates its client at import time and
     // needs the env vars set first (jest hoists static imports).
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    isNetworkError = require('../cache').isNetworkError;
+        isNetworkError = require('../cache').isNetworkError;
   });
 
   test('browser fetch failures are classified as network errors', () => {

@@ -7,7 +7,7 @@
 // Customers with credit_limit = 0 (the default) are never gated — the field
 // only means something once the business sets it.
 
-import { supabase } from '@/lib/supabase';
+import { supabaseRaw } from '@/lib/supabase-raw';
 import { cacheGet, isNetworkError } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 
@@ -43,7 +43,7 @@ export async function checkCreditLimit(
   newReceivable: number
 ): Promise<CreditCheck | null> {
   if (!customerId) return null;
-  const { data, error } = await supabase
+  const { data, error } = await supabaseRaw
     .from('customers')
     .select('credit_limit, outstanding_balance')
     .eq('id', customerId)

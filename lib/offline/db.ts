@@ -83,6 +83,13 @@ class OfflineDB extends Dexie {
       replica_payment_methods: 'id',
       replica_suppliers: 'id',
     })
+    // v3: operational tables the POS / gates need while offline — VAT & POS
+    // defaults, store-credit balances, and the FIFO batch ledger.
+    this.version(3).stores({
+      replica_app_settings: 'id, setting_key',
+      replica_customer_store_credits: 'id, customer_id',
+      replica_inventory_batches: 'id, product_id, warehouse_id',
+    })
   }
 }
 

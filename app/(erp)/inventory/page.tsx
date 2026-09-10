@@ -15,6 +15,7 @@ import Pagination from '@/components/ui/AppPagination';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
+import { readData } from '@/lib/offline/read-result';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { patchInventoryAggregateAfterProductOp, patchPosSnapshotAfterProductOp } from '@/lib/offline/optimistic';
 
@@ -227,7 +228,12 @@ export default function InventoryPage() {
         .order('created_at', { ascending: false })
         .order('id', { ascending: false })
         .range(page * PAGE, (page + 1) * PAGE - 1);
-      if (error) break;
+      // A failed first page means nothing was loaded — throw so the cache
+      // layer keeps the previous snapshot instead of storing a partial list.
+      if (error) {
+        if (page === 0) throw error;
+        break;
+      }
       allProds = allProds.concat(data || []);
       if (!data || data.length < PAGE) break;
       page++;
@@ -238,11 +244,15 @@ export default function InventoryPage() {
     {
       let pg = 0;
       while (true) {
-        const { data: invPage } = await supabase
+        const { data: invPage, error: invErr } = await supabase
           .from('inventory_items')
           .select('product_id, warehouse_id, quantity_on_hand')
           .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
+        if (invErr) {
+          if (pg === 0) throw invErr;
+          break;
+        }
         allInvItems = allInvItems.concat(invPage || []);
         if (!invPage || invPage.length < 1000) break;
         pg++;
@@ -254,11 +264,15 @@ export default function InventoryPage() {
     {
       let pg = 0;
       while (true) {
-        const { data: soldPage } = await supabase
+        const { data: soldPage, error: soldErr } = await supabase
           .from('invoice_items')
           .select('product_id, quantity')
           .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
+        if (soldErr) {
+          if (pg === 0) throw soldErr;
+          break;
+        }
         allSoldItems = allSoldItems.concat(soldPage || []);
         if (!soldPage || soldPage.length < 1000) break;
         pg++;

@@ -25,6 +25,7 @@ import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheGet, cachePut, mutateCache, isNetworkError } from '@/lib/offline/cache';
+import { readData } from '@/lib/offline/read-result';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { fetchAll } from '@/lib/fetch-all';
@@ -251,16 +252,16 @@ export default function POSPage() {
     // online it refetches and refreshes the snapshot; offline it serves the
     // last copy so filters, warehouses and payment methods keep working.
     void loadCached(CACHE_KEYS.paymentMethods, 300_000, async () =>
-      (await supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')).data || [])
+      readData(await supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order'), [] as any[]))
       .then(d => { if (d && d.length > 0) setPaymentMethods(d); });
     void loadCached(CACHE_KEYS.brands, 300_000, async () =>
-      (await supabase.from('brands').select('id, name').eq('is_active', true).order('name')).data || [])
+      readData(await supabase.from('brands').select('id, name').eq('is_active', true).order('name'), [] as any[]))
       .then(d => setBrands(d || []));
     void loadCached(CACHE_KEYS.categories, 300_000, async () =>
-      (await supabase.from('categories').select('id, name').eq('is_active', true).order('name')).data || [])
+      readData(await supabase.from('categories').select('id, name').eq('is_active', true).order('name'), [] as any[]))
       .then(d => setCategories(d || []));
     void loadCached(CACHE_KEYS.warehouses, 300_000, async () =>
-      (await supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('is_default', { ascending: false }).order('name')).data || [])
+      readData(await supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('is_default', { ascending: false }).order('name'), [] as any[]))
       .then(d => { if (d) setWarehouses(d); });
     supabase.from('app_settings').select('setting_value').eq('setting_key', 'product_defaults').maybeSingle()
       .then(({ data }) => {
@@ -331,8 +332,14 @@ export default function POSPage() {
     if (!cartProductKey) { setAllocBatches(null); return; }
     let stale = false;
     (async () => {
-      const batches = await fetchAllocatableBatches(cartProductKey.split(','));
-      if (!stale) setAllocBatches(batches);
+      try {
+        const batches = await fetchAllocatableBatches(cartProductKey.split(','));
+        if (!stale) setAllocBatches(batches);
+      } catch {
+        // Offline with no cached batch list — the editor stays hidden and the
+        // sale falls back to counter stock; consumption is recorded on sync.
+        if (!stale) setAllocBatches(null);
+      }
     })();
     return () => { stale = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

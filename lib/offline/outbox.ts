@@ -8,9 +8,9 @@
  * The item id is a client-generated UUID that the server uses as its
  * idempotency key — a replayed sync can never double-apply an operation.
  */
-import { supabase } from '../supabase'
 import { getDB, type OutboxItem, type OutboxStatus } from './db'
 import { getUserKey, seal, unseal } from './crypto'
+import { resolveUserId } from './session'
 
 type OutboxListener = () => void
 const listeners = new Set<OutboxListener>()
@@ -25,8 +25,10 @@ export function notifyOutboxChanged(): void {
 }
 
 async function requireUserId(): Promise<string> {
-  const { data } = await supabase.auth.getSession()
-  const userId = data.session?.user?.id
+  // Works with an expired access token: queued work is sealed and namespaced
+  // with the last signed-in user's key, and syncs under their identity once a
+  // real token is available again.
+  const userId = await resolveUserId()
   if (!userId) {
     throw new Error('Cannot queue offline changes without a signed-in session')
   }

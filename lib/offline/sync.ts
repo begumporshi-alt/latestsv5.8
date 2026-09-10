@@ -24,11 +24,12 @@
  * HTTPS channel as the rest of the app (TLS to Supabase); payloads are only
  * unsealed in memory for the duration of the call.
  */
-import { supabase } from '../supabase'
+import { supabaseRaw } from '../supabase-raw'
 import { getDB, setMeta, getMeta, type OutboxItem } from './db'
 import { getUserKey, seal, unseal } from './crypto'
 import { networkMonitor } from './network'
 import { isNetworkError } from './cache'
+import { resolveUserId } from './session'
 import { notifyOutboxChanged, resetInFlightItems } from './outbox'
 
 const DRAIN_INTERVAL_MS = 30_000
@@ -49,10 +50,12 @@ export interface SyncEngineState {
   running: boolean
   lastSyncAt: number | null
   lastError: string | null
+  /** Non-error information (e.g. "signed in offline"), shown differently in the UI. */
+  notice: string | null
 }
 
 class SyncEngine {
-  private state: SyncEngineState = { running: false, lastSyncAt: null, lastError: null }
+  private state: SyncEngineState = { running: false, lastSyncAt: null, lastError: null, notice: null }
   private listeners = new Set<EngineListener>()
   private timer: ReturnType<typeof setInterval> | null = null
   private started = false
@@ -110,9 +113,20 @@ class SyncEngine {
     if (this.state.running) return
     if (!networkMonitor.getState().online) return
 
-    const { data } = await supabase.auth.getSession()
+    // Syncing requires a REAL session — an expired-token offline session must
+    // never be used to talk to the server. The queue waits.
+    const { data } = await supabaseRaw.auth.getSession()
     const userId = data.session?.user?.id
-    if (!userId) return
+    if (!userId) {
+      const known = await resolveUserId()
+      this.setState({
+        notice: known
+          ? 'Signed in offline — queued changes will sync once you reconnect'
+          : null,
+      })
+      return
+    }
+    if (this.state.notice) this.setState({ notice: null })
 
     this.setState({ running: true })
     try {
@@ -148,7 +162,7 @@ class SyncEngine {
     while (attempts < MAX_ATTEMPTS_PER_DRAIN) {
       attempts++
       try {
-        const { data, error } = await supabase.rpc('sync_apply', {
+        const { data, error } = await supabaseRaw.rpc('sync_apply', {
           p_item_id: item.id,
           p_op: item.op,
           p_payload: payload,

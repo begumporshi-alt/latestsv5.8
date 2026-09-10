@@ -12,6 +12,7 @@ import RecordButton from '@/components/RecordButton';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheGet, cachePut, cacheDelete } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
+import { readData } from '@/lib/offline/read-result';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { REPLICA, replicaRows } from '@/lib/offline/replica';
 
@@ -144,12 +145,15 @@ export default function CRMPage() {
   }
 
   async function fetchCrmData() {
-    const [{ data: custData }, { data: invoiceData }, { data: returnsData }] = await Promise.all([
-      supabase.from('customers').select('*').order('name'),
-      supabase.from('invoices')
-        .select('customer_id, total_amount, balance_due, status, invoice_date')
-        .neq('status', 'cancelled'),
-      supabase.from('sales_returns').select('customer_id, total_refund_amount, created_at'),
+    const [custData, invoiceData, returnsData] = await Promise.all([
+      readData(await supabase.from('customers').select('*').order('name'), [] as any[]),
+      readData(
+        await supabase.from('invoices')
+          .select('customer_id, total_amount, balance_due, status, invoice_date')
+          .neq('status', 'cancelled'),
+        [] as any[],
+      ),
+      readData(await supabase.from('sales_returns').select('customer_id, total_refund_amount, created_at'), [] as any[]),
     ]);
 
     // Build invoice outstanding map (unpaid balance from invoices)

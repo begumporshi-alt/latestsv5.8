@@ -16,10 +16,10 @@
  * IndexedDB and are namespaced per user id, so a shared device never leaks
  * one user's snapshot to another.
  */
-import { supabase } from '../supabase'
 import { networkMonitor } from './network'
 import { getDB, type CacheRow } from './db'
 import { getUserKey, seal, unseal } from './crypto'
+import { resolveUserId } from './session'
 
 export class OfflineError extends Error {
   constructor(message: string) {
@@ -53,18 +53,9 @@ export function isNetworkError(err: unknown): boolean {
   return NETWORK_ERROR_RE.test(msg)
 }
 
-async function currentUserId(): Promise<string | null> {
-  try {
-    const { data } = await supabase.auth.getSession()
-    return data.session?.user?.id ?? null
-  } catch {
-    return null
-  }
-}
-
 export async function cachePut(key: string, data: unknown): Promise<void> {
   try {
-    const userId = await currentUserId()
+    const userId = await resolveUserId()
     if (!userId) return
     const fullKey = `${userId}:${key}`
     const k = await getUserKey(userId)
@@ -78,7 +69,7 @@ export async function cachePut(key: string, data: unknown): Promise<void> {
 /** Raw cache row (still sealed) — internal TTL bookkeeping uses this. */
 async function cacheGetRow(key: string): Promise<CacheRow | null> {
   try {
-    const userId = await currentUserId()
+    const userId = await resolveUserId()
     if (!userId) return null
     return (await getDB().cache.get(`${userId}:${key}`)) ?? null
   } catch {
@@ -91,7 +82,7 @@ export async function cacheGet<T>(key: string): Promise<T | null> {
   try {
     const row = await cacheGetRow(key)
     if (!row) return null
-    const userId = await currentUserId()
+    const userId = await resolveUserId()
     if (!userId) return null
     const k = await getUserKey(userId)
     return await unseal<T>(k, row.blob)
@@ -103,7 +94,7 @@ export async function cacheGet<T>(key: string): Promise<T | null> {
 
 export async function cacheDelete(key: string): Promise<void> {
   try {
-    const userId = await currentUserId()
+    const userId = await resolveUserId()
     if (!userId) return
     await getDB().cache.delete(`${userId}:${key}`)
   } catch {
@@ -137,7 +128,7 @@ export async function cachedQuery<T>(
 
 async function safeUnseal<T>(row: CacheRow): Promise<T | null> {
   try {
-    const userId = await currentUserId()
+    const userId = await resolveUserId()
     if (!userId) return null
     const k = await getUserKey(userId)
     return await unseal<T>(k, row.blob)
