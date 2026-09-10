@@ -69,6 +69,18 @@ export default function DashboardPage() {
 
   async function loadDashboardData() {
     setLoading(true);
+    try {
+      await loadDashboardDataInner();
+    } catch (err) {
+      // A partial dashboard (or the offline notice) beats a stuck skeleton —
+      // this page is the installed app's start screen.
+      console.error('[dashboard] load failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadDashboardDataInner() {
     const today = new Date().toISOString().split('T')[0];
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
 
@@ -187,8 +199,6 @@ export default function DashboardPage() {
 
     const catData = await getCategoryData();
     setCategoryData(catData);
-
-    setLoading(false);
   }
 
   async function getSalesChartData() {

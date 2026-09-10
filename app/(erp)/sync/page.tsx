@@ -145,6 +145,12 @@ export default function SyncCenterPage() {
         </div>
       </div>
 
+      {engine.notice && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 text-sm flex items-center gap-2">
+          <CloudOff className="w-4 h-4 shrink-0" /> {engine.notice}
+        </div>
+      )}
+
       {engine.lastError && (
         <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
           Last sync error: {engine.lastError}

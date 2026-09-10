@@ -12,6 +12,7 @@ import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import OfflineStatusPill from '@/components/offline/OfflineStatusPill';
 import InstallButton from '@/components/pwa/InstallButton';
 import { clearLocalData } from '@/lib/offline/db';
+import { clearLastUser } from '@/lib/offline/session';
 import { toast } from '@/hooks/use-toast';
 
 interface HeaderProps {
@@ -138,6 +139,9 @@ export default function Header({ onMenuToggle }: HeaderProps) {
     // Wipe the offline cache, queued changes and the local encryption key —
     // signing out must not leave sealed business data on a shared device.
     await clearLocalData();
+    // Also forget the remembered user, so the app can't reopen offline as
+    // the signed-out account on this device.
+    await clearLastUser();
     await supabase.auth.signOut();
     router.push('/login');
   }
