@@ -22,7 +22,7 @@ export interface SealedBlob {
   ct: string // base64 ciphertext
 }
 
-const subtle = () => {
+export const subtle = () => {
   const c = typeof globalThis !== 'undefined' ? (globalThis as { crypto?: Crypto }).crypto : undefined
   if (!c?.subtle) {
     throw new Error('WebCrypto unavailable — offline storage requires a secure browser context')
@@ -30,7 +30,7 @@ const subtle = () => {
   return c.subtle
 }
 
-function randomBytes(n: number): Uint8Array {
+export function randomBytes(n: number): Uint8Array {
   const c = (globalThis as { crypto?: Crypto }).crypto
   if (!c?.getRandomValues) {
     throw new Error('WebCrypto unavailable — offline storage requires a secure browser context')

@@ -131,6 +131,13 @@ app offline and re-arm probing.
   strongest model compatible with server-side accounting integrity.*
 - **Sign-out wipes everything**: logging out clears the local database, all
   caches, the queued changes and the encryption key from the device.
+- **Backups** (§8): the whole local database can be exported to a
+  passphrase-encrypted `.sibak` file. The file holds all business data in
+  plaintext *inside* its AES-256-GCM envelope (PBKDF2-SHA256, 600k
+  iterations) — treat it like a `pg_dump`: it is only as safe as the
+  passphrase and wherever you keep it. The device's non-extractable key
+  never leaves IndexedDB; import re-seals everything with the importing
+  device's own key.
 - **Server side**: `sync_apply` is `SECURITY DEFINER`, revoked from `anon`,
   granted to `authenticated` only; per-op handlers are owner-only; the
   idempotency ledger has RLS (own rows).
@@ -153,7 +160,8 @@ journals, correct FIFO batch, payment, idempotency).
 - **Sync Center** (`/sync`, also linked from Settings in the sidebar):
   connectivity + queue + conflicts + failed items + recently synced results
   (e.g. the real POS number assigned to an offline order) + local database
-  per-table counts and refresh.
+  per-table counts and refresh + storage persistence/quota status and
+  encrypted backup export/restore (§8).
 - **Header pill**: Online / Offline (n queued) / Syncing… / Sync issues —
   click to open the Sync Center. A slim banner appears under the header
   whenever offline or when attention is needed.
@@ -175,6 +183,8 @@ journals, correct FIFO batch, payment, idempotency).
 |---|---|
 | Crypto (AES-GCM seal/unseal, key mgmt) | `lib/offline/crypto.ts` |
 | IndexedDB schema (outbox/cache/meta/keys + replica tables) | `lib/offline/db.ts` |
+| Persistent-storage request + quota status | `lib/offline/persistence.ts` |
+| Encrypted backup export/import (.sibak) | `lib/offline/backup.ts` |
 | Read-through cache + network-error classification | `lib/offline/cache.ts` |
 | Network monitor | `lib/offline/network.ts` |
 | Outbox (enqueue, resolve actions) | `lib/offline/outbox.ts` |
@@ -184,6 +194,7 @@ journals, correct FIFO batch, payment, idempotency).
 | React provider + hooks | `lib/offline/provider.tsx`, `lib/offline/use-cached-query.ts` |
 | Shared cache keys | `lib/offline/keys.ts` |
 | Status pill / banner / SW registrar | `components/offline/*` |
+| Storage & backup card (Sync Center) | `components/offline/StorageBackupCard.tsx` |
 | Sync Center page | `app/(erp)/sync/page.tsx` |
 | Offline fallback page | `app/offline/page.tsx` |
 | Service worker + manifest | `public/sw.js`, `public/manifest.json` |
@@ -244,3 +255,98 @@ pill — only exists in production builds (`npm run build && npx next start`).
 
 **Code map additions:** `lib/pwa/install.ts`, `components/pwa/*`,
 icon/manifest assets in `public/`.
+
+## 8. Storage persistence & encrypted backups (2026-09-10)
+
+Two durability gaps were closed on top of the shipped offline layer — the
+store was fully **evictable** (no `navigator.storage.persist()` was ever
+requested) and there was **no export path** (a dead browser profile meant the
+local database and its key were gone, with pending offline writes).
+
+### Persistence
+
+`lib/offline/persistence.ts` requests persistent storage once per mount
+(the grant is remembered by the browser; the request shows no prompt). The
+Sync Center's *Local storage & backup* card shows the honest state and a
+retry button, plus usage vs quota from `navigator.storage.estimate()`.
+
+| Browser | Behavior |
+|---|---|
+| Chrome / Edge / Opera | Grants `persist()` for installed PWAs and regularly-used sites; storage then survives disk pressure and "clear browsing data" unless the user targets site data explicitly |
+| Safari (iOS/iPadOS/macOS) | Does not honor `persist()` — storage is best-effort; the card says so and points at backup files instead |
+| Firefox | Supports `persist()`; grants by quota/usage heuristics |
+
+### The .sibak backup file
+
+*Export* (Sync Center → *Export encrypted backup*) unseals the entire local
+database in memory — all 15 replica tables, page caches, replica bookkeeping
+meta and the outbox with every queued change — and seals the bundle with a
+key derived from a **passphrase** (PBKDF2-SHA256, 600 000 iterations,
+random 16-byte salt, AES-256-GCM). The device's non-extractable key cannot
+travel with the file, which is exactly why the passphrase exists: a `.sibak`
+opens on any device, including this one after a browser-profile wipe.
+
+File format (JSON, `.sibak`):
+
+```
+{ format: 'sisolution-offline-backup', version: 1, createdAt, userId,
+  kdf:    { algo: 'PBKDF2-SHA256', iterations: 600000, salt },
+  cipher: { algo: 'AES-GCM-256', iv, ct } }   // ct = bundle JSON
+```
+
+*Restore* semantics (`importBackup`):
+
+- Replica stores are **replaced wholesale**, re-sealed with this device's key;
+  a background replication runs immediately after (the server stays the
+  source of truth).
+- Outbox items are **merged, never overwritten**: ids already present are
+  skipped, resolved items (synced/discarded) are not carried over, and items
+  that were mid-flight in the backup return to `pending`. Importing another
+  device's pending items is safe — the server's idempotency ledger is keyed
+  by `(user, item id)`.
+- Only the same user gets a full restore (cache + queued changes). A backup
+  from a different account restores the **read-only replica only**, after an
+  explicit confirm — a foreign outbox would apply under the wrong account.
+- Wrong passphrase → GCM authentication failure → a clean error, nothing
+  written.
+
+The export saves as a plain download to the Downloads folder (works
+identically in every browser, including Safari). There is deliberately no
+File System Access save picker: Chrome rejects it with the same AbortError
+whether the user cancelled the dialog or the picker is unavailable
+(headless/kiosk/webview), and the two cases are only distinguishable by
+rejection timing — flaky. Move the file anywhere you like afterwards.
+
+### Appendix A — Desktop container (Electron + SQLite): deferred design
+
+Evaluated 2026-09-10 and deliberately **not built**. The question was
+whether the local database should live in a native desktop app (SQLite file
+on disk) instead of browser storage. Findings that shaped the decision:
+
+- The durable gaps above (eviction, backup) are fixed in the PWA itself at
+  a fraction of the cost; the data volume (~8k rows, a few MB) is nowhere
+  near browser quotas.
+- **Direct-write SQLite is architecturally off the table**: all accounting
+  (FIFO, COGS/AR journals, VAT) lives in Postgres triggers and `sync_apply`
+  handlers (§4). A desktop container could only replace the *cache/outbox
+  store*, never the queue-based sync model.
+- POS tablets and phones just got PWA support; the web app must keep
+  working regardless, so a desktop app is an **additive second surface** —
+  build, code-signing and auto-update forever — for marginal gain over a
+  hardened PWA.
+
+If it is ever built, the constraints discovered:
+
+- The swap seam is contained in five modules — `db.ts`, `cache.ts`,
+  `outbox.ts`, `replica.ts`, `crypto.ts`; pages only consume
+  `useCachedQuery` / `enqueueOp` / `replicaRows`. No Dexie usage exists
+  outside `lib/offline/`.
+- Electron fits this codebase (100 % client components; only two trivial
+  API routes — a ping and a super-admin backup proxy); it can run
+  `next start` internally. Tauri would need a static export plus reworking
+  both routes.
+- The non-extractable WebCrypto key must be replaced by OS-keychain storage
+  (Electron `safeStorage`); `sync_apply` stays the only write path.
+- Better-sqlite3 in the main process, database at e.g.
+  `~/Library/Application Support/SI ERP/sisolution.db`; renderer picks the
+  SQLite adapter when running inside the shell, Dexie in the browser.

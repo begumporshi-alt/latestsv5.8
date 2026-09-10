@@ -25,6 +25,7 @@ import type { OutboxItem } from '@/lib/offline/db';
 import { replicaStatus, replicateAll, type ReplicaStatus } from '@/lib/offline/replica';
 import { Database, RefreshCw as RefreshIcon } from 'lucide-react';
 import InstallCard from '@/components/pwa/InstallCard';
+import StorageBackupCard from '@/components/offline/StorageBackupCard';
 
 const OP_LABELS: Record<string, string> = {
   'invoice.create': 'POS sale',
@@ -293,6 +294,9 @@ export default function SyncCenterPage() {
         )}
       </section>
 
+      {/* Storage persistence + encrypted backup file */}
+      <StorageBackupCard />
+
       {/* Install as app */}
       <InstallCard />
 
@@ -303,6 +307,8 @@ export default function SyncCenterPage() {
         </h2>
         <ul className="text-xs text-muted-foreground space-y-1.5">
           <li>• The local database, cached page data and queued changes are all encrypted at rest with AES-256-GCM; the key is a non-extractable CryptoKey held in IndexedDB.</li>
+          <li>• The app requests persistent storage so the browser won&apos;t evict the local database under disk pressure — the storage card above shows whether this browser granted it.</li>
+          <li>• The entire local database can be exported to a passphrase-encrypted .sibak file (AES-256-GCM via PBKDF2) and restored on any device — treat the file like a database dump: it holds all business data.</li>
           <li>• Sync traffic uses the same authenticated TLS channel as the rest of the app.</li>
           <li>• Signing out wipes the local database, cache, sync queue and encryption key from this device.</li>
           <li>• Each queued change carries a unique id the server remembers, so a repeated sync can never double-apply it.</li>
