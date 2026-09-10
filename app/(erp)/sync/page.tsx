@@ -23,7 +23,8 @@ import {
 } from '@/lib/offline/outbox';
 import type { OutboxItem } from '@/lib/offline/db';
 import { replicaStatus, replicateAll, type ReplicaStatus } from '@/lib/offline/replica';
-import { Database, RefreshCw as RefreshIcon } from 'lucide-react';
+import { getWarmStatus, runWarm, type WarmStatus } from '@/lib/offline/warm';
+import { Database, FileBarChart, RefreshCw as RefreshIcon } from 'lucide-react';
 import InstallCard from '@/components/pwa/InstallCard';
 import StorageBackupCard from '@/components/offline/StorageBackupCard';
 
@@ -57,10 +58,12 @@ export default function SyncCenterPage() {
   const [items, setItems] = useState<OutboxItem[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [replica, setReplica] = useState<ReplicaStatus | null>(null);
+  const [warm, setWarm] = useState<WarmStatus | null>(null);
 
   const refresh = useCallback(() => {
     void listOutbox().then(setItems);
     void replicaStatus().then(setReplica);
+    void getWarmStatus().then(setWarm);
     refreshCounts();
   }, [refreshCounts]);
 
@@ -266,7 +269,7 @@ export default function SyncCenterPage() {
             </span>
           </h2>
           <button
-            onClick={() => { void replicateAll().then(refresh); }}
+            onClick={() => { void replicateAll(true).then(refresh); }}
             disabled={!online || (replica?.replicating ?? false)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg hover:bg-muted transition disabled:opacity-50"
           >
@@ -296,6 +299,40 @@ export default function SyncCenterPage() {
             {online
               ? 'Building the local database… the first refresh runs automatically.'
               : 'Offline — the local database will refresh when you reconnect.'}
+          </p>
+        )}
+      </section>
+
+      {/* Pre-warmed report views */}
+      <section className="bg-white rounded-xl border border-border p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+            <FileBarChart className="w-4 h-4 text-amber-500" /> Offline Reports
+            <span className="text-xs font-normal text-muted-foreground">
+              — report pages (P&amp;L, trial balance, aging, balance sheet) compute on the server; their default views are saved here automatically
+            </span>
+          </h2>
+          <button
+            onClick={() => { void runWarm(true).then(() => refresh()); }}
+            disabled={!online || (warm?.running ?? false)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg hover:bg-muted transition disabled:opacity-50"
+          >
+            <RefreshIcon className={`w-3.5 h-3.5 ${warm?.running ? 'animate-spin' : ''}`} />
+            {warm?.running ? 'Preparing…' : 'Prepare now'}
+          </button>
+        </div>
+        {warm && warm.lastRun ? (
+          <p className="text-xs text-muted-foreground">
+            Report views prepared {timeAgo(warm.lastRun)}
+            {warm.calls !== null && ` · ${warm.calls.toLocaleString()} queries saved`}
+            {warm.failures ? ` · ${warm.failures} failed` : ''}
+            {' '}— runs automatically after each database refresh. Changing a period or filter offline still needs one online visit of that view.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground py-2 text-center">
+            {online
+              ? 'Preparing report views… the first run follows the database refresh above.'
+              : 'Offline — report views prepare automatically when you reconnect.'}
           </p>
         )}
       </section>

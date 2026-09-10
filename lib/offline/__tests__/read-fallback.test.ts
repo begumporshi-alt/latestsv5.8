@@ -35,7 +35,12 @@ jest.mock('../cache', () => {
   };
 });
 
+jest.mock('../replica-query', () => ({
+  runReplicaQuery: jest.fn(),
+}));
+
 import { withOfflineReads, subscribeOfflineMiss } from '../read-fallback';
+import { runReplicaQuery } from '../replica-query';
 import { networkMonitor } from '../network';
 
 interface FakeResult {
@@ -147,11 +152,13 @@ const OFFLINE = { online: false, lastChangeAt: 0, lastProbeAt: null };
 
 let getStateSpy: jest.SpyInstance;
 let markOfflineSpy: jest.SpyInstance;
+const mockedReplica = runReplicaQuery as jest.Mock;
 
 beforeEach(() => {
   mockedCache.__store.clear();
   mockedCache.cacheGet.mockClear();
   mockedCache.cachePut.mockClear();
+  mockedReplica.mockReset(); // default: engine declines → offline notice
   getStateSpy = jest.spyOn(networkMonitor, 'getState');
   markOfflineSpy = jest.spyOn(networkMonitor, 'markOffline').mockImplementation(() => {});
   getStateSpy.mockReturnValue(ONLINE);
@@ -262,6 +269,62 @@ describe('read fallback — offline', () => {
     expect(res.status).toBe(0);
     expect(misses).toEqual(['journal_lines']);
     expect(client.stats.executed).toBe(0);
+  });
+
+  test('no cached copy, but the replica engine can answer → served from the local database', async () => {
+    const client = makeFakeClient();
+    const wrapped = withOfflineReads(client as never) as unknown as typeof client;
+    getStateSpy.mockReturnValue(OFFLINE);
+
+    const mockedReplica = runReplicaQuery as jest.Mock;
+    mockedReplica.mockResolvedValueOnce({ data: [{ id: 'i1', total: 5 }], count: 1 });
+
+    const misses: string[] = [];
+    const unsubscribe = subscribeOfflineMiss((info) => misses.push(info.target));
+
+    const res: any = await (wrapped as any).from('invoices').select('*').eq('status', 'paid');
+    unsubscribe();
+
+    expect(res.data).toEqual([{ id: 'i1', total: 5 }]);
+    expect(res.count).toBe(1);
+    expect(res.error).toBeNull();
+    expect(res.offline).toBe(true);
+    expect(misses).toEqual([]); // no notice — the replica answered
+    expect(client.stats.executed).toBe(0); // never touched the network
+    // The engine got the table name and the full recorded chain
+    expect(mockedReplica).toHaveBeenCalledWith('invoices', [
+      ['select', ['*']],
+      ['eq', ['status', 'paid']],
+    ]);
+  });
+
+  test('the replica engine declining (null) still surfaces the offline notice', async () => {
+    const client = makeFakeClient();
+    const wrapped = withOfflineReads(client as never) as unknown as typeof client;
+    getStateSpy.mockReturnValue(OFFLINE);
+
+    const mockedReplica = runReplicaQuery as jest.Mock;
+    mockedReplica.mockResolvedValueOnce(null);
+
+    const misses: string[] = [];
+    const unsubscribe = subscribeOfflineMiss((info) => misses.push(info.target));
+    const res: any = await (wrapped as any).from('quotations').select('*');
+    unsubscribe();
+
+    expect(res.error.code).toBe('OFFLINE_NO_CACHE');
+    expect(misses).toEqual(['quotations']);
+  });
+
+  test('a write never consults the replica engine', async () => {
+    const client = makeFakeClient();
+    const wrapped = withOfflineReads(client as never) as unknown as typeof client;
+    getStateSpy.mockReturnValue(OFFLINE);
+    const mockedReplica = runReplicaQuery as jest.Mock;
+
+    client.stats.next = { data: [{ id: 'p9' }], error: null, count: null, status: 201, statusText: 'Created' };
+    await (wrapped as any).from('products').insert({ id: 'p9', name: 'New' });
+
+    expect(mockedReplica).not.toHaveBeenCalled();
   });
 });
 

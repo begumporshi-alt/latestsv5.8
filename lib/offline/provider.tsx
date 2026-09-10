@@ -24,6 +24,7 @@ import { networkMonitor } from './network';
 import { syncEngine, type SyncEngineState } from './sync';
 import { outboxCounts, subscribeOutbox, type OutboxCounts } from './outbox';
 import { startReplicator, subscribeReplica } from './replica';
+import { startWarming } from './warm';
 import { requestPersistentStorage } from './persistence';
 
 export interface OfflineContextValue {
@@ -66,6 +67,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void syncEngine.start();
     void startReplicator();
+    void startWarming(); // pre-warm RPC-driven views after replica refreshes
     void requestPersistentStorage(); // grant is remembered; free to request every mount
     const unsubNet = networkMonitor.subscribe((s) => setOnline(s.online));
     const unsubEngine = syncEngine.subscribe(setEngine);

@@ -5,7 +5,8 @@ last-known data**, page-to-page navigation never dead-ends, POS sales and the
 other write flows queue encrypted, and everything synchronizes automatically
 the moment connectivity returns.
 
-**Status:** shipped 2026-09-10 (read-fallback + offline navigation completed).
+**Status:** shipped 2026-09-10; offline coverage made independent of
+page-visit history 2026-09-11 (replica query engine + report pre-warm).
 End-to-end test report: [offline-test-report.md](offline-test-report.md).
 
 ---
@@ -19,13 +20,15 @@ End-to-end test report: [offline-test-report.md](offline-test-report.md).
 | Customers | Full CRUD; quick-add from the POS is immediately sellable (offline-created customers get a client UUID the server honors). |
 | Employees | Full CRUD, including termination. |
 | Attendance | Mark status, edit check-in/out times and notes per day. |
-| **Every other page** | Dashboard, sales, purchases, quotations, accounting, reports, settings, CRM details … each shows its **last successfully loaded data** (the read fallback caches every page query). A page whose data was never loaded on this device shows an explicit "not available offline yet" notice — never a blank screen. |
+| **Every other page** | Dashboard, sales, purchases, quotations, accounting, reports, settings, CRM details … table reads are answered from the **local database** by a query engine, so pages work offline even if never opened on this device; server-computed report views (P&L, trial balance, aging, balance sheet, cash flow, accounting overview) show their **pre-warmed default view**. Changing a period/filter offline still needs one online visit of that view — shown as an explicit notice, never a blank screen. |
 | Navigation | Every route's shell is precached, so clicking through the app offline always lands on a working page (client-side navigation falls back to a full page load served from the cache). |
-| Sync Center | Queue review, conflict resolution, retry/discard, local database status. |
+| Sync Center | Queue review, conflict resolution, retry/discard, local database status, offline-report preparation. |
 
-Accounting reads (journal, P&L, balance sheet, reports) and purchase-side
-modules are **server-computed**: offline they display their last successful
-result (clearly marked), and their write actions remain online-only — see §4.
+**No page visits are required.** Signing in once while online is enough: the
+replicator downloads complete copies of every read table and the background
+warm list saves the default report views — after that every page works
+offline, even ones never opened on this device. Write actions for the
+server-computed modules (accounting, purchasing) remain online-only — see §4.
 
 ## 2. Architecture
 
@@ -56,33 +59,64 @@ result (clearly marked), and their write actions remain online-only — see §4.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 Reads — four layers, always local-first
+### 2.1 Reads — six layers, always local-first
 
 1. **The app-wide read fallback** (`lib/offline/read-fallback.ts`): the
    Supabase client every page imports is wrapped so a read behaves like this —
    *online*: exactly as before (live result, nothing served stale), with the
    result cached under a key derived from the table and the exact filter
    chain; *offline or network failure*: the last result for that same query is
-   served instantly instead of an error. This is what gives **every** page its
-   last-known data without per-page code. Writes (`insert/update/delete/
+   served instantly instead of an error. Writes (`insert/update/delete/
    upsert`) and non-read RPCs (`create_*`, `post_*`, `sync_apply`, …) are
    never cached, never faked — they always go to the network or fail loudly.
    Results are sealed per user, pruned LRU-style (kept ≤ 400 queries), and a
-   query with no cached copy raises the "not available offline yet" notice
-   instead of silently rendering empty.
-2. **Page caches** (`lib/offline/cache.ts`): the curated datasets the
+   query with no cached copy falls through to layer 2 before raising the
+   "not available offline" notice.
+2. **The replica query engine** (`lib/offline/replica-query.ts`): when a
+   `.from(table)` read has no cached copy, the recorded postgrest method chain
+   is replayed against the local database — filters (`eq/neq/gt/gte/lt/lte/
+   in/ilike/is`, `.or()` expressions incl. nested `and(...)` and `in.(…)`
+   lists), ordering, `limit`/`range`, `single`/`maybeSingle`,
+   `{count:'exact', head:true}`, and relation embeds
+   (`customer:customers(name)`, `items:invoice_items(*)`, `!inner`), including
+   filters on embedded parents (`journal_entries.entry_date` on a
+   journal-lines query) — all resolved through the schema's foreign keys.
+   **Anything it cannot interpret returns "unsupported"**, and the caller
+   falls back to the notice: it can never return wrong data, only decline.
+   This is what makes offline coverage independent of page-visit history.
+3. **Page caches** (`lib/offline/cache.ts`): the curated datasets the
    offline-capable pages load (POS catalog, CRM list, inventory aggregate,
    attendance per day, …) with a TTL; online a fresh cache is served instantly
-   and refreshed in the background.
-3. **The local database** (`lib/offline/replica.ts`): complete, encrypted
-   copies of 18 core tables (products, stock counters, product units,
-   customers, invoices, invoice items, payments, sales returns, employees,
-   attendance, warehouses, brands, categories, payment methods, suppliers,
-   app settings, store credits, FIFO batches). Refreshed fully on login, on
-   reconnection, and every 15 minutes while online. This is what makes offline
-   coverage independent of which pages were visited while online — the POS
-   builds its catalog from the replica when no page cache exists yet.
-4. **Service worker** (`public/sw.js`, production builds): precaches each
+   and refreshed in the background. Offline with no page cache, `cachedQuery`
+   runs the fetcher anyway — the fetcher's reads go through the wrapped
+   client, so the replica query engine answers them; only a non-empty result
+   is cached, so a failed read can't poison the key.
+4. **The local database** (`lib/offline/replica.ts`): complete, encrypted
+   copies of **every table the pages read** (48 tables: products, stock
+   counters, units, customers, invoices + items, payments, sales returns +
+   items, employees, attendance, warehouses, brands, categories, payment
+   methods, suppliers, app settings, store credits, FIFO batches, accounts,
+   journal entries + lines, stock movements, quotations + items, purchase
+   orders + items, reminders, returns, GRNs, deliveries + items, advances +
+   refunds + applications, customer notes, store-credit redemptions, cost
+   price history, product sizes/colors, unit types, projects, activity logs,
+   profiles, online orders, bank reconciliation items, reconciliation log).
+   Refreshed fully on login, on reconnection and every 15 minutes while
+   online. Each table's clear+rewrite is a single transaction, so concurrent
+   readers always see the old or the new rows, never an empty store; a run
+   that completed within the last minute is skipped unless forced (the app
+   start fires several triggers).
+5. **Report pre-warm** (`lib/offline/warm.ts`): pages that compute through SQL
+   functions (P&L, trial balance, aging, balance sheet, cash flow, accounting
+   overview, dashboard cards, sales/reports COGS) can't be derived locally —
+   so their **default-view RPCs** run in the background with the exact
+   arguments the pages compute on first load (through the wrapped client, so
+   each result lands in the very cache key the page will look up offline).
+   Triggered after each completed replication, throttled to once per 6 h plus
+   a re-run whenever the local day changes; also a "Prepare now" button in
+   the Sync Center. Changing a period or filter offline still needs one
+   online visit of that view.
+6. **Service worker** (`public/sw.js`, production builds): precaches each
    deploy — every route's HTML **and every build asset** (App Router loads
    route chunks dynamically, so route HTML alone would leave never-visited
    routes unable to render) — and serves navigations network-first with the
@@ -178,15 +212,17 @@ journals, correct FIFO batch, payment, idempotency).
 - **Sync Center** (`/sync`, also linked from Settings in the sidebar):
   connectivity + queue + conflicts + failed items + recently synced results
   (e.g. the real POS number assigned to an offline order) + local database
-  per-table counts and refresh + storage persistence/quota status and
-  encrypted backup export/restore (§8).
+  per-table counts and refresh + offline-report preparation status +
+  storage persistence/quota status and encrypted backup export/restore (§8).
 - **Header pill**: Online / Offline (n queued) / Syncing… / Sync issues —
   click to open the Sync Center. A slim banner appears under the header
   whenever offline or when attention is needed.
-- **First-use**: open the app once while online — the local database, page
-  caches and the offline shell build automatically (a minute for the full
-  catalog). Pages opened that first day keep their data offline; a page never
-  opened shows the "not available offline yet" notice instead of a blank one.
+- **First-use**: sign in once while online — the local database (all read
+  tables), the default report views and the offline shell build automatically
+  (about two minutes for the full catalog on a cold device). After that every
+  page works offline, including pages never opened on this device. The only
+  offline gaps are non-default report periods/filters (one online visit of
+  that view saves it) — shown as an explicit notice, never a blank page.
 - **Offline sessions**: the app remembers the last signed-in user, so an
   expired access token does not lock the device out — it opens with a
   "Working offline as …" banner and full local data access. Queued changes
@@ -194,7 +230,8 @@ journals, correct FIFO batch, payment, idempotency).
   sign-out wipes the local database and the remembered user.
 - **Known behavior**: the local database is a point-in-time snapshot; rows
   created on the server after the last refresh appear after the next refresh
-  (≤ 15 min online, or on reconnection).
+  (≤ 15 min online, or on reconnection). Pre-warmed report views re-run when
+  the day changes (date-based defaults move with the calendar).
 - **Deploys**: `npm run build` generates `public/precache-manifest.json`
   (route list + build id + the full asset list) and the service worker warms
   the new generation on the next app load (checked every few minutes while
@@ -214,6 +251,8 @@ journals, correct FIFO batch, payment, idempotency).
 | Encrypted backup export/import (.sibak) | `lib/offline/backup.ts` |
 | Read-through cache + network-error classification | `lib/offline/cache.ts` |
 | **App-wide read fallback (wraps the Supabase client)** | `lib/offline/read-fallback.ts`, `lib/supabase.ts`, `lib/supabase-raw.ts` |
+| **Replica query engine (answers any page's `.from()` read offline)** | `lib/offline/replica-query.ts` |
+| **Report pre-warm (default-view RPCs saved for offline)** | `lib/offline/warm.ts` |
 | **Offline session continuity (last-known user)** | `lib/offline/session.ts` |
 | Read-result unwrapping (prevents caching empty lists over good data) | `lib/offline/read-result.ts` |
 | Network monitor | `lib/offline/network.ts` |

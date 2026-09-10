@@ -114,7 +114,23 @@ export async function cachedQuery<T>(
     if (cached !== null) {
       return { data: cached, fresh: false, cachedAt: row!.updatedAt, offline: true }
     }
-    throw new OfflineError(`Offline with no cached copy of "${key}"`)
+    // No page cache — but the app-wide client may still answer this fetcher
+    // from the local replica database (lib/offline/read-fallback), which
+    // never touches the network while the monitor is offline. Only a
+    // non-empty result is cached, so a failed read can't poison the key.
+    try {
+      const data = await fetcher()
+      if (Array.isArray(data) ? data.length > 0 : data !== null && data !== undefined) {
+        void cachePut(key, data)
+      }
+      return { data, fresh: false, cachedAt: null, offline: true }
+    } catch (err) {
+      if (err instanceof OfflineError) throw err
+      if (isNetworkError(err)) {
+        throw new OfflineError(`Offline with no cached copy of "${key}"`)
+      }
+      throw err
+    }
   }
 
   if (cached !== null && row && Date.now() - row.updatedAt < ttlMs) {

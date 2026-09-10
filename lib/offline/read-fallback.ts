@@ -11,11 +11,15 @@
  *                              exact table + filter chain) and returned as-is.
  *     offline                → the cached result for that exact query is
  *                              served immediately (no multi-second postgrest
- *                              retry stall); with no cached copy the caller
- *                              gets a postgrest-shaped error and the UI shows
- *                              the "not available offline" notice.
- *     network-classified error (resolved OR thrown) → mark offline + serve the
- *                              cached result.
+ *                              retry stall); with no cached copy, `.from()`
+ *                              reads are answered from the local replica
+ *                              database (lib/offline/replica-query.ts) — so
+ *                              pages work offline even if never opened while
+ *                              online. Only if that also declines does the
+ *                              caller get a postgrest-shaped error and the UI
+ *                              shows the "not available offline" notice.
+ *     network-classified error (resolved OR thrown) → mark offline + the same
+ *                              fallback chain (cache → replica → notice).
  *
  *   writes (insert/update/delete/upsert) and non-allowlisted RPCs
  *     always go to the network untouched — a queued or attempted write must
@@ -28,6 +32,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { cacheGet, cachePut, isNetworkError } from './cache'
 import { networkMonitor } from './network'
 import { getDB } from './db'
+import { runReplicaQuery } from './replica-query'
 
 /** Builder methods that turn a chain into a write — never intercepted. */
 const MUTATION_METHODS = new Set(['insert', 'update', 'delete', 'upsert'])
@@ -185,6 +190,25 @@ function offlineNoCache(target: string): { data: null; error: { message: string;
   }
 }
 
+/**
+ * Serve a `.from(table)` read from the local replica database. Returns null
+ * when the query uses something the interpreter can't replay or the table
+ * isn't replicated — the caller then falls back to the offline notice.
+ */
+async function replicaFallback(state: BuilderState): Promise<any | null> {
+  if (state.kind !== 'from') return null
+  const result = await runReplicaQuery(state.name, state.steps)
+  if (!result) return null
+  return {
+    data: result.data,
+    count: result.count,
+    error: null,
+    status: 200,
+    statusText: 'Offline (local database)',
+    offline: true,
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Execution                                                           */
 /* ------------------------------------------------------------------ */
@@ -203,6 +227,8 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
   if (fallbackAllowed && !networkMonitor.getState().online) {
     const cached = await cacheGet<any>(key)
     if (cached) return { ...cached, offline: true }
+    const fromReplica = await replicaFallback(state)
+    if (fromReplica) return fromReplica
     emitOfflineMiss(target)
     return offlineNoCache(target)
   }
@@ -217,6 +243,8 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
         networkMonitor.markOffline()
         const cached = await cacheGet<any>(key)
         if (cached) return { ...cached, offline: true }
+        const fromReplica = await replicaFallback(state)
+        if (fromReplica) return fromReplica
         emitOfflineMiss(target)
       }
       return res
@@ -229,6 +257,8 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
       networkMonitor.markOffline()
       const cached = await cacheGet<any>(key)
       if (cached) return { ...cached, offline: true }
+      const fromReplica = await replicaFallback(state)
+      if (fromReplica) return fromReplica
       emitOfflineMiss(target)
       return offlineNoCache(target)
     }

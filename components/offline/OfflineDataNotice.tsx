@@ -3,9 +3,11 @@
 /**
  * Shown when a page read had no offline copy (lib/offline/read-fallback).
  *
- * Without this, a page whose data was never loaded on this device while
- * online would just render empty — indistinguishable from "the app is
- * broken". The notice says exactly what happened and what fixes it.
+ * Most reads now fall back to the local replica database, so this notice only
+ * appears for views the replica can't answer — a report computed by a server
+ * function with a period/filter combination that was never saved. Without
+ * this banner such a page would just render empty — indistinguishable from
+ * "the app is broken". The notice says exactly what happened and what fixes it.
  */
 
 import { useEffect, useState } from 'react';
@@ -40,8 +42,8 @@ export default function OfflineDataNotice() {
     <div className="flex items-center gap-2 px-4 py-1.5 text-xs font-medium border-b bg-slate-100 text-slate-700 border-slate-200">
       <CloudOff className="w-3.5 h-3.5 shrink-0" />
       <span className="truncate">
-        Some data here isn&rsquo;t available offline yet — it was never opened on this device while online.
-        Reconnect once and reload to save a copy.
+        This specific view isn&rsquo;t available offline yet — its period or filters were never
+        saved on this device. Reconnect once and reload to save a copy.
       </span>
       <button
         onClick={() => window.location.reload()}

@@ -90,6 +90,41 @@ class OfflineDB extends Dexie {
       replica_customer_store_credits: 'id, customer_id',
       replica_inventory_batches: 'id, product_id, warehouse_id',
     })
+    // v4: accounting, purchasing, delivery and CRM history — the tables the
+    // replica query engine (lib/offline/replica-query.ts) answers page reads
+    // from, so offline coverage no longer depends on page-visit history.
+    this.version(4).stores({
+      replica_sales_return_items: 'id, sales_return_id',
+      replica_accounts: 'id',
+      replica_journal_entries: 'id, entry_date',
+      replica_journal_lines: 'id, journal_entry_id, account_id',
+      replica_stock_movements: 'id, product_id',
+      replica_quotations: 'id, customer_id',
+      replica_quotation_items: 'id, quotation_id',
+      replica_purchase_orders: 'id, supplier_id',
+      replica_purchase_order_items: 'id, purchase_order_id',
+      replica_purchase_reminders: 'id',
+      replica_purchase_returns: 'id, purchase_order_id',
+      replica_purchase_return_items: 'id, purchase_return_id',
+      replica_goods_receipt_notes: 'id, purchase_order_id',
+      replica_deliveries: 'id, customer_id',
+      replica_delivery_items: 'id, delivery_id',
+      replica_customer_advances: 'id, customer_id',
+      replica_customer_advance_refunds: 'id, advance_id',
+      replica_customer_advance_applications: 'id, advance_id',
+      replica_customer_notes: 'id, customer_id',
+      replica_store_credit_redemptions: 'id, store_credit_id',
+      replica_cost_price_history: 'id, product_id, invoice_id',
+      replica_product_sizes: 'id, product_id',
+      replica_product_colors: 'id, product_id',
+      replica_unit_types: 'id',
+      replica_projects: 'id',
+      replica_activity_logs: 'id, created_at',
+      replica_profiles: 'id',
+      replica_online_orders: 'id',
+      replica_bank_reconciliation_items: 'id, journal_line_id',
+      replica_inventory_reconciliation_log: 'id',
+    })
   }
 }
 
