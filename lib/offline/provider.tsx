@@ -24,6 +24,7 @@ import { networkMonitor } from './network';
 import { syncEngine, type SyncEngineState } from './sync';
 import { outboxCounts, subscribeOutbox, type OutboxCounts } from './outbox';
 import { startReplicator, subscribeReplica } from './replica';
+import { requestPersistentStorage } from './persistence';
 
 export interface OfflineContextValue {
   online: boolean
@@ -65,6 +66,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void syncEngine.start();
     void startReplicator();
+    void requestPersistentStorage(); // grant is remembered; free to request every mount
     const unsubNet = networkMonitor.subscribe((s) => setOnline(s.online));
     const unsubEngine = syncEngine.subscribe(setEngine);
     const unsubOutbox = subscribeOutbox(refreshCounts);
