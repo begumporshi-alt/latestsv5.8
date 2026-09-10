@@ -38,7 +38,9 @@ export default function OfflineBanner() {
       )}
       <span className="truncate">
         {!online
-          ? `Offline — working from cached data.${waiting > 0 ? ` ${waiting} change${waiting > 1 ? 's' : ''} queued for sync.` : ''}`
+          ? process.env.NODE_ENV === 'development'
+            ? 'Offline (development build) — this page works from cached data, but opening other pages offline needs a production build (npm run build && npm start).'
+            : `Offline — working from cached data.${waiting > 0 ? ` ${waiting} change${waiting > 1 ? 's' : ''} queued for sync.` : ''}`
           : engine.running
             ? 'Syncing queued changes with the server…'
             : `Sync needs attention: ${counts.conflict} conflict${counts.conflict === 1 ? '' : 's'}, ${counts.failed} failed.`}

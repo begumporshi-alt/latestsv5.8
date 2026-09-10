@@ -5,7 +5,10 @@
  * hydrated. Registration is skipped on non-secure origins (SW requirement)
  * and in dev builds: Next dev serves non-hashed chunk URLs, so a cache-first
  * SW would serve stale code across edits. Production bundles are
- * content-hashed and immutable — safe to cache.
+ * content-hashed and immutable — safe to cache. In dev, any worker left
+ * over from a previous production run on the same port is unregistered and
+ * its caches cleared (it would serve stale prod chunks against the dev
+ * server).
  *
  * Also surfaces SW updates: sw.js calls skipWaiting + clients.claim, so a
  * deployed change takes over already-open pages and fires controllerchange.
@@ -21,7 +24,28 @@ export default function ServiceWorkerRegistrar() {
     if (typeof window === 'undefined') return;
     if (!('serviceWorker' in navigator)) return;
     if (!window.isSecureContext) return;
-    if (process.env.NODE_ENV === 'development') return;
+
+    if (process.env.NODE_ENV === 'development') {
+      // A service worker left over from a previous production run on this
+      // origin (same port) would keep serving OLD prod chunks against the
+      // dev server — stale code, broken offline behavior, blank pages.
+      // Dev never registers its own worker, so any registration found here
+      // is stale by definition: remove it and its caches.
+      void (async () => {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) await r.unregister();
+        // Always clear: a controlling worker keeps caching until the next
+        // reload, so leftovers can survive the unregister on this load.
+        for (const k of await caches.keys()) await caches.delete(k);
+        if (regs.length === 0) return;
+        toast({
+          title: 'Removed a stale service worker',
+          description:
+            'A service worker from a previous production build was still controlling this port. It has been removed — offline mode needs a production build (npm run build && npm start).',
+        });
+      })();
+      return;
+    }
 
     let hadController = Boolean(navigator.serviceWorker.controller);
     const onControllerChange = () => {
