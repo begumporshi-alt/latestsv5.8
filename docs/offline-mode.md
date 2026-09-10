@@ -1,11 +1,12 @@
 # Offline Mode — Architecture & Operations
 
-SI Building Solutions ERP works fully offline for its core modules — POS sales,
-inventory/product management, customers, employees and attendance — using a
-complete local database plus an encrypted write queue, and synchronizes
-automatically the moment connectivity returns.
+SI Building Solutions ERP works offline end to end: **every page keeps its
+last-known data**, page-to-page navigation never dead-ends, POS sales and the
+other write flows queue encrypted, and everything synchronizes automatically
+the moment connectivity returns.
 
-**Status:** shipped 2026-09-10. End-to-end test report: [offline-test-report.md](offline-test-report.md).
+**Status:** shipped 2026-09-10 (read-fallback + offline navigation completed).
+End-to-end test report: [offline-test-report.md](offline-test-report.md).
 
 ---
 
@@ -18,11 +19,13 @@ automatically the moment connectivity returns.
 | Customers | Full CRUD; quick-add from the POS is immediately sellable (offline-created customers get a client UUID the server honors). |
 | Employees | Full CRUD, including termination. |
 | Attendance | Mark status, edit check-in/out times and notes per day. |
-| Sales list | Review invoices (cached per period window). |
+| **Every other page** | Dashboard, sales, purchases, quotations, accounting, reports, settings, CRM details … each shows its **last successfully loaded data** (the read fallback caches every page query). A page whose data was never loaded on this device shows an explicit "not available offline yet" notice — never a blank screen. |
+| Navigation | Every route's shell is precached, so clicking through the app offline always lands on a working page (client-side navigation falls back to a full page load served from the cache). |
 | Sync Center | Queue review, conflict resolution, retry/discard, local database status. |
 
 Accounting reads (journal, P&L, balance sheet, reports) and purchase-side
-modules remain online-only by design — see §4.
+modules are **server-computed**: offline they display their last successful
+result (clearly marked), and their write actions remain online-only — see §4.
 
 ## 2. Architecture
 
@@ -53,26 +56,41 @@ modules remain online-only by design — see §4.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.1 Reads — three layers, always local-first
+### 2.1 Reads — four layers, always local-first
 
-1. **Page caches** (`lib/offline/cache.ts`): each dataset a page loads is
-   sealed (AES-GCM) into IndexedDB with a TTL. Online, a fresh-enough cache is
-   served instantly and refreshed in the background; offline, the last copy is
-   served with a stale banner.
-2. **The local database** (`lib/offline/replica.ts`): complete, encrypted
-   copies of 15 core tables (8,000+ rows: products, stock counters, product
-   units, customers, invoices, invoice items, payments, sales returns,
-   employees, attendance, warehouses, brands, categories, payment methods,
-   suppliers). Refreshed fully on login, on reconnection, and every 15 minutes
-   while online. This is what makes offline coverage independent of which
-   pages were visited while online — the POS builds its catalog from the
-   replica when no page cache exists yet.
-3. **Service worker** (`public/sw.js`, production builds): caches the app
-   shell so the application itself loads offline. Navigations are
-   network-first (fresh while online, cached copy when offline); immutable
-   `_next/static` assets are cache-first. In dev it is not registered —
-   Next dev serves non-hashed chunk URLs and a cache-first SW would serve
-   stale code.
+1. **The app-wide read fallback** (`lib/offline/read-fallback.ts`): the
+   Supabase client every page imports is wrapped so a read behaves like this —
+   *online*: exactly as before (live result, nothing served stale), with the
+   result cached under a key derived from the table and the exact filter
+   chain; *offline or network failure*: the last result for that same query is
+   served instantly instead of an error. This is what gives **every** page its
+   last-known data without per-page code. Writes (`insert/update/delete/
+   upsert`) and non-read RPCs (`create_*`, `post_*`, `sync_apply`, …) are
+   never cached, never faked — they always go to the network or fail loudly.
+   Results are sealed per user, pruned LRU-style (kept ≤ 400 queries), and a
+   query with no cached copy raises the "not available offline yet" notice
+   instead of silently rendering empty.
+2. **Page caches** (`lib/offline/cache.ts`): the curated datasets the
+   offline-capable pages load (POS catalog, CRM list, inventory aggregate,
+   attendance per day, …) with a TTL; online a fresh cache is served instantly
+   and refreshed in the background.
+3. **The local database** (`lib/offline/replica.ts`): complete, encrypted
+   copies of 18 core tables (products, stock counters, product units,
+   customers, invoices, invoice items, payments, sales returns, employees,
+   attendance, warehouses, brands, categories, payment methods, suppliers,
+   app settings, store credits, FIFO batches). Refreshed fully on login, on
+   reconnection, and every 15 minutes while online. This is what makes offline
+   coverage independent of which pages were visited while online — the POS
+   builds its catalog from the replica when no page cache exists yet.
+4. **Service worker** (`public/sw.js`, production builds): precaches each
+   deploy — every route's HTML **and every build asset** (App Router loads
+   route chunks dynamically, so route HTML alone would leave never-visited
+   routes unable to render) — and serves navigations network-first with the
+   cached shell as fallback. Generations are stamped with the build id: a
+   deploy builds the new generation beside the old one and switches over, so
+   pages open during a deploy never mix old HTML with new chunks. In dev the
+   SW is not registered — Next dev serves non-hashed chunk URLs and a
+   cache-first SW would serve stale code.
 
 ### 2.2 Writes — the outbox pattern
 
@@ -165,14 +183,23 @@ journals, correct FIFO batch, payment, idempotency).
 - **Header pill**: Online / Offline (n queued) / Syncing… / Sync issues —
   click to open the Sync Center. A slim banner appears under the header
   whenever offline or when attention is needed.
-- **First-use**: open the app once while online — the local database and
-  page caches build automatically (a minute for the full catalog). Until
-  then offline pages show a "no cached copy" notice.
+- **First-use**: open the app once while online — the local database, page
+  caches and the offline shell build automatically (a minute for the full
+  catalog). Pages opened that first day keep their data offline; a page never
+  opened shows the "not available offline yet" notice instead of a blank one.
+- **Offline sessions**: the app remembers the last signed-in user, so an
+  expired access token does not lock the device out — it opens with a
+  "Working offline as …" banner and full local data access. Queued changes
+  sync once the token is refreshed (reconnect or one online visit). A real
+  sign-out wipes the local database and the remembered user.
 - **Known behavior**: the local database is a point-in-time snapshot; rows
-  created on the server after the last refresh appear after the next
-  refresh (≤ 15 min online, or on reconnection). Sessions survive offline
-  until the access token needs refreshing; a hard-expired session requires
-  one online visit to re-authenticate before queued changes can sync.
+  created on the server after the last refresh appear after the next refresh
+  (≤ 15 min online, or on reconnection).
+- **Deploys**: `npm run build` generates `public/precache-manifest.json`
+  (route list + build id + the full asset list) and the service worker warms
+  the new generation on the next app load (checked every few minutes while
+  online). Because the SW's own bytes do not change per deploy, a client picks
+  the new build up via that manifest version check — no reinstall needed.
 - **Dev mode**: the service worker intentionally does not register during
   `next dev` (stale-chunk hazard). Test offline page loads against a
   production build (`npm run build && npm start`).
@@ -186,6 +213,9 @@ journals, correct FIFO batch, payment, idempotency).
 | Persistent-storage request + quota status | `lib/offline/persistence.ts` |
 | Encrypted backup export/import (.sibak) | `lib/offline/backup.ts` |
 | Read-through cache + network-error classification | `lib/offline/cache.ts` |
+| **App-wide read fallback (wraps the Supabase client)** | `lib/offline/read-fallback.ts`, `lib/supabase.ts`, `lib/supabase-raw.ts` |
+| **Offline session continuity (last-known user)** | `lib/offline/session.ts` |
+| Read-result unwrapping (prevents caching empty lists over good data) | `lib/offline/read-result.ts` |
 | Network monitor | `lib/offline/network.ts` |
 | Outbox (enqueue, resolve actions) | `lib/offline/outbox.ts` |
 | Sync engine (ordered drain, retries, conflicts) | `lib/offline/sync.ts` |
@@ -193,13 +223,15 @@ journals, correct FIFO batch, payment, idempotency).
 | Optimistic cache patches after offline writes | `lib/offline/optimistic.ts` |
 | React provider + hooks | `lib/offline/provider.tsx`, `lib/offline/use-cached-query.ts` |
 | Shared cache keys | `lib/offline/keys.ts` |
-| Status pill / banner / SW registrar | `components/offline/*` |
+| Status pill / banner / "no offline copy" notice / SW registrar | `components/offline/*` |
 | Storage & backup card (Sync Center) | `components/offline/StorageBackupCard.tsx` |
 | Sync Center page | `app/(erp)/sync/page.tsx` |
 | Offline fallback page | `app/offline/page.tsx` |
+| **Error boundaries (offline-aware, no more white screens)** | `app/global-error.tsx`, `app/(erp)/error.tsx` |
 | Service worker + manifest | `public/sw.js`, `public/manifest.json` |
+| **Precache manifest build step** | `scripts/build-sw-routes.mjs` (runs from `npm run build`) |
 | Server: sync_apply + handlers + idempotency ledger | `supabase/migrations/20260909233000_offline_sync.sql` |
-| Unit tests | `lib/offline/__tests__/offline-lib.test.ts` |
+| Unit tests | `lib/offline/__tests__/*.test.ts` |
 
 ## 7. PWA — installing SI ERP as an app
 
