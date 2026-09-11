@@ -155,6 +155,11 @@ export default function POSPage() {
   // alone can't stop double-clicks because it flips on only after the stock
   // and credit gates await, which can hang for seconds offline.
   const processingRef = useRef(false);
+  // Idempotency key for the current checkout session. Every submission
+  // attempt of the same charge (double-click race, retry after an ambiguous
+  // failure) carries the same key; sync_invoice_create dedups on it so two
+  // outbox items can never become two invoices for one intent.
+  const chargeIntentIdRef = useRef<string>(crypto.randomUUID());
   const [insufficient, setInsufficient] = useState<{
     info: InsufficientStockInfo;
     product: ProductData;
@@ -1133,6 +1138,7 @@ export default function POSPage() {
 
     try {
       await enqueueOp('invoice.create', {
+        idempotency_key: chargeIntentIdRef.current,
         customer_id: customerId,
         invoice_date: invoiceDate,
         subtotal,
@@ -1245,6 +1251,12 @@ export default function POSPage() {
   const [cartMaximized, setCartMaximized] = useState(false);
   const [cartTab, setCartTab] = useState<'items' | 'cost'>('items');
   const [showCheckout, setShowCheckout] = useState(false);
+  // Each checkout session is a fresh charge intent — a new idempotency key
+  // per modal open. Must sit after the showCheckout declaration: the
+  // dependency below evaluates during render.
+  useEffect(() => {
+    if (showCheckout) chargeIntentIdRef.current = crypto.randomUUID();
+  }, [showCheckout]);
   const [showCartFooter, setShowCartFooter] = useState(true);
   const [amountPaid, setAmountPaid] = useState('');
   const [defaultProductImage, setDefaultProductImage] = useState('');
