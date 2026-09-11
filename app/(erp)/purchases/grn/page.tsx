@@ -449,6 +449,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         try {
           await enqueueOp('grn.receive', {
             idempotency_key: crypto.randomUUID(),
+            temp_number: tempNumber,
             supplier_id: directMode ? directSupplier : selectedPO!.supplier_id,
             purchase_order_id: directMode ? null : selectedPO!.id,
             warehouse_id: warehouseId || null,

@@ -15,6 +15,8 @@
 
 import { REPLICA_BY_TABLE, replicaRows, subscribeReplica, type ReplicaTableSpec } from './replica'
 import { getMeta } from './db'
+import { pendingRowsFor, resetPendingCaches } from './pending'
+import { subscribeOutbox } from './outbox'
 
 export interface ReplicaQueryResult {
   data: any
@@ -458,12 +460,25 @@ async function loadRows(table: string): Promise<any[] | null> {
     return null
   }
   const rows = await replicaRows<any>(spec)
-  rowCache.set(table, { at: Date.now(), rows })
-  return rows
+  // Pending-rows overlay: queued outbox items appear as provisional rows so
+  // offline-created documents show in lists immediately (dedupe by id — the
+  // replica row wins over a stale pending twin).
+  const pending = await pendingRowsFor(table)
+  const merged = pending.length > 0 && rows
+    ? [...rows, ...pending.filter((pr: any) => !rows.some((r: any) => r.id === pr.id))]
+    : rows
+  rowCache.set(table, { at: Date.now(), rows: merged })
+  return merged
 }
 
 if (typeof window !== 'undefined') {
   subscribeReplica(() => rowCache.clear())
+  // A queued/synced/discarded item changes the overlay — drop memoized rows
+  // and the overlay's own caches.
+  subscribeOutbox(() => {
+    rowCache.clear()
+    resetPendingCaches()
+  })
 }
 
 /** Test hook: drop memoized rows and parsed embed specs between test cases. */

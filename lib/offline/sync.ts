@@ -31,6 +31,7 @@ import { networkMonitor } from './network'
 import { isNetworkError } from './cache'
 import { resolveUserId } from './session'
 import { notifyOutboxChanged, resetInFlightItems } from './outbox'
+import { replicateAll } from './replica'
 
 const DRAIN_INTERVAL_MS = 30_000
 const MAX_ATTEMPTS_PER_DRAIN = 2
@@ -129,6 +130,7 @@ class SyncEngine {
     if (this.state.notice) this.setState({ notice: null })
 
     this.setState({ running: true })
+    let applied = 0
     try {
       const key = await getUserKey(userId)
       const db = getDB()
@@ -137,13 +139,20 @@ class SyncEngine {
       )
       for (const item of queue) {
         if (!networkMonitor.getState().online) break
+        const before = item.status
         await this.applyItem(item, key)
+        const after = await db.outbox.get(item.id)
+        if (before === 'pending' && after?.status === 'synced') applied++
       }
       if (queue.length > 0 || this.state.lastSyncAt === null) {
         const now = Date.now()
         await setMeta('lastSyncAt', now)
         this.setState({ lastSyncAt: now })
       }
+      // Applied work replaced provisional overlay rows with real server rows
+      // — refresh the replica now so lists show the real numbers immediately
+      // instead of waiting for the 15-minute interval.
+      if (applied > 0) void replicateAll(true)
     } catch (err) {
       this.setState({ lastError: err instanceof Error ? err.message : String(err) })
     } finally {

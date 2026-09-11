@@ -510,6 +510,9 @@ function ReturnModal({ invoices, onClose, onSaved }: {
           await enqueueOp('sales_return.create', {
             idempotency_key: crypto.randomUUID(),
             invoice_id: selectedInvoice.id,
+            customer_id: selectedInvoice.customer_id,
+            temp_number: tempNumber,
+            refund_amount: totalRefundAmount,
             refund_method: isStoreCredit ? 'store_credit' : (selectedMethod?.code || 'cash'),
             refund_account_id: (!isStoreCredit && selectedMethod?.account_id) || null,
             items: itemsToReturn.map(([itemId, { qty, reason }]) => ({

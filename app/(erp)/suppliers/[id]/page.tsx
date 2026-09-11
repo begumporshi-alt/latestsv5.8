@@ -730,6 +730,7 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
           await enqueueOp('po.payment', {
             idempotency_key: crypto.randomUUID(),
             po_id: target.id,
+            supplier_id: supplierId,
             amount,
             wht_amount: form.wht || 0,
             payment_method: form.payment_method,

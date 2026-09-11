@@ -1138,7 +1138,10 @@ export default function POSPage() {
 
     try {
       await enqueueOp('invoice.create', {
+        id: crypto.randomUUID(),
         idempotency_key: chargeIntentIdRef.current,
+        temp_number: tempNumber,
+        is_pos: true,
         customer_id: customerId,
         invoice_date: invoiceDate,
         subtotal,

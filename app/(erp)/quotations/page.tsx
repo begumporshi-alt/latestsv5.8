@@ -764,6 +764,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
         await enqueueOp('quotation.create', {
           idempotency_key: crypto.randomUUID(),
           id: crypto.randomUUID(),
+          temp_number: tempNumber,
           customer_id: form.customer_id,
           issue_date: form.issue_date,
           expiry_date: form.expiry_date || null,

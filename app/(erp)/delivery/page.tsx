@@ -459,6 +459,8 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
           const tempNumber = `DLV-OFF-${Date.now().toString().slice(-6)}`;
           await enqueueOp('delivery.create', {
             idempotency_key: crypto.randomUUID(),
+            id: crypto.randomUUID(),
+            temp_number: tempNumber,
             customer_id: form.customer_id || null,
             invoice_id: form.invoice_id || null,
             delivery_date: form.delivery_date || null,

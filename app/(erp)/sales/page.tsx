@@ -1665,7 +1665,9 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         const tempNumber = `INV-OFF-${Date.now().toString().slice(-6)}`;
         const customerName = customerList.find(c => c.id === form.customer_id)?.name || 'customer';
         await enqueueOp('invoice.create', {
+          id: crypto.randomUUID(),
           idempotency_key: intentKeyRef.current,
+          temp_number: tempNumber,
           is_pos: false,
           customer_id: form.customer_id,
           invoice_date: form.invoice_date,
@@ -2379,6 +2381,7 @@ function RecordPaymentModal({ invoice, onClose, onSaved }: { invoice: InvoiceWit
         await enqueueOp('payment.create', {
           idempotency_key: crypto.randomUUID(),
           invoice_id: invoice.id,
+          customer_id: invoice.customer_id,
           amount: form.amount,
           bad_debt_amount: form.bad_debt_amount || 0,
           payment_method: form.payment_method,

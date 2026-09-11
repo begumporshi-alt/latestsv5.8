@@ -298,11 +298,19 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
           id: returnId,
           return_number: tempNumber,
           purchase_order_id: selectedPO.id,
+          supplier_id: selectedPO.supplier_id,
           return_date: new Date().toISOString().split('T')[0],
+          total_amount: itemsToReturn.reduce((sum, [itemId, { qty }]) => {
+            const item = items.find(i => i.id === itemId);
+            return sum + qty * Number(item?.unit_cost || 0);
+          }, 0),
           items: itemsToReturn.map(([itemId, { qty, reason }]) => {
             const item = items.find(i => i.id === itemId);
             return {
               purchase_order_item_id: itemId,
+              product_id: item?.product_id || null,
+              unit_cost: Number(item?.unit_cost || 0),
+              subtotal: qty * Number(item?.unit_cost || 0),
               quantity: qty,
               reason: reason || 'other',
               warehouse_id: (item as any)?.warehouse_id || null,

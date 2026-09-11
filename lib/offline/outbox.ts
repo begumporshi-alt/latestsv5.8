@@ -11,6 +11,7 @@
 import { getDB, type OutboxItem, type OutboxStatus } from './db'
 import { getUserKey, seal, unseal } from './crypto'
 import { resolveUserId } from './session'
+import { invalidateQueryCachesForOp } from './pending'
 
 type OutboxListener = () => void
 const listeners = new Set<OutboxListener>()
@@ -50,6 +51,10 @@ export async function enqueueOp(op: string, payload: unknown, label: string): Pr
   }
   await getDB().outbox.put(item)
   notifyOutboxChanged()
+  // The new document must appear in offline list reads immediately: drop the
+  // wrapper's cached query results for the tables this op touches so page
+  // reads fall through to the replica engine (which merges pending rows).
+  await invalidateQueryCachesForOp(op)
   return item
 }
 

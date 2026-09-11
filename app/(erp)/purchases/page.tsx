@@ -977,6 +977,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
         await enqueueOp('po.create', {
           idempotency_key: crypto.randomUUID(),
           id: crypto.randomUUID(),
+          temp_number: tempNumber,
           supplier_id: form.supplier_id,
           order_date: form.order_date,
           expected_date: form.expected_date || null,
@@ -1596,6 +1597,7 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
         await enqueueOp('po.payment', {
           idempotency_key: crypto.randomUUID(),
           po_id: order.id,
+          supplier_id: order.supplier_id,
           amount: form.amount,
           wht_amount: form.wht || 0,
           payment_method: form.payment_method,
