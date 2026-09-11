@@ -151,6 +151,10 @@ export default function POSPage() {
   const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
   const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
   const creditConfirmedRef = useRef(false);
+  // Synchronous re-entrancy guard for processOrder — the `processing` state
+  // alone can't stop double-clicks because it flips on only after the stock
+  // and credit gates await, which can hang for seconds offline.
+  const processingRef = useRef(false);
   const [insufficient, setInsufficient] = useState<{
     info: InsufficientStockInfo;
     product: ProductData;
@@ -750,6 +754,22 @@ export default function POSPage() {
   const grandTotal = posVat.total + (shipping || 0);
 
   async function processOrder() {
+    // One Charge click = one order. Extra clicks while a submission is in
+    // flight (the gates below await fetches that hang offline, before the
+    // disabled/`processing` feedback engages) must be swallowed, or each one
+    // enqueues its own offline order with a fresh idempotency id.
+    if (processingRef.current) return;
+    processingRef.current = true;
+    setProcessing(true);
+    try {
+      await doProcessOrder();
+    } finally {
+      processingRef.current = false;
+      setProcessing(false);
+    }
+  }
+
+  async function doProcessOrder() {
     if (cart.length === 0) { toast({ title: 'Cart is empty', variant: 'destructive' }); return; }
     if (!selectedCustomer) { toast({ title: 'Please select a customer first', variant: 'destructive' }); return; }
 
