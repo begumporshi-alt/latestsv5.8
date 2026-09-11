@@ -8,6 +8,8 @@ import { fetchAll } from '@/lib/fetch-all';
 import { printNode } from '@/lib/print';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt, Printer, BookOpen, HandCoins, X } from 'lucide-react';
 import type { Supplier, PurchaseOrder } from '@/lib/types';
 
@@ -693,13 +695,13 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
     payment_method: 'cash',
     reference_number: '',
   });
-  const [methods, setMethods] = useState<{ code: string; name: string }[]>([]);
+  const [methods, setMethods] = useState<{ code: string; name: string; account_id?: string | null }[]>([]);
   const [accounts, setAccounts] = useState<{ id: string; code: string; name: string; is_cash: boolean; is_bank: boolean }[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
+    supabase.from('payment_methods').select('code, name, account_id').eq('is_active', true).order('sort_order')
       .then(({ data }) => { if (data && data.length > 0) setMethods(data); });
     supabase.from('accounts').select('id, code, name, is_cash, is_bank').eq('is_active', true).order('code')
       .then(({ data }) => setAccounts((data || []) as any[]));
@@ -716,6 +718,43 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
 
     setSaving(true);
     try {
+      // Offline: queue the payment — po.payment re-validates against the
+      // live outstanding balance and relies on the same triggers; the
+      // manual payable wraps record_manual_payable_payment.
+      if (!networkMonitor.getState().online) {
+        // Resolve the cash account offline from already-loaded methods/accounts
+        const methodAccount = methods.find(m => m.code === form.payment_method);
+        const cashAccountId = methodAccount?.account_id
+          || (accounts.find(a => a.is_cash || a.is_bank)?.id ?? null);
+        if (target.kind === 'po') {
+          await enqueueOp('po.payment', {
+            idempotency_key: crypto.randomUUID(),
+            po_id: target.id,
+            amount,
+            wht_amount: form.wht || 0,
+            payment_method: form.payment_method,
+            payment_date: form.payment_date,
+            reference_number: form.reference_number || null,
+          }, `PO payment ${formatCurrency(amount)} — ${target.label}`);
+        } else {
+          if (!cashAccountId) throw new Error('No cash/bank account found to pay from');
+          await enqueueOp('supplier.payable_payment', {
+            idempotency_key: crypto.randomUUID(),
+            payable_je_id: target.id,
+            amount,
+            wht_amount: form.wht || 0,
+            payment_date: form.payment_date,
+            payment_method: form.payment_method,
+            cash_account_id: cashAccountId,
+            reference_number: form.reference_number || null,
+            notes: `Payment made for ${target.label}`,
+          }, `Payable payment ${formatCurrency(amount)} — ${target.label}`);
+        }
+        toast({ title: 'Payment queued offline', description: `${formatCurrency(amount)} for ${target.label} will post when you reconnect.` });
+        onSaved();
+        return;
+      }
+
       if (target.kind === 'po') {
         // The DB triggers do the rest: payment JE, PO amount_paid and the
         // supplier balance recompute all fire off this one insert.

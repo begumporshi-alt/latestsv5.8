@@ -11,6 +11,8 @@ import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMeth
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 
 const statusConfig: Record<PurchaseOrderStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
@@ -243,6 +245,23 @@ export default function PurchasesPage() {
   }
 
   async function cancelOrder(order: PurchaseOrderWithSupplier) {
+    // Offline: queue the cancellation; sync_po_cancel replays the whole flow
+    // atomically (status + payment reversal flags + stock reversal for
+    // received goods; the DB trigger posts the journal reversals).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('po.cancel', {
+          idempotency_key: crypto.randomUUID(),
+          id: order.id,
+        }, `Cancel PO ${order.po_number}`);
+        toast({ title: 'Cancellation queued offline', description: `${order.po_number} will be cancelled when you reconnect.` });
+        setCancellingOrder(null);
+        loadData();
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the cancellation', variant: 'destructive' });
+      }
+      return;
+    }
     const { error } = await supabase
       .from('purchase_orders')
       .update({ status: 'cancelled', amount_paid: order.total_amount, updated_at: new Date().toISOString() })
@@ -324,6 +343,26 @@ export default function PurchasesPage() {
   }
 
   async function updateOrderStatus(order: PurchaseOrderWithSupplier, newStatus: PurchaseOrderStatus) {
+    // Offline: receiving stock must go through the GRN flow (it maintains
+    // FIFO batches and journals) — the status-mark receive path is online-only.
+    if (!networkMonitor.getState().online) {
+      if (newStatus === 'received' || newStatus === 'partially_received') {
+        toast({ title: 'Use the GRN page to receive stock offline', description: 'Marking a PO received without a goods receipt would skip the FIFO batch ledger and journals. GRN receiving works offline and syncs automatically.', variant: 'destructive' });
+        return;
+      }
+      try {
+        await enqueueOp('po.status', {
+          idempotency_key: crypto.randomUUID(),
+          id: order.id,
+          status: newStatus,
+          expected_updated_at: order.updated_at || null,
+        }, `PO status → ${newStatus} (${order.po_number})`);
+        toast({ title: 'Queued offline', description: `${order.po_number} will be marked ${newStatus} when you reconnect.` });
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the status change', variant: 'destructive' });
+      }
+      return;
+    }
     const { error } = await supabase
       .from('purchase_orders')
       .update({ status: newStatus })
@@ -831,7 +870,14 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
     }
   }, []);
 
-  async function handleAddSupplier(newSupplierId: string) {
+  async function handleAddSupplier(newSupplierId: string, provisionalRow?: any) {
+    // Offline-created suppliers pass a provisional row — they aren't in the
+    // replica yet, but the id is what the server will honor at sync time.
+    if (provisionalRow) {
+      setSupplierList([...supplierList, { ...(provisionalRow as Supplier), id: newSupplierId }]);
+      setForm({ ...form, supplier_id: newSupplierId });
+      return;
+    }
     const { data } = await supabase.from('suppliers').select('*').eq('id', newSupplierId).single();
     if (data) {
       setSupplierList([...supplierList, data as Supplier]);
@@ -920,6 +966,57 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
     if (items.length === 0) { setError('Please add at least one item'); return; }
     if (form.payment_type === 'partial' && form.amount_paid <= 0) { setError('Please enter payment amount for partial payment'); return; }
     if (form.payment_type === 'partial' && form.amount_paid >= totalAmount) { setError('Partial payment must be less than total. Use "Full Payment" instead.'); return; }
+
+    // Offline: queue the PO; sync_po_create replays it atomically (PO +
+    // items + optional payment-at-order-time, with the AP journal and
+    // amount_paid maintained by the same triggers as the online path).
+    if (!networkMonitor.getState().online) {
+      try {
+        const tempNumber = `PO-OFF-${Date.now().toString().slice(-6)}`;
+        const supplierName = supplierList.find(s => s.id === form.supplier_id)?.name || 'supplier';
+        await enqueueOp('po.create', {
+          idempotency_key: crypto.randomUUID(),
+          id: crypto.randomUUID(),
+          supplier_id: form.supplier_id,
+          order_date: form.order_date,
+          expected_date: form.expected_date || null,
+          subtotal,
+          cart_discount_percent: form.cart_discount_percent || 0,
+          extra_discount: form.extra_discount || 0,
+          discount_amount: cartDiscountAmount,
+          total_amount: totalAmount,
+          amount_paid: amountPaid > 0 ? amountPaid : 0,
+          payment_method: form.payment_method,
+          payment_reference: form.payment_reference || null,
+          notes: form.notes || null,
+          reference: form.reference || null,
+          items: items.map(item => {
+            const discount = (item.unit_price * item.quantity * item.discount_percent) / 100;
+            return {
+              product_id: item.product_id,
+              quantity: item.quantity,
+              unit_cost: item.unit_price,
+              discount_percent: item.discount_percent || 0,
+              subtotal: item.quantity * item.unit_price - discount,
+              unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+              unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
+              base_quantity: item.base_quantity,
+              warehouse_id: item.warehouse_id || null,
+            };
+          }),
+        }, `PO ${formatCurrency(totalAmount)} — ${supplierName}`);
+        toast({
+          title: 'Purchase order queued offline',
+          description: `${tempNumber} (${formatCurrency(totalAmount)}) saved on this device — it will sync automatically when you reconnect.`,
+        });
+        onSaved();
+        onClose();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue the purchase order offline');
+        setSaving(false);
+      }
+      return;
+    }
 
     setSaving(true);
     setError('');
@@ -1243,7 +1340,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
           {showAddSupplier && (
             <AddSupplierModal
               onClose={() => setShowAddSupplier(false)}
-              onSaved={(id) => { handleAddSupplier(id); setShowAddSupplier(false); }}
+              onSaved={(id, provisional) => { handleAddSupplier(id, provisional); setShowAddSupplier(false); }}
             />
           )}
         </form>
@@ -1491,6 +1588,29 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
     setSaving(true);
     setError('');
 
+    // Offline: queue the payment; sync_po_payment re-validates against the
+    // live outstanding balance at replay (payment_po_amount_paid_trigger
+    // maintains amount_paid, the AP journal trigger the supplier balance).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('po.payment', {
+          idempotency_key: crypto.randomUUID(),
+          po_id: order.id,
+          amount: form.amount,
+          wht_amount: form.wht || 0,
+          payment_method: form.payment_method,
+          payment_date: form.payment_date,
+          reference_number: form.reference_number || null,
+          notes: form.notes || null,
+        }, `PO payment ${formatCurrency(form.amount)} — ${order.po_number}`);
+        toast({ title: 'Payment queued offline', description: `${formatCurrency(form.amount)} for ${order.po_number} will post when you reconnect.` });
+        onSaved();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue the payment offline');
+      }
+      return;
+    }
+
     const { data: poPayNum2 } = await supabase.rpc('generate_purchase_payment_number');
     const paymentNumber = poPayNum2 || `POPAY-${Date.now().toString().slice(-6)}`;
 
@@ -1715,6 +1835,49 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
     e.preventDefault();
     if (!form.supplier_id) { setError('Please select a supplier'); return; }
     if (items.length === 0) { setError('Please add at least one item'); return; }
+
+    // Offline: queue the edit; sync_po_update replays it atomically
+    // (version-checked, items replaced, amount_paid capped at the new total).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('po.update', {
+          idempotency_key: crypto.randomUUID(),
+          id: order.id,
+          supplier_id: form.supplier_id,
+          order_date: form.order_date,
+          expected_date: form.expected_date || null,
+          subtotal,
+          cart_discount_percent: form.cart_discount_percent || 0,
+          extra_discount: form.extra_discount || 0,
+          discount_amount: cartDiscountAmount,
+          total_amount: totalAmount,
+          notes: form.notes || null,
+          reference: form.reference || null,
+          expected_updated_at: order.updated_at || null,
+          items: items.map(item => {
+            const discount = (item.unit_price * item.quantity * item.discount_percent) / 100;
+            return {
+              product_id: item.product_id,
+              quantity: item.quantity,
+              unit_cost: item.unit_price,
+              discount_percent: item.discount_percent || 0,
+              subtotal: item.quantity * item.unit_price - discount,
+              unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+              unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
+              base_quantity: item.base_quantity,
+              warehouse_id: item.warehouse_id || null,
+            };
+          }),
+        }, `Edit PO ${order.po_number}`);
+        toast({ title: 'Edit queued offline', description: `${order.po_number} changes will sync when you reconnect.` });
+        onSaved();
+        onClose();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue the edit offline');
+        setSaving(false);
+      }
+      return;
+    }
 
     setSaving(true);
     setError('');
@@ -2002,7 +2165,7 @@ function CancelPOConfirmModal({ order, onClose, onConfirm }: {
   );
 }
 
-function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }) {
+function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string, provisionalRow?: any) => void }) {
   const [form, setForm] = useState({
     name: '',
     code: `SUP-${Date.now().toString().slice(-4)}`,
@@ -2024,20 +2187,38 @@ function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setSaving(true);
     setError('');
 
-    const { data, error: insertError } = await supabase
+    const data = {
+      name: form.name,
+      code: form.code,
+      phone: form.phone || null,
+      email: form.email || null,
+      company_name: form.company_name || null,
+      city: form.city || null,
+      address: form.address || null,
+      credit_limit: Number(form.credit_limit),
+      credit_days: Number(form.credit_days),
+      country: 'Bangladesh',
+    };
+
+    // Offline: queue with a client-generated id so the PO being built can
+    // reference this supplier immediately.
+    if (!networkMonitor.getState().online) {
+      const id = crypto.randomUUID();
+      try {
+        await enqueueOp('supplier.create', { id, data }, `New supplier — ${form.name}`);
+      } catch (err: any) {
+        setError(err?.message || 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+      toast({ title: 'Supplier queued offline', description: `${form.name} will sync when you reconnect.` });
+      onSaved(id, { id, ...data });
+      return;
+    }
+
+    const { data: inserted, error: insertError } = await supabase
       .from('suppliers')
-      .insert({
-        name: form.name,
-        code: form.code,
-        phone: form.phone || null,
-        email: form.email || null,
-        company_name: form.company_name || null,
-        city: form.city || null,
-        address: form.address || null,
-        credit_limit: Number(form.credit_limit),
-        credit_days: Number(form.credit_days),
-        country: 'Bangladesh',
-      })
+      .insert(data)
       .select('id')
       .single();
 
@@ -2048,7 +2229,7 @@ function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     }
 
     toast({ title: 'Success', description: 'Supplier created successfully' });
-    onSaved(data.id);
+    onSaved(inserted.id, { id: inserted.id, ...data });
   }
 
   return (

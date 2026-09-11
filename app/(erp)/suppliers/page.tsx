@@ -7,6 +7,8 @@ import { toast } from '@/hooks/use-toast';
 import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, FileDown, CircleAlert as AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import type { Supplier } from '@/lib/types';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import RecordButton from '@/components/RecordButton';
 
 export default function SuppliersPage() {
@@ -59,6 +61,22 @@ export default function SuppliersPage() {
 
   async function handleDelete() {
     if (!deletingSupplier) return;
+    // Offline: queue a PATCH-semantic deactivate (only is_active changes).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('supplier.update', {
+          idempotency_key: crypto.randomUUID(),
+          id: deletingSupplier.id,
+          data: { is_active: false },
+        }, `Deactivate supplier — ${deletingSupplier.name}`);
+        toast({ title: 'Queued offline', description: 'The supplier will be deactivated when you reconnect.' });
+        loadData();
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the deactivation', variant: 'destructive' });
+      }
+      setDeletingSupplier(null);
+      return;
+    }
     const { error } = await supabase.from('suppliers').update({ is_active: false }).eq('id', deletingSupplier.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -278,6 +296,32 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
       is_active: form.is_active,
       country: supplier?.country || 'Bangladesh',
     };
+
+    // Offline: queue create/update; sync_supplier_create accepts a client
+    // id, sync_supplier_update is PATCH-semantics + version-checked.
+    if (!networkMonitor.getState().online) {
+      try {
+        if (isEdit) {
+          await enqueueOp('supplier.update', {
+            idempotency_key: crypto.randomUUID(),
+            id: supplier!.id,
+            data,
+            expected_updated_at: (supplier as any)?.updated_at || null,
+          }, `Edit supplier — ${form.name}`);
+          toast({ title: 'Queued offline', description: 'Supplier changes will sync when you reconnect.' });
+        } else {
+          const id = crypto.randomUUID();
+          await enqueueOp('supplier.create', { id, data }, `New supplier — ${form.name}`);
+          toast({ title: 'Supplier queued offline', description: `${form.name} will sync when you reconnect.` });
+        }
+        onSaved();
+        onClose();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue offline');
+        setSaving(false);
+      }
+      return;
+    }
 
     const { error } = isEdit
       ? await supabase.from('suppliers').update(data).eq('id', supplier!.id)

@@ -7,6 +7,8 @@ import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, Printer, TrendingUp, Truck } from 'lucide-react';
 import type { Supplier, Warehouse } from '@/lib/types';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 
 interface PurchaseOrder {
   id: string;
@@ -438,6 +440,31 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         .filter(Boolean);
 
       const warehouseId = directMode ? directWarehouse : warehouses.find(w => w.is_default)?.id || warehouses[0]?.id;
+
+      // Offline: queue the receipt; sync_grn_receive replays through the
+      // same atomic receive_grn RPC (GRN header, movements, counters, FIFO
+      // batches with cost ratchet, journal, PO status).
+      if (!networkMonitor.getState().online) {
+        const tempNumber = `GRN-OFF-${Date.now().toString().slice(-6)}`;
+        try {
+          await enqueueOp('grn.receive', {
+            idempotency_key: crypto.randomUUID(),
+            supplier_id: directMode ? directSupplier : selectedPO!.supplier_id,
+            purchase_order_id: directMode ? null : selectedPO!.id,
+            warehouse_id: warehouseId || null,
+            items: payload,
+          }, `GRN — ${directMode ? 'direct receive' : selectedPO!.po_number}`);
+          toast({
+            title: 'Goods receipt queued offline',
+            description: `${tempNumber} saved on this device — stock and journals post when you reconnect.`,
+          });
+          onSaved();
+        } catch (err: any) {
+          setError(err?.message || 'Could not queue the receipt offline');
+          setSaving(false);
+        }
+        return;
+      }
 
       const { data, error: rpcError } = await supabase.rpc('receive_grn', {
         p_supplier_id: directMode ? directSupplier : selectedPO!.supplier_id,
