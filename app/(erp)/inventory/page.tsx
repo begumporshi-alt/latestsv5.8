@@ -462,6 +462,23 @@ export default function InventoryPage() {
 
   async function handleDelete() {
     if (!deletingProduct) return;
+    // Offline: queue a version-checked deactivation.
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('product.status', {
+          idempotency_key: crypto.randomUUID(),
+          id: deletingProduct.id,
+          is_active: false,
+          expected_updated_at: (deletingProduct as any)?.updated_at || null,
+        }, `Deactivate product — ${deletingProduct.name}`);
+        toast({ title: 'Queued offline', description: 'The product will be deactivated when you reconnect.' });
+        loadData(true);
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the deactivation', variant: 'destructive' });
+      }
+      setDeletingProduct(null);
+      return;
+    }
     const { error } = await supabase.from('products').update({ is_active: false }).eq('id', deletingProduct.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });

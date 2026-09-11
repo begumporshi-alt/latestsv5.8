@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw, Filter, Search, X, HandCoins, Printer, StickyNote, Plus, Trash2 } from 'lucide-react';
 import type { Customer, Invoice, Quotation, Delivery, Payment } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
@@ -190,6 +192,27 @@ export default function CustomerDetailPage() {
 
   async function addNote() {
     if (!newNote.trim()) return;
+    // Offline: queue the note with a client id so it can be removed before
+    // sync if needed.
+    if (!networkMonitor.getState().online) {
+      const id = crypto.randomUUID();
+      try {
+        await enqueueOp('customer_note.create', {
+          idempotency_key: crypto.randomUUID(),
+          id,
+          customer_id: customerId,
+          note: newNote.trim(),
+          note_type: newNoteType,
+        }, 'Customer note');
+        setNotes([{ id, note: newNote.trim(), note_type: newNoteType, created_at: new Date().toISOString() } as CustomerNote, ...notes]);
+        setNewNote('');
+        setNewNoteType('general');
+        toast({ title: 'Note queued offline', description: 'It will sync when you reconnect.' });
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the note', variant: 'destructive' });
+      }
+      return;
+    }
     setNoteSaving(true);
     const { error } = await supabase.from('customer_notes').insert({
       customer_id: customerId,
@@ -212,6 +235,21 @@ export default function CustomerDetailPage() {
   }
 
   async function deleteNote(noteId: string) {
+    // Offline: queue the delete (idempotent — a synced or unsynced note id
+    // both work; deleting a missing row is a no-op).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('customer_note.delete', {
+          idempotency_key: crypto.randomUUID(),
+          id: noteId,
+        }, 'Delete customer note');
+        setNotes(notes.filter(n => n.id !== noteId));
+        toast({ title: 'Queued offline', description: 'The note will be deleted when you reconnect.' });
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the deletion', variant: 'destructive' });
+      }
+      return;
+    }
     const { error } = await supabase.from('customer_notes').delete().eq('id', noteId);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });

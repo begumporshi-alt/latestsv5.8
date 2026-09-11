@@ -150,7 +150,9 @@ begin
     coalesce((r->>'cost_price_for_added_qty')::numeric, 0),
     coalesce((r->>'total_cost_price_single')::numeric, 0),
     coalesce((r->>'total_cost_price_added')::numeric, 0)
-  from jsonb_array_elements(coalesce(p_payload->'cost_history', '[]'::jsonb)) r;
+  from jsonb_array_elements(
+    case when jsonb_typeof(p_payload->'cost_history') = 'array'
+      then p_payload->'cost_history' else '[]'::jsonb end) r;
 
   -- Store credit: same fresh re-select + oldest-first redemption loop as POS.
   if v_store_credit > 0 then

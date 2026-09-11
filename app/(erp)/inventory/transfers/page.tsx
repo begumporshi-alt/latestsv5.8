@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowRightLeft, Plus, Search, RefreshCw, X, Package, Warehouse as WarehouseIcon, ArrowRight, CircleCheck as CheckCircle, Clock } from 'lucide-react';
 import type { Product, Warehouse } from '@/lib/types';
 
@@ -293,6 +295,31 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
       const transferId = crypto.randomUUID();
       const transferNumber = `TRF-${Date.now().toString().slice(-6)}`;
       const product = products.find(p => p.id === form.product_id);
+
+      // Offline: queue the transfer; sync_stock_transfer_create replays it
+      // atomically (both movements + transfer_fifo_batches so true cost
+      // layers move, + counter updates).
+      if (!networkMonitor.getState().online) {
+        try {
+          await enqueueOp('stock_transfer.create', {
+            idempotency_key: crypto.randomUUID(),
+            id: transferId,
+            transfer_number: transferNumber,
+            product_id: form.product_id,
+            from_warehouse_id: form.from_warehouse_id,
+            to_warehouse_id: form.to_warehouse_id,
+            quantity: qty,
+            unit_cost: product?.cost_price || 0,
+            notes: form.notes || null,
+          }, `Transfer ${transferNumber}`);
+          toast({ title: 'Transfer queued offline', description: `${transferNumber} will post — stock, batches and movements — when you reconnect.` });
+          onSaved();
+          onClose();
+        } catch (err: any) {
+          setError(err?.message || 'Could not queue the transfer offline');
+        }
+        return;
+      }
 
       const { error: outError } = await supabase.from('stock_movements').insert({
         tenant_id: '00000000-0000-0000-0000-000000000001',

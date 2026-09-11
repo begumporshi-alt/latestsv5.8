@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { Plus, Search, MapPin, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Package, Truck, X, CreditCard as Edit, Printer, FileText, Filter, ChevronDown } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import type { Delivery, DeliveryStatus, Customer } from '@/lib/types';
@@ -100,6 +102,21 @@ export default function DeliveryPage() {
   }
 
   async function updateStatus(deliveryId: string, newStatus: DeliveryStatus) {
+    // Offline: queue the status change (delivered_at set server-side).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('delivery.status', {
+          idempotency_key: crypto.randomUUID(),
+          id: deliveryId, status: newStatus,
+        }, `Delivery status → ${newStatus}`);
+        toast({ title: 'Queued offline', description: `Delivery will be marked ${statusConfig[newStatus].label} when you reconnect.` });
+        loadData();
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the status change', variant: 'destructive' });
+      }
+      return;
+    }
+
     const updateData: any = { status: newStatus };
     if (newStatus === 'delivered') {
       updateData.delivered_at = new Date().toISOString();
@@ -421,6 +438,45 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
+
+    // Offline: queue create/update; the server generates DLV- numbers on
+    // create and copies invoice items to delivery_items server-side.
+    if (!networkMonitor.getState().online) {
+      try {
+        if (isEdit) {
+          await enqueueOp('delivery.update', {
+            idempotency_key: crypto.randomUUID(),
+            id: delivery!.id,
+            delivery_date: form.delivery_date || null,
+            delivery_address: form.delivery_address || null,
+            delivery_city: form.delivery_city || null,
+            vehicle_number: form.vehicle_number || null,
+            notes: form.notes || null,
+            expected_updated_at: delivery?.updated_at || null,
+          }, `Edit delivery ${delivery!.delivery_number}`);
+          toast({ title: 'Edit queued offline', description: 'Delivery changes will sync when you reconnect.' });
+        } else {
+          const tempNumber = `DLV-OFF-${Date.now().toString().slice(-6)}`;
+          await enqueueOp('delivery.create', {
+            idempotency_key: crypto.randomUUID(),
+            customer_id: form.customer_id || null,
+            invoice_id: form.invoice_id || null,
+            delivery_date: form.delivery_date || null,
+            delivery_address: form.delivery_address || null,
+            delivery_city: form.delivery_city || null,
+            vehicle_number: form.vehicle_number || null,
+            notes: form.notes || null,
+          }, `Delivery ${tempNumber}`);
+          toast({ title: 'Delivery queued offline', description: `${tempNumber} will sync when you reconnect.` });
+        }
+        onSaved();
+        onClose();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue offline');
+      }
+      return;
+    }
+
     setSaving(true);
     setError('');
 

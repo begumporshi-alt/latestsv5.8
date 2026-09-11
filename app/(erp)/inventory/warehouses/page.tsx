@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { Warehouse, Plus, MapPin, X, Edit, Trash2 } from 'lucide-react';
 import type { Warehouse as WarehouseType } from '@/lib/types';
 
@@ -24,6 +26,22 @@ export default function WarehousesPage() {
 
   async function handleDelete() {
     if (!deletingWarehouse) return;
+    // Offline: queue the deactivation.
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('warehouse.update', {
+          idempotency_key: crypto.randomUUID(),
+          id: deletingWarehouse.id,
+          data: { is_active: false },
+        }, `Deactivate warehouse — ${deletingWarehouse.name}`);
+        toast({ title: 'Queued offline', description: 'The warehouse will be deactivated when you reconnect.' });
+        loadData();
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the deactivation', variant: 'destructive' });
+      }
+      setDeletingWarehouse(null);
+      return;
+    }
     const { error } = await supabase.from('warehouses').update({ is_active: false }).eq('id', deletingWarehouse.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -92,8 +110,6 @@ function WarehouseModal({ warehouse, onClose, onSaved }: { warehouse?: Warehouse
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
-    setError('');
 
     const data = {
       name: form.name,
@@ -103,6 +119,33 @@ function WarehouseModal({ warehouse, onClose, onSaved }: { warehouse?: Warehouse
       is_default: form.is_default,
       is_active: form.is_active,
     };
+
+    // Offline: queue create/update.
+    if (!networkMonitor.getState().online) {
+      try {
+        if (isEdit) {
+          await enqueueOp('warehouse.update', {
+            idempotency_key: crypto.randomUUID(),
+            id: warehouse!.id, data,
+          }, `Edit warehouse — ${form.name}`);
+          toast({ title: 'Queued offline', description: 'Warehouse changes will sync when you reconnect.' });
+        } else {
+          await enqueueOp('warehouse.create', {
+            idempotency_key: crypto.randomUUID(),
+            id: crypto.randomUUID(), data,
+          }, `New warehouse — ${form.name}`);
+          toast({ title: 'Warehouse queued offline', description: `${form.name} will sync when you reconnect.` });
+        }
+        onSaved();
+        onClose();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue offline');
+      }
+      return;
+    }
+
+    setSaving(true);
+    setError('');
 
     const { error } = isEdit
       ? await supabase.from('warehouses').update(data).eq('id', warehouse!.id)

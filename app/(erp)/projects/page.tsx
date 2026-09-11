@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { Plus, Search, List, LayoutGrid, X, Trash2, Edit, MapPin } from 'lucide-react';
 import type { Project, ProjectStatus, Customer } from '@/lib/types';
 
@@ -52,6 +54,21 @@ export default function ProjectsPage() {
 
   async function handleDelete() {
     if (!deletingProject) return;
+    // Offline: queue the delete.
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('project.delete', {
+          idempotency_key: crypto.randomUUID(),
+          id: deletingProject.id,
+        }, `Delete project ${deletingProject.name}`);
+        toast({ title: 'Queued offline', description: 'The project will be deleted when you reconnect.' });
+        loadData();
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the deletion', variant: 'destructive' });
+      }
+      setDeletingProject(null);
+      return;
+    }
     const { error } = await supabase.from('projects').delete().eq('id', deletingProject.id);
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
@@ -245,8 +262,6 @@ function ProjectModal({ customers, project, onClose, onSaved }: {
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    setSaving(true);
-    setError('');
 
     const projectNumber = project?.project_number || `PRJ-${Date.now().toString().slice(-6)}`;
     const data = {
@@ -264,6 +279,34 @@ function ProjectModal({ customers, project, onClose, onSaved }: {
       location: form.location || null,
       description: form.description || null,
     };
+
+    // Offline: queue create/update.
+    if (!networkMonitor.getState().online) {
+      try {
+        if (isEdit) {
+          await enqueueOp('project.update', {
+            idempotency_key: crypto.randomUUID(),
+            id: project!.id, data,
+            expected_updated_at: (project as any)?.updated_at || null,
+          }, `Edit project — ${form.name}`);
+          toast({ title: 'Queued offline', description: 'Project changes will sync when you reconnect.' });
+        } else {
+          await enqueueOp('project.create', {
+            idempotency_key: crypto.randomUUID(),
+            id: crypto.randomUUID(), data,
+          }, `New project — ${form.name}`);
+          toast({ title: 'Project queued offline', description: `${form.name} will sync when you reconnect.` });
+        }
+        onSaved();
+        onClose();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue offline');
+      }
+      return;
+    }
+
+    setSaving(true);
+    setError('');
 
     const { error } = isEdit
       ? await supabase.from('projects').update(data).eq('id', project!.id)
