@@ -25,6 +25,8 @@ import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
 import { isInvoiceOverdue } from '@/lib/format';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { cachedQuery } from '@/lib/offline/cache';
 
 // Cached aggregate served offline — see loadData/fetchSalesData.
@@ -710,6 +712,20 @@ export default function SalesPage() {
   }
 
   async function updateInvoiceStatus(invoice: InvoiceWithCustomer, newStatus: InvoiceStatus) {
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('invoice.status', {
+          idempotency_key: crypto.randomUUID(),
+          invoice_id: invoice.id,
+          status: newStatus,
+          expected_updated_at: invoice.updated_at || null,
+        }, `Invoice status → ${statusConfig[newStatus].label} (${invoice.invoice_number})`);
+        toast({ title: 'Queued offline', description: `${invoice.invoice_number} will be marked ${statusConfig[newStatus].label} when you reconnect.` });
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the status change', variant: 'destructive' });
+      }
+      return;
+    }
     const { error } = await supabase
       .from('invoices')
       .update({ status: newStatus, updated_at: new Date().toISOString() })
@@ -777,7 +793,7 @@ export default function SalesPage() {
       {dataStale && (
         <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs font-medium">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-          Showing cached sales data from the last online session. New sales made offline are queued in the Sync Center.
+          Showing cached sales data from the last online session. Sales, payments, returns and cancellations made offline are queued in the Sync Center and post automatically when you reconnect.
         </div>
       )}
       <div className="flex items-center justify-between">
@@ -1568,13 +1584,25 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const grandTotal = vat.total + (form.shipping_cost || 0);
   const amountPaid = form.payment_type === 'full' ? grandTotal : (form.payment_type === 'partial' ? form.amount_paid : 0);
 
-  async function handleAddCustomer(newCustomerId: string) {
+  async function handleAddCustomer(newCustomerId: string, provisionalRow?: any) {
+    // Offline-created customers pass a provisional row — they aren't in the
+    // replica yet, but the id is what the server will honor at sync time.
+    if (provisionalRow) {
+      setCustomerList([...customerList, { ...(provisionalRow as Customer), id: newCustomerId }]);
+      setForm({ ...form, customer_id: newCustomerId });
+      return;
+    }
     const { data } = await supabase.from('customers').select('*').eq('id', newCustomerId).single();
     if (data) {
       setCustomerList([...customerList, data as Customer]);
       setForm({ ...form, customer_id: newCustomerId });
     }
   }
+
+  // One idempotency key per modal mount: every submission attempt of this
+  // invoice (gate-confirm re-runs, double-clicks) shares it, so the server
+  // can never apply the same invoice intent twice.
+  const intentKeyRef = useRef(crypto.randomUUID());
 
   async function handleSave(e?: React.FormEvent) {
     e?.preventDefault();
@@ -1626,6 +1654,86 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         setCreditConfirmOpen(true);
         return;
       }
+    }
+
+    // Offline checkout: queue the exact payload the online path would write;
+    // sync_invoice_create replays it atomically (invoice → items → cost
+    // history → payment, with FIFO/COGS/AR triggers firing server-side).
+    // Non-POS channel: INV- numbering, due_date/notes preserved.
+    if (!networkMonitor.getState().online) {
+      try {
+        const tempNumber = `INV-OFF-${Date.now().toString().slice(-6)}`;
+        const customerName = customerList.find(c => c.id === form.customer_id)?.name || 'customer';
+        await enqueueOp('invoice.create', {
+          idempotency_key: intentKeyRef.current,
+          is_pos: false,
+          customer_id: form.customer_id,
+          invoice_date: form.invoice_date,
+          due_date: form.due_date || null,
+          subtotal,
+          discount_amount: cartDiscountAmount,
+          cart_discount_percent: form.cart_discount_percent || 0,
+          extra_discount: form.extra_discount || 0,
+          tax_amount: vat.taxAmount,
+          shipping_cost: form.shipping_cost || 0,
+          total_amount: grandTotal,
+          amount_paid: amountPaid,
+          status: amountPaid >= grandTotal ? 'paid' : (amountPaid > 0 ? 'partially_paid' : 'draft'),
+          notes: form.notes || null,
+          reference: form.reference || null,
+          items: items.map(item => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            cost_price: item.cost_price || 0,
+            discount_percent: item.discount_percent || 0,
+            tax_rate: 0,
+            subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
+            unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+            unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
+            base_quantity: item.base_quantity,
+            warehouse_id: item.warehouse_id || null,
+            description: gateStock
+              ? shortfallDescription(
+                  { product_id: item.product_id, warehouse_id: item.warehouse_id, base_quantity: item.base_quantity },
+                  gateStock,
+                  'invoice creation'
+                )
+              : null,
+          })),
+          cost_history: items.map(item => {
+            const unitName = item.selected_unit?.unit_name || item.product_unit || 'pcs';
+            const costPerUnit = item.cost_price || 0;
+            const totalCostAdded = costPerUnit * item.quantity;
+            return {
+              product_id: item.product_id,
+              product_name: item.product_name,
+              product_sku: item.product_sku || '',
+              unit: unitName,
+              quantity: item.quantity,
+              unit_price: item.unit_price,
+              cost_price_per_qty: costPerUnit,
+              cost_price_for_added_qty: totalCostAdded,
+              total_cost_price_single: costPerUnit,
+              total_cost_price_added: totalCostAdded,
+            };
+          }),
+          cash_payment: amountPaid > 0 ? {
+            amount: amountPaid,
+            method: form.payment_method,
+            reference_number: form.payment_reference || null,
+            notes: form.payment_type === 'full' ? 'Full payment at invoice time' : 'Partial payment at invoice time',
+          } : { amount: 0, method: form.payment_method },
+        }, `Invoice ${formatCurrency(grandTotal)} — ${customerName}`);
+        toast({
+          title: 'Invoice queued offline',
+          description: `${tempNumber} (${formatCurrency(grandTotal)}) saved on this device — it will sync automatically when you reconnect.`,
+        });
+        onSaved();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue the invoice offline');
+      }
+      return;
     }
 
     setSaving(true);
@@ -2263,6 +2371,34 @@ function RecordPaymentModal({ invoice, onClose, onSaved }: { invoice: InvoiceWit
     setSaving(true);
     setError('');
 
+    // Offline: queue the payment; sync_payment_create re-validates against
+    // the live balance at replay time (two devices paying one invoice can't
+    // silently overpay) and the payment trigger posts the journal.
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('payment.create', {
+          idempotency_key: crypto.randomUUID(),
+          invoice_id: invoice.id,
+          amount: form.amount,
+          bad_debt_amount: form.bad_debt_amount || 0,
+          payment_method: form.payment_method,
+          payment_date: form.payment_date,
+          reference_number: form.reference_number || null,
+          notes: form.notes || null,
+        }, `Payment ${formatCurrency(form.amount)} — ${invoice.invoice_number}`);
+        toast({
+          title: 'Payment queued offline',
+          description: `${formatCurrency(form.amount)} for ${invoice.invoice_number} will post when you reconnect.`,
+        });
+        onSaved();
+        return;
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue the payment offline');
+        setSaving(false);
+        return;
+      }
+    }
+
     const { data: payNum2 } = await supabase.rpc('generate_payment_number');
     const paymentNumber = payNum2 || `PAY-${Date.now().toString().slice(-6)}`;
 
@@ -2395,7 +2531,7 @@ function RecordPaymentModal({ invoice, onClose, onSaved }: { invoice: InvoiceWit
   );
 }
 
-function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }) {
+function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string, provisionalRow?: any) => void }) {
   const [form, setForm] = useState({
     name: '',
     phone: '',
@@ -2413,24 +2549,44 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setError('');
 
     const code = `CUST-${Date.now().toString().slice(-6)}`;
-    const { data, error: insertError } = await supabase
+    const data = {
+      code,
+      name: form.name.trim(),
+      phone: form.phone || null,
+      email: form.email || null,
+      address: form.address || null,
+      type: form.type,
+      country: 'Bangladesh',
+      is_active: true,
+      credit_limit: 0,
+      credit_days: 0,
+      outstanding_balance: 0,
+      total_purchases: 0,
+      loyalty_points: 0,
+      discount_percent: 0,
+    };
+
+    // Offline: queue with a client-generated id so the invoice being built
+    // can reference this customer immediately — the queued invoice.create
+    // syncs after the customer row lands (queue is strictly ordered).
+    if (!networkMonitor.getState().online) {
+      const id = crypto.randomUUID();
+      try {
+        await enqueueOp('customer.create', { id, data }, `New customer — ${form.name.trim()}`);
+      } catch (err: any) {
+        setError(err?.message || 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+      toast({ title: 'Customer queued offline', description: `${form.name.trim()} will sync when you reconnect.` });
+      onSaved(id, { id, ...data });
+      onClose();
+      return;
+    }
+
+    const { data: inserted, error: insertError } = await supabase
       .from('customers')
-      .insert({
-        code,
-        name: form.name.trim(),
-        phone: form.phone || null,
-        email: form.email || null,
-        address: form.address || null,
-        type: form.type,
-        country: 'Bangladesh',
-        is_active: true,
-        credit_limit: 0,
-        credit_days: 0,
-        outstanding_balance: 0,
-        total_purchases: 0,
-        loyalty_points: 0,
-        discount_percent: 0,
-      })
+      .insert(data)
       .select('id')
       .single();
 
@@ -2441,7 +2597,7 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     }
 
     toast({ title: 'Success', description: 'Customer added successfully' });
-    onSaved(data.id);
+    onSaved(inserted.id, { id: inserted.id, ...data });
     onClose();
   }
 
@@ -3293,6 +3449,31 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
     setStep('processing');
     setCancelling(true);
     setError('');
+
+    // Offline: queue the cancellation; sync_invoice_cancel replays through
+    // the authoritative cancel_invoice RPC (FIFO restore, journal and
+    // payment reversals all live there).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('invoice.cancel', {
+          idempotency_key: crypto.randomUUID(),
+          invoice_id: invoice.id,
+          reason,
+          cancelled_by: 'Current User',
+        }, `Cancel ${invoice.invoice_number}`);
+        toast({
+          title: 'Cancellation queued offline',
+          description: `${invoice.invoice_number} will be cancelled when you reconnect.`,
+        });
+        onDone();
+      } catch (err: any) {
+        setError(err?.message || 'Could not queue the cancellation offline');
+        setStep('error');
+      } finally {
+        setCancelling(false);
+      }
+      return;
+    }
 
     try {
       const { data, error: rpcError } = await supabase.rpc('cancel_invoice', {

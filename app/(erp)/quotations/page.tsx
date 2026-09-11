@@ -16,6 +16,8 @@ import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
 import Pagination from '@/components/ui/AppPagination';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 
 const statusConfig: Record<QuotationStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
@@ -408,7 +410,7 @@ export default function QuotationsPage() {
   );
 }
 
-function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string) => void }) {
+function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string, provisionalRow?: any) => void }) {
   const [form, setForm] = useState({
     name: '',
     phone: '',
@@ -426,31 +428,50 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setError('');
 
     const code = `CUST-${Date.now().toString().slice(-6)}`;
-    const { data, error: insertError } = await supabase
+    const data = {
+      code,
+      name: form.name.trim(),
+      phone: form.phone || null,
+      email: form.email || null,
+      address: form.address || null,
+      type: form.type,
+      country: 'Bangladesh',
+      is_active: true,
+      credit_limit: 0,
+      credit_days: 0,
+      outstanding_balance: 0,
+      total_purchases: 0,
+      loyalty_points: 0,
+      discount_percent: 0,
+    };
+
+    // Offline: queue with a client-generated id so the quotation being
+    // built can reference this customer immediately.
+    if (!networkMonitor.getState().online) {
+      const id = crypto.randomUUID();
+      try {
+        await enqueueOp('customer.create', { id, data }, `New customer — ${form.name.trim()}`);
+      } catch (err: any) {
+        setError(err?.message || 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+      toast({ title: 'Customer queued offline', description: `${form.name.trim()} will sync when you reconnect.` });
+      onSaved(id, { id, ...data });
+      onClose();
+      return;
+    }
+
+    const { data: inserted, error: insertError } = await supabase
       .from('customers')
-      .insert({
-        code,
-        name: form.name.trim(),
-        phone: form.phone || null,
-        email: form.email || null,
-        address: form.address || null,
-        type: form.type,
-        country: 'Bangladesh',
-        is_active: true,
-        credit_limit: 0,
-        credit_days: 0,
-        outstanding_balance: 0,
-        total_purchases: 0,
-        loyalty_points: 0,
-        discount_percent: 0,
-      })
+      .insert(data)
       .select('id')
       .single();
 
     if (insertError) { setError(insertError.message); setSaving(false); return; }
 
     toast({ title: 'Success', description: 'Customer added successfully' });
-    onSaved(data.id);
+    onSaved(inserted.id, { id: inserted.id, ...data });
     onClose();
   }
 

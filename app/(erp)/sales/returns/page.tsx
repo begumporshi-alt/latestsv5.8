@@ -7,6 +7,8 @@ import { toast } from '@/hooks/use-toast';
 import { ArrowLeft, Search, RefreshCw, Plus, X, Package, FileText, Receipt, CreditCard, CircleCheck as CheckCircle, Clock, Eye, ArrowRightLeft, Building2, Banknote, Wallet, ExternalLink, CircleAlert as AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import type { Customer } from '@/lib/types';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 
 interface Invoice {
   id: string;
@@ -498,6 +500,35 @@ function ReturnModal({ invoices, onClose, onSaved }: {
 
       const selectedMethod = paymentMethods.find(m => m.id === selectedPaymentMethod);
       const isStoreCredit = selectedPaymentMethod === 'store_credit';
+
+      // Offline: queue the return; sync_sales_return_create replays through
+      // the same atomic record_sales_return RPC (FIFO restore, COGS
+      // reversal journal, refund payment, invoice state — all server-side).
+      if (!networkMonitor.getState().online) {
+        const tempNumber = `SR-OFF-${Date.now().toString().slice(-6)}`;
+        try {
+          await enqueueOp('sales_return.create', {
+            idempotency_key: crypto.randomUUID(),
+            invoice_id: selectedInvoice.id,
+            refund_method: isStoreCredit ? 'store_credit' : (selectedMethod?.code || 'cash'),
+            refund_account_id: (!isStoreCredit && selectedMethod?.account_id) || null,
+            items: itemsToReturn.map(([itemId, { qty, reason }]) => ({
+              invoice_item_id: itemId,
+              quantity: qty,
+              reason: reason || '',
+            })),
+          }, `Sales return ${formatCurrency(totalRefundAmount)} — ${selectedInvoice.invoice_number}`);
+          toast({
+            title: 'Return queued offline',
+            description: `${tempNumber} (${formatCurrency(totalRefundAmount)}) will process when you reconnect.`,
+          });
+          setTimeout(() => { onSaved(); onClose(); }, 800);
+        } catch (err: any) {
+          setError(err?.message || 'Could not queue the return offline');
+          setSaving(false);
+        }
+        return;
+      }
 
       // One atomic server-side RPC: return + items + batch-accurate FIFO restore +
       // movements + counters + journal entry (Dr 4050 / Cr refund account, and

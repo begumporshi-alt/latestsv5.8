@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { useToast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, Plus, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle, HandCoins, ArrowRightLeft, RotateCcw } from 'lucide-react';
 
 interface Advance {
@@ -490,6 +492,24 @@ function RecordAdvanceModal({ paymentMethods, onClose, onSaved }: {
 
     setSaving(true); setError('');
     try {
+      // Offline: queue the advance; sync_advance_receive inserts it and the
+      // DB triggers assign the ADV- number and post the Dr Cash / Cr 2300
+      // journal — exactly the online behavior, at sync time.
+      if (!networkMonitor.getState().online) {
+        await enqueueOp('advance.receive', {
+          idempotency_key: crypto.randomUUID(),
+          customer_id: selectedCustomer.id,
+          amount,
+          payment_method: form.payment_method,
+          payment_date: form.payment_date,
+          reference_number: form.reference_number || null,
+          notes: form.notes || null,
+        }, `Advance ${formatCurrency(amount)} — ${selectedCustomer.name}`);
+        toast({ title: 'Advance queued offline', description: `${formatCurrency(amount)} from ${selectedCustomer.name} will post when you reconnect.` });
+        onSaved();
+        return;
+      }
+
       const { error: insertError } = await supabase.from('customer_advances').insert({
         customer_id: selectedCustomer.id,
         amount,
@@ -663,6 +683,23 @@ function ApplyAdvanceModal({ advance, onClose, onApplied }: {
 
     setSaving(true); setError('');
     try {
+      // Offline: queue the application; sync_advance_apply runs the whole
+      // multi-step flow atomically (application row, balance, Dr 2300 /
+      // Cr 1100 journal, invoice state) and re-validates against the live
+      // advance balance at replay time.
+      if (!networkMonitor.getState().online) {
+        await enqueueOp('advance.apply', {
+          idempotency_key: crypto.randomUUID(),
+          advance_id: advance.id,
+          customer_id: advance.customer_id,
+          invoice_id: selectedInvoice,
+          amount,
+        }, `Apply advance ${formatCurrency(amount)} to invoice`);
+        toast({ title: 'Application queued offline', description: `${formatCurrency(amount)} will be applied when you reconnect.` });
+        onApplied();
+        return;
+      }
+
       // 1. Record the application
       const { error: appError } = await supabase.from('customer_advance_applications').insert({
         advance_id: advance.id,
@@ -852,6 +889,25 @@ function RefundAdvanceModal({ advance, paymentMethods, onClose, onRefunded }: {
 
     setSaving(true); setError('');
     try {
+      // Offline: queue the refund; sync_advance_refund runs the whole flow
+      // atomically (refund row, balance, Dr 2300 / Cr Cash journal) and
+      // re-validates against the live advance balance at replay time.
+      if (!networkMonitor.getState().online) {
+        await enqueueOp('advance.refund', {
+          idempotency_key: crypto.randomUUID(),
+          advance_id: advance.id,
+          customer_id: advance.customer_id,
+          amount,
+          refund_method: form.refund_method,
+          refund_date: form.refund_date,
+          reference_number: form.reference_number || null,
+          notes: form.notes || null,
+        }, `Refund advance ${formatCurrency(amount)}`);
+        toast({ title: 'Refund queued offline', description: `${formatCurrency(amount)} refund will post when you reconnect.` });
+        onRefunded();
+        return;
+      }
+
       // 1. Record the refund
       const { error: refundError } = await supabase.from('customer_advance_refunds').insert({
         advance_id: advance.id,

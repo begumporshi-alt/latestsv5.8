@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { useToast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle, Plus } from 'lucide-react';
 import CustomerSearchInput, { type CustomerResult } from '@/components/ui/CustomerSearchInput';
 
@@ -140,6 +142,22 @@ export default function StoreCreditPage() {
   }
 
   async function expireCredit(creditId: string) {
+    // Offline: queue a version-checked status update.
+    if (!networkMonitor.getState().online) {
+      try {
+        const credit = credits.find(c => c.id === creditId);
+        await enqueueOp('store_credit.expire', {
+          idempotency_key: crypto.randomUUID(),
+          credit_id: creditId,
+          expected_updated_at: (credit as any)?.updated_at || null,
+        }, `Expire store credit ${credit?.credit_number || ''}`);
+        toast({ title: 'Queued offline', description: 'The credit will be marked expired when you reconnect.' });
+        loadData();
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the expiry', variant: 'destructive' });
+      }
+      return;
+    }
     const { error } = await supabase
       .from('customer_store_credits')
       .update({ status: 'expired', updated_at: new Date().toISOString() })
@@ -434,6 +452,28 @@ function IssueCreditModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     setSaving(true);
     try {
       const amount = parseFloat(form.amount);
+
+      // Offline: queue with a client-generated id; sync_store_credit_issue
+      // generates the SC- number and posts the Dr chosen / Cr 2200 journal
+      // atomically at sync time.
+      if (!networkMonitor.getState().online) {
+        const id = crypto.randomUUID();
+        await enqueueOp('store_credit.issue', {
+          idempotency_key: crypto.randomUUID(),
+          id,
+          customer_id: selectedCustomer.id,
+          customer_name: selectedCustomer.name,
+          amount,
+          debit_account_id: form.debit_account_id,
+          notes: form.notes || 'Manually issued store credit',
+          expires_at: form.expires_at || null,
+        }, `Store credit ${formatCurrency(amount)} — ${selectedCustomer.name}`);
+        toast({ title: 'Store credit queued offline', description: `${formatCurrency(amount)} for ${selectedCustomer.name} will post when you reconnect.` });
+        onSaved();
+        onClose();
+        return;
+      }
+
       const { data: creditNum } = await supabase.rpc('generate_credit_number');
       const { data: credit, error: creditError } = await supabase
         .from('customer_store_credits')

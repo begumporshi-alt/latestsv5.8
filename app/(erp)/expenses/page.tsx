@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { Plus, X, Receipt, TrendingDown, Calendar, Filter, Pencil, Trash2, ChevronDown } from 'lucide-react';
 import type { Account } from '@/lib/types';
 import AppPagination from '@/components/ui/AppPagination';
@@ -148,6 +150,22 @@ export default function ExpensesPage() {
   }
 
   async function handleDelete(expense: ExpenseEntry) {
+    // Offline: queue; sync_expense_delete replays the atomic
+    // delete_manual_journal_entry RPC (lines + balance reversal).
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('expense.delete', {
+          idempotency_key: crypto.randomUUID(),
+          entry_id: expense.id,
+        }, `Delete expense ${expense.entry_number}`);
+        toast({ title: 'Queued offline', description: `${expense.entry_number} will be deleted when you reconnect.` });
+        setDeletingExpense(null);
+        loadData();
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the deletion', variant: 'destructive' });
+      }
+      return;
+    }
     try {
       const { error: rpcError } = await supabase.rpc('delete_manual_journal_entry', {
         p_entry_id: expense.id,
@@ -430,6 +448,28 @@ function ExpenseModal({ expenseAccounts, cashBankAccounts, editingExpense, onClo
       }
 
       if (editingExpense) {
+        // Offline EDIT: queue; sync_expense_update replays through the same
+        // atomic edit_manual_journal_entry RPC (reverses old lines, applies
+        // new ones).
+        if (!networkMonitor.getState().online) {
+          try {
+            await enqueueOp('expense.update', {
+              idempotency_key: crypto.randomUUID(),
+              entry_id: editingExpense.id,
+              date: form.date,
+              description: form.description || 'Expense payment',
+              amount,
+              expense_account_id: expenseAccountId,
+              paid_from: form.paid_from,
+            }, `Edit expense ${formatCurrency(amount)}`);
+            toast({ title: 'Queued offline', description: 'The expense edit will post when you reconnect.' });
+            onSaved();
+          } catch (err: any) {
+            setError(err?.message || 'Could not queue the edit offline');
+          }
+          return;
+        }
+
         // EDIT: one atomic server-side call reverses old lines and applies the new ones
         const { error: rpcError } = await supabase.rpc('edit_manual_journal_entry', {
           p_entry_id: editingExpense.id,
@@ -445,6 +485,28 @@ function ExpenseModal({ expenseAccounts, cashBankAccounts, editingExpense, onClo
 
         toast({ title: 'Updated', description: 'Expense updated and accounts adjusted' });
       } else {
+        // Offline CREATE: queue; sync_expense_create replays through the
+        // same atomic post_manual_journal_entry RPC and can inline a new
+        // expense account (next free 6xxx code) server-side.
+        if (!networkMonitor.getState().online) {
+          try {
+            await enqueueOp('expense.create', {
+              idempotency_key: crypto.randomUUID(),
+              date: form.date,
+              description: form.description || 'Expense payment',
+              amount,
+              expense_account_id: form.expense_account !== 'create_new' ? form.expense_account : null,
+              new_account_name: form.expense_account === 'create_new' ? newAccountName : null,
+              paid_from: form.paid_from,
+            }, `Expense ${formatCurrency(amount)}`);
+            toast({ title: 'Expense queued offline', description: `${formatCurrency(amount)} will post when you reconnect.` });
+            onSaved();
+          } catch (err: any) {
+            setError(err?.message || 'Could not queue the expense offline');
+          }
+          return;
+        }
+
         // CREATE: one atomic server-side call posts entry + lines + balances
         const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
           p_entry_date: form.date,
