@@ -13,6 +13,7 @@ import { Package, Plus, Search, CreditCard as Edit, Trash2, TriangleAlert as Ale
 import type { Product, Category, Brand, Warehouse as WarehouseType, ProductColor, ProductSize, ProductUnit } from '@/lib/types';
 import { LABEL_SIZES, resolveLabelConfig, describeProductLabelSize, type LabelSize } from '@/lib/label-sizes';
 import Pagination from '@/components/ui/AppPagination';
+import { ProductBatchesModal } from '@/components/product-batches-modal';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
@@ -186,6 +187,7 @@ export default function InventoryPage() {
   const [editingProduct, setEditingProduct] = useState<ProductWithStock | null>(null);
   const [deletingProduct, setDeletingProduct] = useState<ProductWithStock | null>(null);
   const [barcodeProduct, setBarcodeProduct] = useState<ProductWithStock | null>(null);
+  const [batchesProduct, setBatchesProduct] = useState<ProductWithStock | null>(null);
   const [showManageModal, setShowManageModal] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [stats, setStats] = useState({ total: 0, lowStock: 0, outOfStock: 0, value: 0 });
@@ -645,12 +647,18 @@ export default function InventoryPage() {
                     <td className="px-4 py-3 text-sm text-foreground">{p.brand?.name || '—'}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="group relative">
-                        <span className={`text-sm font-bold cursor-help ${(p.total_stock || 0) === 0 ? 'text-red-500' : (p.total_stock || 0) <= p.min_stock_level ? 'text-amber-500' : 'text-foreground'}`}>
+                        <button
+                          type="button"
+                          onClick={() => setBatchesProduct(p)}
+                          title="View batches"
+                          className={`text-sm font-bold rounded px-1 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${(p.total_stock || 0) === 0 ? 'text-red-500' : (p.total_stock || 0) <= p.min_stock_level ? 'text-amber-500' : 'text-foreground'}`}
+                        >
                           {p.total_stock || 0}
-                        </span>
+                        </button>
                         <div className="absolute right-0 top-full mt-1 bg-white border border-border rounded-lg shadow-lg p-3 z-10 hidden group-hover:block min-w-[180px]">
                           <p className="text-xs font-semibold mb-2 text-foreground">Stock by Location:</p>
                           <StockByWarehouse productId={p.id} warehouses={warehouses} inventoryByWarehouse={inventoryByWarehouse} unit={p.unit || 'pcs'} />
+                          <p className="text-[10px] text-muted-foreground mt-2 pt-2 border-t border-border/60">Click the stock number to view batches</p>
                         </div>
                       </div>
                     </td>
@@ -697,6 +705,9 @@ export default function InventoryPage() {
       )}
       {barcodeProduct && (
         <BarcodeModal product={barcodeProduct} onClose={() => setBarcodeProduct(null)} />
+      )}
+      {batchesProduct && (
+        <ProductBatchesModal product={batchesProduct} onClose={() => setBatchesProduct(null)} />
       )}
       {showManageModal && (
         <ManageCatalogModal categories={categories} brands={brands} unitTypes={unitTypes} onClose={() => setShowManageModal(false)} onSaved={() => loadData(true)} />
