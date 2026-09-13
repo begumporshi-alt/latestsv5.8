@@ -98,3 +98,20 @@ class NetworkMonitor {
 }
 
 export const networkMonitor = new NetworkMonitor()
+
+/**
+ * Race a promise against a deadline. For interactive lookups (the POS
+ * checkout gates) a connection the monitor still believes is online but
+ * that is actually dead must not hang the flow — a real device can take
+ * tens of seconds per TCP attempt. Resolve 'timeout' and let the caller
+ * fall through to its offline snapshot.
+ *
+ * The losing promise is never rejected by the race, so pair it with a
+ * `.then(ok, err)` wrapper upstream if the underlying call can reject.
+ */
+export async function raceDeadline<T>(p: PromiseLike<T>, ms: number): Promise<T | 'timeout'> {
+  return Promise.race([
+    p,
+    new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), ms)),
+  ])
+}

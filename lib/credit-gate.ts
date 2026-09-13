@@ -10,6 +10,10 @@
 import { supabaseRaw } from '@/lib/supabase-raw';
 import { cacheGet, isNetworkError } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
+import { networkMonitor, raceDeadline } from '@/lib/offline/network';
+
+/** Interactive gate lookups must never hang the checkout — see oversell-gate. */
+const GATE_DEADLINE_MS = 4_000;
 
 export interface CreditCheck {
   limit: number;
@@ -34,27 +38,46 @@ export function newReceivableFor(
 }
 
 // Fetches the customer's credit fields fresh at gate time (the list-loaded
-// outstanding_balance can be stale). Offline, falls back to the cached
-// customer snapshot and marks the result stale. Returns null when there is
-// no data either way, so callers fail open with a notice — the gate is
-// advisory and the DB allows the sale either way.
+// outstanding_balance can be stale). Offline — or past the gate deadline on
+// a connection the monitor still believes is online — falls back to the
+// cached customer snapshot and marks the result stale. Returns null when
+// there is no data either way, so callers fail open with a notice — the
+// gate is advisory and the DB allows the sale either way.
 export async function checkCreditLimit(
   customerId: string,
   newReceivable: number
 ): Promise<CreditCheck | null> {
   if (!customerId) return null;
-  const { data, error } = await supabaseRaw
-    .from('customers')
-    .select('credit_limit, outstanding_balance')
-    .eq('id', customerId)
-    .single();
+  type CreditRow = { credit_limit: number | string | null; outstanding_balance: number | string | null };
+  let data: CreditRow | null = null;
+  let error: unknown = null;
+  let timedOut = false;
+  if (networkMonitor.getState().online) {
+    const raced = await raceDeadline(
+      supabaseRaw
+        .from('customers')
+        .select('credit_limit, outstanding_balance')
+        .eq('id', customerId)
+        .single()
+        .then((r) => ({ ok: true as const, r }), (e) => ({ ok: false as const, e })),
+      GATE_DEADLINE_MS
+    );
+    if (raced === 'timeout') {
+      timedOut = true;
+    } else if (!raced.ok) {
+      error = raced.e;
+    } else {
+      data = (raced.r.data as CreditRow | null) ?? null;
+      error = raced.r.error;
+    }
+  }
 
   let limit: number;
   let outstanding: number;
   let stale = false;
 
   if (error || !data) {
-    if (!isNetworkError(error)) return null;
+    if (!timedOut && !isNetworkError(error)) return null;
     const cachedList = await cacheGet<Array<Record<string, unknown>>>(CACHE_KEYS.customers);
     const cached = cachedList?.find((c) => c.id === customerId);
     if (!cached) return null;

@@ -63,6 +63,7 @@ export const OP_TABLES: Record<string, string[]> = {
   'customer.update': ['customers'],
   'employee.create': ['employees'],
   'employee.update': ['employees'],
+  'product.create': ['products', 'product_units', 'inventory_items'],
   'product.update': ['products'],
   'po.create': ['purchase_orders', 'purchase_order_items'],
   'po.update': ['purchase_orders', 'purchase_order_items'],
@@ -113,6 +114,7 @@ export const OP_CACHE_KEYS: Record<string, string[]> = {
   'customer.update': ['crm:page-data', 'customers:all'],
   'employee.create': ['employees:all', 'attendance:employees'],
   'employee.update': ['employees:all', 'attendance:employees'],
+  'product.create': ['inventory:page-data', 'products:all'],
   'product.update': ['inventory:page-data', 'products:all'],
   'product.status': ['inventory:page-data', 'products:all'],
 }
@@ -509,6 +511,74 @@ function deriveEffects(op: string, p: Record<string, any>, itemId: string, creat
         out.push({ kind: 'patch', table: 'products', id: String(p.id), patch: { ...(p.data || {}), updated_at: now } })
       }
       break
+    case 'product.create': {
+      // Mirror sync_product_create: the products row plus the child rows the
+      // list views read through relation embeds (units:product_units,
+      // inventory_items stock counters), so an offline-created product
+      // renders in the inventory list exactly like a server-created one.
+      const d = p.data || {}
+      const pid = p.id || synthId('prod')
+      out.push({
+        kind: 'row',
+        table: 'products',
+        row: stamp({
+          id: pid,
+          name: d.name ?? null,
+          sku: str(d.sku),
+          unit: d.unit ?? null,
+          base_unit: d.base_unit ?? null,
+          enable_multi_unit: d.enable_multi_unit === true,
+          enable_colors: d.enable_colors === true,
+          enable_sizes: d.enable_sizes === true,
+          cost_price: num(d.cost_price),
+          sale_price: num(d.sale_price),
+          category_id: d.category_id ?? null,
+          brand_id: d.brand_id ?? null,
+          min_stock_level: num(d.min_stock_level),
+          description: str(d.description),
+          is_active: d.is_active !== false,
+          barcode_label_size: str(d.barcode_label_size),
+        }),
+      })
+      if (Array.isArray(p.units)) {
+        p.units.forEach((u: any, i: number) => {
+          if (!str(u.unit_name)) return
+          out.push({
+            kind: 'row',
+            table: 'product_units',
+            row: stamp({
+              id: synthId(`prod-unit-${i}`),
+              product_id: pid,
+              unit_name: u.unit_name,
+              unit_short: str(u.unit_short),
+              conversion_factor: num(u.conversion_factor, 1),
+              is_base_unit: u.is_base_unit === true,
+              is_sale_unit: u.is_sale_unit === true,
+              price: num(u.price),
+              cost_price: num(u.cost_price),
+              is_active: u.is_active !== false,
+              sort_order: num(u.sort_order),
+            }),
+          })
+        })
+      }
+      if (Array.isArray(p.stock)) {
+        p.stock.forEach((s: any, i: number) => {
+          if (!s.warehouse_id) return
+          out.push({
+            kind: 'row',
+            table: 'inventory_items',
+            row: stamp({
+              id: synthId(`prod-stock-${i}`),
+              product_id: pid,
+              warehouse_id: s.warehouse_id,
+              quantity_on_hand: num(s.quantity),
+            }),
+          })
+        })
+      }
+      break
+    }
     case 'employee.create': {
       const d = p.data || {}
       out.push({

@@ -23,6 +23,18 @@ describe('pending overlay op maps (lib/offline/pending)', () => {
     expect(OP_TABLES['employee.create']).toContain('employees');
   });
 
+  test('product.create derives rows for the products table and its embed children', () => {
+    // units:product_units and inventory_items are read through relation
+    // embeds by the POS snapshot / sales page — without child rows the new
+    // product renders without units or stock offline.
+    expect(OP_TABLES['product.create']).toEqual(
+      expect.arrayContaining(['products', 'product_units', 'inventory_items'])
+    );
+    expect(OP_CACHE_KEYS['product.create']).toEqual(
+      expect.arrayContaining(['inventory:page-data', 'products:all'])
+    );
+  });
+
   test('sales-page aggregate keys are dropped by every op that changes invoices/payments', () => {
     for (const op of [
       'invoice.create',
