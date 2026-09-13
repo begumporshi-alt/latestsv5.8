@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
-import { fetchAll } from '@/lib/fetch-all';
+import { fetchAll, fetchAllParallel } from '@/lib/fetch-all';
 import type { InventoryAggregates } from '@/lib/inventory-value';
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -228,7 +228,9 @@ export default function InventoryPage() {
     // forced those pagination loops), so the page loads with three parallel
     // groups instead: products, the aggregate RPC, and reference tables.
     const [allProds, aggRes, refRes] = await Promise.all([
-      fetchAll(() => supabase
+      // Products change slowly and the list spans 3+ pages — fetch the pages
+      // in parallel (one round trip) instead of serially.
+      fetchAllParallel(() => supabase
         .from('products')
         .select('*, category:categories(name), brand:brands(name), product_colors(id, name, hex_code), product_sizes(id, name)')
         .order('created_at', { ascending: false })
