@@ -1032,6 +1032,7 @@ export default function SalesPage() {
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Amount</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Total Cost</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Paid</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Refunded</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Balance</th>
                 <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Bad Debt</th>
                 <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Status</th>
@@ -1093,6 +1094,7 @@ export default function SalesPage() {
                       {Number((inv as any).cph_total) > 0 ? formatCurrency((inv as any).cph_total) : <span className="text-muted-foreground">—</span>}
                     </td>
                     <td className="px-4 py-3 text-right text-sm text-green-600 font-semibold">{formatCurrency(inv.amount_paid)}</td>
+                    <td className="px-4 py-3 text-right text-sm font-medium text-orange-500">{Number(inv.refunded_amount) > 0 ? formatCurrency(inv.refunded_amount) : <span className="text-muted-foreground">—</span>}</td>
                     <td className="px-4 py-3 text-right text-sm font-bold text-red-600">{formatCurrency(inv.balance_due ?? (inv.total_amount - inv.amount_paid))}</td>
                     <td className="px-4 py-3 text-right text-sm font-medium text-red-500">{Number(inv.bad_debt_amount) > 0 ? formatCurrency(inv.bad_debt_amount) : <span className="text-muted-foreground">—</span>}</td>
                     <td className="px-4 py-3">

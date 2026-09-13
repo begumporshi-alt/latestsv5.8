@@ -260,6 +260,24 @@ function deriveEffects(op: string, p: Record<string, any>, itemId: string, creat
           status: 'completed',
         }),
       })
+      // Refunds settle through cash-out / store credit, never through the
+      // receivable — amount_paid and balance_due stay put; only the refund
+      // tracker and status advance (mirrors record_sales_return).
+      if (p.invoice_id) {
+        out.push({
+          kind: 'patch',
+          table: 'invoices',
+          id: String(p.invoice_id),
+          patch: (row: any) => {
+            const refunded = num(row.refunded_amount) + num(p.refund_amount)
+            const settled = num(row.total_amount) - num(row.bad_debt_amount) - num(row.amount_paid) <= 0.01
+            return {
+              refunded_amount: refunded,
+              status: refunded >= num(row.total_amount) ? 'refunded' : settled ? 'paid' : 'partially_paid',
+            }
+          },
+        })
+      }
       break
     case 'advance.receive':
       out.push({

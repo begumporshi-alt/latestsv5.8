@@ -282,6 +282,7 @@ export interface Invoice {
   shipping_cost: number;
   total_amount: number;
   amount_paid: number;
+  refunded_amount?: number;
   balance_due: number;
   bad_debt_amount?: number;
   is_pos: boolean;
