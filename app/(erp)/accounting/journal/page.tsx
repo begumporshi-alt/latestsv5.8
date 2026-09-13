@@ -154,6 +154,39 @@ function partyNameOf(e: JournalEntry): string | undefined {
   return c?.name || s?.name;
 }
 
+function ymdLocal(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// One document card = every journal entry that belongs to one business
+// document (invoice + its COGS + its payments, a GRN, a payment, a manual
+// entry, ...). refType/refId point at the source document for header links.
+interface DocCard {
+  key: string;
+  refType: string;
+  refId: string | null;
+  rows: JournalEntry[];
+}
+
+// Invoice status chip reads the DOCUMENT's status/total — never derived from
+// journal-entry sums, which double-count across AR/COGS/VAT lines.
+function InvoiceStatusChip({ status, total }: { status: string; total: number }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    paid: { label: 'Paid', cls: 'bg-green-100 text-green-700' },
+    partial: { label: 'Partial', cls: 'bg-amber-100 text-amber-700' },
+    due: { label: 'Due', cls: 'bg-red-100 text-red-700' },
+    draft: { label: 'Draft', cls: 'bg-gray-100 text-gray-600' },
+    cancelled: { label: 'Cancelled', cls: 'bg-gray-100 text-gray-500' },
+  };
+  const s = map[status] || { label: status, cls: 'bg-gray-100 text-gray-600' };
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="text-xs font-semibold text-foreground">{formatCurrency(total)}</span>
+      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${s.cls}`}>{s.label}</span>
+    </span>
+  );
+}
+
 // Plain-English templates for non-accountants
 interface JournalTemplate {
   id: string;
@@ -285,6 +318,12 @@ export default function JournalPage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<JournalEntry | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [viewMode, setViewMode] = useState<'document' | 'flat'>('document');
+  // payment id -> invoice id, so payment JEs can render inside their
+  // invoice's document card
+  const [paymentToInvoice, setPaymentToInvoice] = useState<Record<string, string>>({});
+  // invoice id -> { status, total } for card status chips (document-sourced)
+  const [invoiceMeta, setInvoiceMeta] = useState<Record<string, { status: string; total: number }>>({});
 
 
   useEffect(() => { loadData(); }, [period, customFrom, customTo, filterSupplier, filterCustomer]);
@@ -317,6 +356,33 @@ export default function JournalPage() {
     }
     if (sid || hid) window.history.replaceState({}, '', '/accounting/journal');
   }, []);
+
+  // Payment JEs reference the payment row, not the invoice — resolve that link
+  // so payments render inside their invoice's document card. Only invoice-family
+  // payment references fold (invoice / invoice_edit / invoice_cancel); PO
+  // payments, receivable payments and refunds stay standalone cards.
+  useEffect(() => {
+    let cancelled = false;
+    const paymentIds = [...new Set(
+      entries.filter(e => e.reference_type === 'payment' && e.reference_id).map(e => e.reference_id as string)
+    )];
+    if (paymentIds.length === 0) { setPaymentToInvoice({}); return; }
+    supabase
+      .from('payments')
+      .select('id, reference_type, reference_id')
+      .in('id', paymentIds)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const p of (data || []) as { id: string; reference_type: string; reference_id: string | null }[]) {
+          if (['invoice', 'invoice_edit', 'invoice_cancel'].includes(p.reference_type) && p.reference_id) {
+            map[p.id] = p.reference_id;
+          }
+        }
+        setPaymentToInvoice(map);
+      });
+    return () => { cancelled = true; };
+  }, [entries]);
 
   // Local dates, not UTC — new Date().toISOString() is UTC, so between local
   // midnight and 06:00 (UTC+6) the "Today" preset used to filter the wrong day.
@@ -411,8 +477,10 @@ export default function JournalPage() {
     });
   }
 
-  // Filter entries
-  const filtered = entries.filter(e => {
+  // Client-side entry predicate (type + search). In flat view it selects ROWS;
+  // in document view it selects CARDS — a card shows when any member matches,
+  // and all its members stay visible because the card is the context.
+  function entryMatches(e: JournalEntry): boolean {
     if (filterType && e.reference_type !== filterType) return false;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -422,7 +490,9 @@ export default function JournalPage() {
       if (!matchDesc && !matchNum && !matchRef) return false;
     }
     return true;
-  });
+  }
+
+  const filtered = entries.filter(entryMatches);
 
   const pagedEntries = filtered.slice((page - 1) * pageSize, page * pageSize);
 
@@ -443,31 +513,101 @@ export default function JournalPage() {
     return groups;
   }, [pagedEntries]);
 
-  // Resolve source document numbers (invoice #, GRN #, ...) for multi-row groups
-  // so group headers can name the document. One small query per source table.
+  // Document cards: every entry lands in exactly one card keyed by its business
+  // document. Invoice-family JEs and their payment JEs (resolved via
+  // paymentToInvoice) share a card, so an invoice's whole posting story —
+  // sale, COGS, edits, cancellation, payments — reads as one unit.
+  const cardUnits = useMemo<DocCard[]>(() => {
+    const byKey = new Map<string, DocCard>();
+    for (const e of entries) {
+      let key: string, refType: string, refId: string | null;
+      if (['invoice', 'invoice_edit', 'invoice_cancel'].includes(e.reference_type || '') && e.reference_id) {
+        key = 'inv:' + e.reference_id; refType = 'invoice'; refId = e.reference_id;
+      } else if (e.reference_type === 'payment' && e.reference_id && paymentToInvoice[e.reference_id]) {
+        const invId = paymentToInvoice[e.reference_id];
+        key = 'inv:' + invId; refType = 'invoice'; refId = invId;
+      } else if (e.reference_id) {
+        key = (e.reference_type || 'doc') + ':' + e.reference_id;
+        refType = e.reference_type || 'manual'; refId = e.reference_id;
+      } else {
+        key = 'solo:' + e.id; refType = e.reference_type || 'manual'; refId = null;
+      }
+      let card = byKey.get(key);
+      if (!card) { card = { key, refType, refId, rows: [] }; byKey.set(key, card); }
+      card.rows.push(e);
+    }
+    // Members read oldest-first inside a card (the story order: sale → COGS →
+    // payment); cards sort by their LATEST entry, so an invoice paid days
+    // later surfaces at the payment date, where its story completed.
+    const byTime = (a: JournalEntry, b: JournalEntry) =>
+      a.entry_date === b.entry_date
+        ? (a.created_at === b.created_at ? a.entry_number.localeCompare(b.entry_number) : (a.created_at < b.created_at ? -1 : 1))
+        : (a.entry_date < b.entry_date ? -1 : 1);
+    const cards = [...byKey.values()];
+    for (const c of cards) c.rows.sort(byTime);
+    cards.sort((a, b) => -byTime(a.rows[a.rows.length - 1], b.rows[b.rows.length - 1]));
+    return cards;
+  }, [entries, paymentToInvoice]);
+
+  const visibleCards = useMemo(
+    () => (filterType || searchQuery) ? cardUnits.filter(c => c.rows.some(entryMatches)) : cardUnits,
+    [cardUnits, filterType, searchQuery]
+  );
+  const pagedCards = visibleCards.slice((page - 1) * pageSize, page * pageSize);
+
+  // Resolve source document numbers (invoice #, GRN #, ...) for card headers /
+  // flat group headers. One batched query per source table; invoice documents
+  // also fetch status + total for the card's status chip.
   const [docNumbers, setDocNumbers] = useState<Record<string, string>>({});
-  const groupSignature = entryGroups.filter(g => g.rows.length > 1).map(g => g.refId).join(',');
+  const unitsNeedingDocs: { refId: string | null; refType: string; rows: JournalEntry[] }[] =
+    viewMode === 'document' ? pagedCards : entryGroups.filter(g => g.rows.length > 1);
+  const docSignature = unitsNeedingDocs
+    .filter(u => u.refId)
+    .map(u => `${u.refType}:${u.refId}`)
+    .sort()
+    .join(',');
   useEffect(() => {
-    if (!groupSignature) { setDocNumbers({}); return; }
+    if (!docSignature) { setDocNumbers({}); setInvoiceMeta({}); return; }
     let cancelled = false;
     async function resolve() {
       const byTable: Record<string, { ids: Set<string>; numberField: string }> = {};
-      for (const g of entryGroups) {
-        if (g.rows.length < 2 || !g.refId) continue;
-        const src = DOC_SOURCES[g.refType];
+      const invoiceIds = new Set<string>();
+      for (const u of unitsNeedingDocs) {
+        if (!u.refId) continue;
+        if (u.refType === 'invoice') { invoiceIds.add(u.refId); continue; } // dedicated query below
+        const src = DOC_SOURCES[u.refType];
         if (!src) continue;
         if (!byTable[src.table]) byTable[src.table] = { ids: new Set(), numberField: src.numberField };
-        byTable[src.table].ids.add(g.refId);
+        byTable[src.table].ids.add(u.refId);
       }
-      const results = await Promise.all(Object.entries(byTable).map(async ([table, { ids, numberField }]) => {
-        const { data } = await supabase.from(table).select(`id, ${numberField}`).in('id', [...ids]);
-        return (data || []).map((d: any) => [d.id, d[numberField]] as [string, string]);
-      }));
-      if (!cancelled) setDocNumbers(Object.fromEntries(results.flat()));
+      const pairs: [string, string][] = [];
+      const meta: Record<string, { status: string; total: number }> = {};
+      await Promise.all([
+        ...Object.entries(byTable).map(async ([table, { ids, numberField }]) => {
+          const { data } = await supabase.from(table).select(`id, ${numberField}`).in('id', [...ids]);
+          for (const d of (data || []) as any[]) pairs.push([d.id, d[numberField]]);
+        }),
+        invoiceIds.size > 0
+          ? supabase
+              .from('invoices')
+              .select('id, invoice_number, status, total_amount')
+              .in('id', [...invoiceIds])
+              .then(({ data }) => {
+                for (const d of (data || []) as any[]) {
+                  pairs.push([d.id, d.invoice_number]);
+                  meta[d.id] = { status: d.status, total: Number(d.total_amount) };
+                }
+              })
+          : Promise.resolve(),
+      ]);
+      if (cancelled) return;
+      setDocNumbers(Object.fromEntries(pairs));
+      setInvoiceMeta(meta);
     }
     resolve();
     return () => { cancelled = true; };
-  }, [groupSignature]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docSignature]);
 
   // KPIs reflect the active filters (and the full, un-capped data set)
   const autoCount = filtered.filter(e => e.reference_type !== 'manual').length;
@@ -641,7 +781,20 @@ export default function JournalPage() {
             {customerOptions.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="flex items-center rounded-lg border border-border overflow-hidden mr-1 print:hidden" role="group" aria-label="View mode">
+            {([['document', 'By Document'], ['flat', 'Flat Ledger']] as const).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => { setViewMode(value); setPage(1); }}
+                aria-pressed={viewMode === value}
+                title={value === 'document' ? 'One card per business document — an invoice and everything it caused' : 'Strict chronological row list (audit view)'}
+                className={`px-3 py-1.5 text-xs font-medium transition ${viewMode === value ? 'bg-blue-600 text-white' : 'bg-white text-muted-foreground hover:bg-muted'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {[
             { value: '', label: 'All Entries' },
             { value: 'invoice', label: 'Invoices' },
@@ -668,10 +821,126 @@ export default function JournalPage() {
               {f.label}
             </button>
           ))}
-          <span className="ml-auto text-xs text-muted-foreground self-center">{filtered.length} entries</span>
+          <span className="ml-auto text-xs text-muted-foreground self-center">
+            {viewMode === 'document'
+              ? `${visibleCards.length} document${visibleCards.length === 1 ? '' : 's'} · ${visibleCards.reduce((s, c) => s + c.rows.length, 0)} entries`
+              : `${filtered.length} entries`}
+          </span>
         </div>
       </div>
 
+      {viewMode === 'document' ? (
+        <div className="space-y-3">
+          {loading ? (
+            Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="border border-border rounded-xl bg-white p-4 space-y-3">
+                <div className="h-4 w-56 bg-muted rounded animate-pulse" />
+                <div className="h-10 bg-muted rounded animate-pulse" />
+              </div>
+            ))
+          ) : loadError ? (
+            <div className="border border-border rounded-xl bg-white px-4 py-12 text-center text-sm">
+              <AlertTriangle className="w-10 h-10 mx-auto mb-3 text-red-300" />
+              <p className="font-medium text-red-600">Failed to load journal entries</p>
+              <p className="text-xs mt-1 text-muted-foreground">{loadError}</p>
+              <button onClick={() => loadData()} className="mt-3 px-3 py-1.5 border border-border rounded-lg text-xs hover:bg-muted">Retry</button>
+            </div>
+          ) : visibleCards.length === 0 ? (
+            <div className="border border-border rounded-xl bg-white px-4 py-12 text-center text-muted-foreground text-sm">
+              <FileText className="w-10 h-10 mx-auto mb-3 text-muted-foreground/30" />
+              <p className="font-medium">No entries found</p>
+              <p className="text-xs mt-1">
+                {period === 'today' ? 'No journal entries for today. Try "Last 7 Days" to see more.' : 'Try adjusting your filters or date range'}
+              </p>
+            </div>
+          ) : (
+            <>
+              {pagedCards.map((card, idx) => {
+                const first = card.rows[0];
+                const last = card.rows[card.rows.length - 1];
+                const refType = card.refType;
+                const Icon = refIcons[refType] || FileText;
+                const docNum = card.refId ? docNumbers[card.refId] : undefined;
+                const docLabel = DOC_SOURCES[refType]?.label || refLabels[refType] || 'Document';
+                const party = partyNameOf(first);
+                const href = card.refId ? docHref(refType, card.refId) : null;
+                const typeSet = [...new Set(card.rows.map(r => r.reference_type || 'manual'))];
+                const meta = card.refId ? invoiceMeta[card.refId] : undefined;
+                // Manual / reference-less entries get a subdued dashed card
+                const subdued = refType === 'manual' || !card.refId;
+                const prev = idx > 0 ? pagedCards[idx - 1] : null;
+                const dayChanged = !prev || prev.rows[prev.rows.length - 1].entry_date !== last.entry_date;
+                const dateRange = first.entry_date === last.entry_date
+                  ? formatDate(last.entry_date)
+                  : `${formatDate(first.entry_date)} → ${formatDate(last.entry_date)}`;
+                const today = new Date();
+                const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+                const dayLabelText = last.entry_date === ymdLocal(today) ? 'Today'
+                  : last.entry_date === ymdLocal(yesterday) ? 'Yesterday'
+                  : formatDate(last.entry_date);
+                return (
+                  <div key={card.key}>
+                    {dayChanged && (
+                      <div className="flex items-center gap-3 pt-1">
+                        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{dayLabelText}</span>
+                        <span className="h-px flex-1 bg-border" />
+                      </div>
+                    )}
+                    <div className={`rounded-xl bg-white shadow-sm border overflow-hidden ${subdued ? 'border-dashed' : ''}`}>
+                      <div className="px-4 py-2.5 bg-muted/30 border-b border-border/70 flex items-center gap-2 flex-wrap">
+                        <Icon className="w-4 h-4 text-blue-600 shrink-0" />
+                        {href ? (
+                          <Link href={href} className="text-sm font-semibold font-mono text-foreground hover:text-blue-600 hover:underline" title="Open source document">
+                            {docLabel}{docNum ? ` ${docNum}` : ''}
+                          </Link>
+                        ) : (
+                          <span className="text-sm font-semibold font-mono text-foreground">{docLabel}{docNum ? ` ${docNum}` : ''}</span>
+                        )}
+                        {party && <span className="text-xs text-muted-foreground">· {party}</span>}
+                        {meta && <InvoiceStatusChip status={meta.status} total={meta.total} />}
+                        {typeSet.map(t => (
+                          <span key={t} className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${refColors[t] || 'bg-gray-50 text-gray-600'}`}>
+                            {refLabels[t] || t}
+                          </span>
+                        ))}
+                        {card.rows.length > 1 && <span className="text-xs text-muted-foreground">{card.rows.length} entries</span>}
+                        <span className="ml-auto text-xs text-muted-foreground">{dateRange}</span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[760px]">
+                          <tbody className="divide-y divide-border">
+                            {card.rows.map(e => (
+                              <JournalEntryRow
+                                key={e.id}
+                                entry={e}
+                                hideParty
+                                isExpanded={expandedIds.has(e.id)}
+                                onToggle={() => toggleExpand(e.id)}
+                                onEdit={() => setEditingEntry(e)}
+                                onDelete={() => setShowDeleteConfirm(e)}
+                                onReverse={() => setReversingEntry(e)}
+                              />
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="print:hidden">
+                <AppPagination
+                  page={page}
+                  pageSize={pageSize}
+                  total={visibleCards.length}
+                  onPageChange={setPage}
+                  onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      ) : (
       <div className="table-wrapper">
         <div className="overflow-x-auto print:overflow-visible">
         <table className="w-full min-w-[900px] print:min-w-0">
@@ -790,6 +1059,7 @@ export default function JournalPage() {
           />
         </div>
       </div>
+      )}
 
       {showModal && (
         <JournalEntryModal
@@ -827,10 +1097,12 @@ export default function JournalPage() {
   );
 }
 
-function JournalEntryRow({ entry, grouped, isExpanded, onToggle, onEdit, onDelete, onReverse }: {
+function JournalEntryRow({ entry, grouped, hideParty, isExpanded, onToggle, onEdit, onDelete, onReverse }: {
   entry: JournalEntry;
   /** true when the row belongs to a multi-row group — tinted to match the group's header band */
   grouped?: boolean;
+  /** true inside document cards, where the card header already names the party */
+  hideParty?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   onEdit: () => void;
@@ -902,7 +1174,7 @@ function JournalEntryRow({ entry, grouped, isExpanded, onToggle, onEdit, onDelet
             )}
             {entry.description}
           </div>
-          {party && <div className="text-[11px] text-muted-foreground truncate">{party}</div>}
+          {!hideParty && party && <div className="text-[11px] text-muted-foreground truncate">{party}</div>}
         </td>
         <td className="px-4 py-3">
           <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium ${colorClass}`}>
