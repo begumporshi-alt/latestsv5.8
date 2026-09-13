@@ -29,6 +29,9 @@ export interface OversellItemInput {
   cost_price?: number;
   // Counter stock (inventory_items.quantity_on_hand) in base units, if known.
   stock_available?: number | null;
+  // Non-stock (quick-sell) products never touch the batch ledger — they are
+  // exempt from the oversell gate entirely.
+  track_inventory?: boolean;
 }
 
 export interface Shortfall {
@@ -194,6 +197,9 @@ export function computeShortfalls(items: OversellItemInput[], stock: LedgerStock
     costPrice: number; stockAvailable: number;
   }> = {};
   for (const item of items) {
+    // Quick-sell (non-stock) items have no ledger to check — skip them so a
+    // batch-less product can never fire the bothEmpty hard block.
+    if (item.track_inventory === false) continue;
     const key = item.warehouse_id ? `${item.product_id}|${item.warehouse_id}` : item.product_id;
     agg[key] = agg[key] || {
       baseQty: 0,

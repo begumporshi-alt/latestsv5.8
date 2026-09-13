@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, Layers, TriangleAlert as AlertTriangle, Printer } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, Layers, TriangleAlert as AlertTriangle, Printer, Zap } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -33,6 +33,7 @@ import { REPLICA, replicaRows, buildPosSnapshotFromReplica } from '@/lib/offline
 import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
+import { QuickSellModal } from '@/components/quick-sell-modal';
 
 // Snapshot of a completed charge, taken before the cart resets, so the
 // receipt can be printed afterwards — online with the real number, offline
@@ -77,6 +78,9 @@ interface CartItem {
   inventory_item_id?: string;
   warehouse_id?: string;
   stock_available: number;
+  // Non-stock (quick-sell) products bypass the oversell gate — carried from
+  // ProductData so the gate mapping can skip them.
+  track_inventory?: boolean;
   selected_unit?: ProductUnit;
   unit_price: number;
   base_quantity: number;
@@ -105,6 +109,9 @@ interface ProductData {
     quantity_on_hand: number;
   }[];
   units?: ProductUnit[];
+  // Non-stock (quick-sell) products bypass the oversell gate and all FIFO
+  // handling — see lib/oversell-gate.ts and the 20260914100000 migration.
+  track_inventory?: boolean;
 }
 
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
@@ -444,6 +451,9 @@ export default function POSPage() {
         }
         if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
         if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
+        // Quick-sell (non-stock) items never enter the POS grid; snapshots
+        // from before the flag existed simply lack the field.
+        list = list.filter(p => (p as any).track_inventory !== false);
         setProducts(list.slice(0, 60));
       } else {
         setProducts([]);
@@ -459,10 +469,11 @@ export default function POSPage() {
 
     let query = supabase
       .from('products')
-      .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit,
+      .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, track_inventory,
         inventory_items(id, warehouse_id, quantity_on_hand),
         units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
       .eq('is_active', true)
+      .eq('track_inventory', true)  // POS grid is stocked-only; quick-sell items use the ⚡ form
       .order('name');
 
     if (q.trim()) {
@@ -497,6 +508,9 @@ export default function POSPage() {
         }
         if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
         if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
+        // Quick-sell (non-stock) items never enter the POS grid; snapshots
+        // from before the flag existed simply lack the field.
+        list = list.filter(p => (p as any).track_inventory !== false);
         setProducts(list.slice(0, 60));
       } else {
         setProducts([]);
@@ -615,6 +629,7 @@ export default function POSPage() {
         inventory_item_id: bestInv?.inventory_item_id,
         warehouse_id: warehouseId,
         stock_available: bestInv?.stock ?? 0,
+        track_inventory: product.track_inventory,
         selected_unit: unit,
         unit_price: unitPrice,
         base_quantity: convertToBaseUnit(qty, unit),
@@ -852,6 +867,7 @@ export default function POSPage() {
             sku: item.sku || '',
             cost_price: item.cost_price || 0,
             stock_available: item.stock_available ?? 0,
+            track_inventory: item.track_inventory,
           })),
           gateStock
         );
@@ -1367,6 +1383,7 @@ export default function POSPage() {
   const [cartMaximized, setCartMaximized] = useState(false);
   const [cartTab, setCartTab] = useState<'items' | 'cost'>('items');
   const [showCheckout, setShowCheckout] = useState(false);
+  const [showQuickSell, setShowQuickSell] = useState(false);
   // Each checkout session is a fresh charge intent — a new idempotency key
   // per modal open. Must sit after the showCheckout declaration: the
   // dependency below evaluates during render.
@@ -1423,6 +1440,16 @@ export default function POSPage() {
               className="w-full pl-10 pr-4 py-2.5 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
             />
           </div>
+          {/* Quick Sell — non-stock items bought on demand, sold immediately */}
+          <button
+            type="button"
+            onClick={() => setShowQuickSell(true)}
+            className="flex items-center gap-1.5 shrink-0 border border-amber-500 text-amber-600 hover:bg-amber-50 rounded-xl px-3 py-2.5 text-sm font-semibold bg-white focus:outline-none focus:border-amber-500 transition whitespace-nowrap"
+            title="Sell an item bought on demand from another shop — no inventory record"
+          >
+            <Zap className="w-4 h-4" />
+            <span className="hidden sm:inline">Quick Sell</span>
+          </button>
           {/* Brand filter */}
           <div className="relative shrink-0">
             <button
@@ -2259,7 +2286,7 @@ export default function POSPage() {
         />
       )}
 
-      {/* Insufficient stock at add-time (spec §6) — configurable partial add */}
+          {/* Insufficient stock at add-time (spec §6) — configurable partial add */}
       {insufficient && (
         <InsufficientStockDialog
           info={insufficient.info}
@@ -2271,6 +2298,14 @@ export default function POSPage() {
           onCancel={() => setInsufficient(null)}
         />
       )}
+
+      {/* Quick Sell — non-stock items bought on demand from another shop */}
+      <QuickSellModal
+        open={showQuickSell}
+        onClose={() => setShowQuickSell(false)}
+        isPos
+        onCreated={() => loadProducts(search)}
+      />
 
       {/* Manual batch allocation override (spec §9) */}
       {editingAllocLine && (() => {

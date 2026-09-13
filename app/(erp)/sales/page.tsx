@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator, Zap } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
@@ -23,6 +23,7 @@ import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
+import { QuickSellModal } from '@/components/quick-sell-modal';
 import { printNode } from '@/lib/print';
 import { isInvoiceOverdue } from '@/lib/format';
 import { networkMonitor } from '@/lib/offline/network';
@@ -104,6 +105,7 @@ export default function SalesPage() {
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
   const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0, cogs: 0, paymentCollectedAtSale: 0, invoiceCount: 0, costHistoryTotal: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showQuickSell, setShowQuickSell] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
   const [showOutstandingModal, setShowOutstandingModal] = useState(false);
   const [showCogsModal, setShowCogsModal] = useState(false);
@@ -816,6 +818,14 @@ export default function SalesPage() {
             <ShoppingCart className="w-4 h-4" />
             <span className="hidden sm:inline">POS</span>
           </Link>
+          <button
+            onClick={() => setShowQuickSell(true)}
+            className="flex items-center justify-center gap-2 border border-amber-500 text-amber-600 hover:bg-amber-50 px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold transition shrink-0"
+            title="Sell an item bought on demand from another shop — no inventory record"
+          >
+            <Zap className="w-4 h-4" />
+            <span className="hidden sm:inline">Quick Sell</span>
+          </button>
           <button onClick={() => setShowCreateModal(true)} className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold transition shrink-0">
             <Plus className="w-4 h-4" />
             <span className="hidden sm:inline">New Invoice</span>
@@ -1072,6 +1082,12 @@ export default function SalesPage() {
                   <tr key={inv.id} className="hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3">
                       <span className="text-sm font-semibold text-blue-600">{inv.invoice_number}</span>
+                      {(inv as any).is_quick_sell && (
+                        <span className="inline-flex items-center gap-0.5 ml-1 px-1.5 py-0.5 bg-amber-50 text-amber-600 text-[10px] font-semibold rounded" title="Quick Sell — non-stock item bought on demand, never stocked">
+                          <Zap className="w-2.5 h-2.5" />
+                          QS
+                        </span>
+                      )}
                       {(inv as any).edit_count > 0 && (
                         <span className="inline-flex items-center gap-0.5 ml-1 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] font-medium rounded" title={`Edited ${(inv as any).edit_count} time${(inv as any).edit_count > 1 ? 's' : ''}`}>
                           <Pencil className="w-2.5 h-2.5" />
@@ -1204,6 +1220,13 @@ export default function SalesPage() {
           onSaved={loadData}
         />
       )}
+
+      <QuickSellModal
+        open={showQuickSell}
+        onClose={() => setShowQuickSell(false)}
+        isPos={false}
+        onCreated={loadData}
+      />
 
       {viewingInvoice && (
         <ViewInvoiceModal
@@ -1522,6 +1545,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       product_unit: product.unit,
       product_base_unit: product.base_unit,
       stock_qty: stock,
+      track_inventory: (product as any).track_inventory !== false,
       quantity: 1,
       unit_price: unitPrice,
       cost_price: defaultUnit ? (defaultUnit.cost_price || (product.cost_price || 0) * (defaultUnit.conversion_factor || 1)) : (product.cost_price || 0),
@@ -1655,6 +1679,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           sku: item.product_sku || '',
           cost_price: item.cost_price || 0,
           stock_available: item.stock_qty,
+          track_inventory: (item as any).track_inventory,
         })),
         gateStock
       );

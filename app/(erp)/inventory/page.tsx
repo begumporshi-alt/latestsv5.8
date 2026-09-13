@@ -179,6 +179,7 @@ export default function InventoryPage() {
   const [filterColor, setFilterColor] = useState('');
   const [filterSize, setFilterSize] = useState('');
   const [filterUnit, setFilterUnit] = useState('');
+  const [filterNonStockOnly, setFilterNonStockOnly] = useState(false);
   const [allColors, setAllColors] = useState<{ id: string; name: string; hex_code: string }[]>([]);
   const [allSizes, setAllSizes] = useState<{ id: string; name: string }[]>([]);
   const [page, setPage] = useState(1);
@@ -339,6 +340,7 @@ export default function InventoryPage() {
     const matchCat = !filterCategory || p.category_id === filterCategory;
     const matchBrand = !filterBrand || p.brand_id === filterBrand;
     const matchWarehouse = !filterWarehouse || (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0) > 0;
+    const matchStockTracking = !filterNonStockOnly ? true : (p as any).track_inventory === false;
     const matchStatus = !filterStatus || (
       filterStatus === 'low' ? (p.total_stock || 0) <= p.min_stock_level && (p.total_stock || 0) > 0 :
       filterStatus === 'out' ? (p.total_stock || 0) === 0 :
@@ -349,11 +351,11 @@ export default function InventoryPage() {
     const matchColor = !filterColor || p.product_colors?.some(c => c.name === filterColor);
     const matchSize = !filterSize || p.product_sizes?.some(s => s.name === filterSize);
     const matchUnit = !filterUnit || (p.unit && p.unit.toLowerCase() === filterUnit.toLowerCase());
-    return matchSearch && matchCat && matchBrand && matchWarehouse && matchStatus && matchColor && matchSize && matchUnit;
-  }), [products, search, filterCategory, filterBrand, filterWarehouse, filterStatus, filterColor, filterSize, filterUnit, inventoryByWarehouse]);
+    return matchSearch && matchCat && matchBrand && matchWarehouse && matchStockTracking && matchStatus && matchColor && matchSize && matchUnit;
+  }), [products, search, filterCategory, filterBrand, filterWarehouse, filterStatus, filterColor, filterSize, filterUnit, filterNonStockOnly, inventoryByWarehouse]);
   const pagedFiltered = useMemo(() => filtered.slice((page - 1) * pageSize, page * pageSize), [filtered, page, pageSize]);
   // Reset to page 1 when filters change
-  useEffect(() => { setPage(1); }, [search, filterCategory, filterBrand, filterStatus, filterWarehouse, filterColor, filterSize, filterUnit]);
+  useEffect(() => { setPage(1); }, [search, filterCategory, filterBrand, filterStatus, filterWarehouse, filterColor, filterSize, filterUnit, filterNonStockOnly]);
 
   // FIFO value of one product|warehouse pair; stock without batch layers falls
   // back to qty × cost_price, matching getInventoryValue's semantics.
@@ -542,6 +544,16 @@ export default function InventoryPage() {
           <option value="out">Out of Stock</option>
           <option value="sold_out">Sold Out (Zero after Sales)</option>
         </select>
+        <button
+          type="button"
+          onClick={() => setFilterNonStockOnly(v => !v)}
+          className={`flex items-center gap-1.5 border rounded-lg px-3 py-2 text-sm font-medium transition whitespace-nowrap ${
+            filterNonStockOnly ? 'border-amber-500 bg-amber-50 text-amber-700' : 'border-border text-muted-foreground hover:bg-muted bg-white'
+          }`}
+          title="Show only quick-sell (non-stock) items — bought on demand, never stocked"
+        >
+          ⚡ Non-stock only
+        </button>
         {allColors.length > 0 && (
           <SearchableSelect
             value={filterColor}
@@ -640,7 +652,11 @@ export default function InventoryPage() {
                         </div>
                         <div>
                           <p className="text-sm font-semibold text-foreground hover:text-blue-600 hover:underline cursor-pointer" onClick={() => router.push(`/inventory/${p.id}`)}>{p.name}</p>
-                          <p className="text-xs text-muted-foreground">{p.enable_multi_unit ? <span className="text-blue-600">Multi-unit</span> : p.unit}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {(p as any).track_inventory === false
+                              ? <span className="text-amber-600 font-medium">⚡ Non-stock (quick sell)</span>
+                              : p.enable_multi_unit ? <span className="text-blue-600">Multi-unit</span> : p.unit}
+                          </p>
                         </div>
                       </div>
                     </td>
@@ -749,6 +765,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
     min_stock_level: product?.min_stock_level?.toString() || '0',
     description: product?.description || '',
     is_active: product?.is_active ?? true,
+    track_inventory: (product as any)?.track_inventory ?? true,
     enable_multi_unit: product?.enable_multi_unit ?? false,
     enable_colors: product?.enable_colors ?? false,
     enable_sizes: product?.enable_sizes ?? false,
@@ -917,6 +934,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
       min_stock_level: Number(form.min_stock_level),
       description: form.description || null,
       is_active: form.is_active,
+      track_inventory: form.track_inventory,
       barcode_label_size: form.barcode_label_size || null,
       barcode_label_width: form.barcode_label_size === 'custom' ? (Number(form.barcode_label_width) || null) : null,
       barcode_label_height: form.barcode_label_size === 'custom' ? (Number(form.barcode_label_height) || null) : null,
@@ -1461,7 +1479,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
             <p className="text-xs text-muted-foreground mt-2">Saved for this product — its barcode/QR label prints at this size instead of the print page's default.</p>
           </div>
 
-          {!isEdit && (
+          {!isEdit && form.track_inventory && (
             <div className="border-t border-border pt-4 mt-4">
               <div className="flex items-center gap-2 mb-3">
                 <Warehouse className="w-4 h-4 text-muted-foreground" />
@@ -1485,7 +1503,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
             </div>
           )}
 
-          {isEdit && (
+          {isEdit && form.track_inventory && (
             <div className="border-t border-border pt-4 mt-4">
               <div className="flex items-center gap-2 mb-3">
                 <Warehouse className="w-4 h-4 text-muted-foreground" />
@@ -1530,6 +1548,15 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
             <label className="block text-xs font-medium mb-1">Description</label>
             <textarea value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
           </div>
+          <label className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50/50 px-3 py-2.5">
+            <input type="checkbox" checked={form.track_inventory} onChange={e => setForm({ ...form, track_inventory: e.target.checked })} className="rounded" />
+            <span className="text-sm">
+              Track inventory
+              <span className="block text-xs text-muted-foreground font-normal">
+                Unchecked = quick-sell item: bought on demand, sold immediately, no stock records or FIFO batches. Cost is entered on each sale.
+              </span>
+            </span>
+          </label>
           {isEdit && (
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={form.is_active} onChange={e => setForm({ ...form, is_active: e.target.checked })} className="rounded" />

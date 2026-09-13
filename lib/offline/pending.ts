@@ -90,6 +90,7 @@ export const OP_TABLES: Record<string, string[]> = {
   'stock_transfer.create': ['stock_movements'],
   'attendance.mark': ['attendance'],
   'attendance.details': ['attendance'],
+  'quick_sell.create': ['invoices', 'invoice_items', 'products', 'payments'],
 }
 
 /**
