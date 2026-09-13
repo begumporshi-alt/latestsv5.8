@@ -2222,7 +2222,6 @@ export default function POSPage() {
                 amountPaid={lastReceipt.amountPaid}
                 balanceDue={Math.max(0, lastReceipt.total - lastReceipt.amountPaid)}
                 reference={lastReceipt.reference || undefined}
-                provisional={lastReceipt.offline}
                 payments={lastReceipt.cashPaid > 0 ? [{
                   payment_number: '',
                   payment_date: lastReceipt.date,

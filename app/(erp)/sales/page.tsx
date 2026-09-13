@@ -661,7 +661,6 @@ export default function SalesPage() {
               balanceDue={balance}
               notes={(invoice as any).notes}
               reference={(invoice as any).reference}
-              provisional={!!(invoice as any).__pending}
               payments={payments?.map((p: any) => ({
                 payment_number: p.payment_number,
                 payment_date: p.payment_date,

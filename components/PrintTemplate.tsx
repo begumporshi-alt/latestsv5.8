@@ -66,9 +66,6 @@ export interface PrintTemplateProps {
   payments?: PrintPayment[];
   reference?: string;
   metaFields?: PrintMetaField[];
-  /** Document created offline and not yet synced — its number is the device's
-   *  temporary reference; the final number is assigned by the server at sync. */
-  provisional?: boolean;
 }
 
 const PRIMARY = '#1e3a6e';
@@ -148,7 +145,6 @@ export default function PrintTemplate({
   payments,
   metaFields,
   reference,
-  provisional = false,
 }: PrintTemplateProps) {
   const normalizedStatus = (status || '').toLowerCase().replace(/\s+/g, '_');
   const badge = statusConfig[normalizedStatus] || { bg: PRIMARY, color: '#fff' };
@@ -327,29 +323,6 @@ export default function PrintTemplate({
             )}
           </div>
         </div>
-
-        {provisional && (
-          <div
-            className="print-no-break"
-            style={{
-              background: '#fff7ed',
-              borderBottom: '2px solid #f59e0b',
-              padding: '8px 20px',
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: '10px',
-              flexWrap: 'wrap',
-            }}
-          >
-            <span style={{ fontWeight: 900, fontSize: '12px', color: '#b45309', letterSpacing: '1px' }}>
-              PROVISIONAL RECEIPT — CREATED OFFLINE
-            </span>
-            <span style={{ fontSize: '11px', color: '#92400e' }}>
-              The final invoice number is assigned when this device syncs. Keep this copy — quoting
-              reference <strong>{docNumber}</strong> will find the final invoice.
-            </span>
-          </div>
-        )}
 
         {/* ═══════════════════ INFO SECTION ═══════════════════ */}
         <div
