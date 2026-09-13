@@ -716,10 +716,15 @@ export default function JournalPage() {
                 </td>
               </tr>
             ) : (entryGroups.map((group) => {
-              const renderRow = (entry: JournalEntry) => (
+              // grouped=true tints the row so a multi-row group reads as one
+              // block with its header band; single-row groups render bare, so
+              // without the tint the rows following a group look like they
+              // belong to it.
+              const renderRow = (entry: JournalEntry, grouped: boolean) => (
                 <JournalEntryRow
                   key={entry.id}
                   entry={entry}
+                  grouped={grouped}
                   isExpanded={expandedIds.has(entry.id)}
                   onToggle={() => toggleExpand(entry.id)}
                   onEdit={() => setEditingEntry(entry)}
@@ -727,7 +732,7 @@ export default function JournalPage() {
                   onReverse={() => setReversingEntry(entry)}
                 />
               );
-              if (group.rows.length < 2) return renderRow(group.rows[0]);
+              if (group.rows.length < 2) return renderRow(group.rows[0], false);
 
               const first = group.rows[0];
               const HeaderIcon = refIcons[group.refType] || FileText;
@@ -768,7 +773,7 @@ export default function JournalPage() {
                     </div>
                   </td>
                 </tr>,
-                ...group.rows.map(renderRow),
+                ...group.rows.map((e) => renderRow(e, true)),
               ];
             }))
             }
@@ -822,8 +827,10 @@ export default function JournalPage() {
   );
 }
 
-function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete, onReverse }: {
+function JournalEntryRow({ entry, grouped, isExpanded, onToggle, onEdit, onDelete, onReverse }: {
   entry: JournalEntry;
+  /** true when the row belongs to a multi-row group — tinted to match the group's header band */
+  grouped?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   onEdit: () => void;
@@ -876,7 +883,7 @@ function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete, onReve
 
   return (
     <>
-      <tr className="hover:bg-muted/30 transition-colors">
+      <tr className={grouped ? 'bg-muted/20 hover:bg-muted/40 transition-colors' : 'hover:bg-muted/30 transition-colors'}>
         <td className="px-2 py-3">
           <button onClick={onToggle} aria-expanded={isExpanded} aria-label={isExpanded ? 'Collapse lines' : 'Expand lines'} className="cursor-pointer">
             {isExpanded ? <ChevronDown className="w-4 h-4 text-muted-foreground" /> : <ChevronRight className="w-4 h-4 text-muted-foreground" />}
@@ -927,7 +934,7 @@ function JournalEntryRow({ entry, isExpanded, onToggle, onEdit, onDelete, onReve
         </td>
       </tr>
       {isExpanded && (
-        <tr className="bg-slate-50/80">
+        <tr className={grouped ? 'bg-muted/30' : 'bg-slate-50/80'}>
           <td colSpan={8} className="px-4 py-3">
             <div className="ml-6">
               {!lines ? (
