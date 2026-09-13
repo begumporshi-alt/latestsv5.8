@@ -15,7 +15,7 @@
 
 import { REPLICA_BY_TABLE, replicaRows, subscribeReplica, type ReplicaTableSpec } from './replica'
 import { getMeta } from './db'
-import { pendingOverlayFor, resetPendingCaches, applyPatchChain } from './pending'
+import { pendingOverlayFor, resetPendingCaches, applyPatchChain, NATURAL_KEYS, naturalKeyOf } from './pending'
 import { subscribeOutbox } from './outbox'
 
 export interface ReplicaQueryResult {
@@ -478,7 +478,18 @@ async function loadRows(table: string): Promise<any[] | null> {
   }
   if (overlay.rows.length > 0) {
     const ids = new Set(merged.map((r: any) => String(r.id)))
-    merged = [...merged, ...overlay.rows.filter((pr: any) => !ids.has(String(pr.id)))]
+    let realRows = merged
+    // Natural-keyed tables (attendance: employee+date): a pending row is the
+    // newer fact — the replica row it targets must be replaced, not joined.
+    const naturalCols = NATURAL_KEYS[table]
+    if (naturalCols) {
+      const pendingKeys = new Set(overlay.rows.map((pr: any) => naturalKeyOf(pr, table)).filter(Boolean))
+      realRows = merged.filter((r: any) => {
+        const k = naturalKeyOf(r, table)
+        return !k || !pendingKeys.has(k)
+      })
+    }
+    merged = [...realRows, ...overlay.rows.filter((pr: any) => !ids.has(String(pr.id)))]
   }
   rowCache.set(table, { at: Date.now(), rows: merged })
   return merged

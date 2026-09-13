@@ -88,6 +88,37 @@ export const OP_TABLES: Record<string, string[]> = {
   'customer_note.create': ['customer_notes'],
   'customer_note.delete': ['customer_notes'],
   'stock_transfer.create': ['stock_movements'],
+  'attendance.mark': ['attendance'],
+  'attendance.details': ['attendance'],
+}
+
+/**
+ * Natural (business) keys for tables whose rows are upserted by a composite
+ * key on the server instead of a client-chosen id. A pending row whose
+ * natural key matches a replica row REPLACES it (the pending write is the
+ * newer fact), and consecutive pending rows for the same key collapse to
+ * the latest — without this, a queued attendance mark would render as a
+ * duplicate of (or alongside) the existing day record.
+ */
+export const NATURAL_KEYS: Record<string, string[]> = {
+  attendance: ['employee_id', 'date'],
+}
+
+export function naturalKeyOf(row: Record<string, any>, table: string): string | null {
+  const cols = NATURAL_KEYS[table]
+  if (!cols) return null
+  return cols.map((c) => String(row[c] ?? '')).join('|')
+}
+
+/** Collapse rows by natural key — later rows win (queue order = newest). */
+export function dedupeByNaturalKey<T extends Record<string, any>>(table: string, rows: T[]): T[] {
+  const cols = NATURAL_KEYS[table]
+  if (!cols) return rows
+  const byKey = new Map<string, T>()
+  for (const r of rows) {
+    byKey.set(naturalKeyOf(r, table)!, r)
+  }
+  return [...byKey.values()]
 }
 
 /**
@@ -993,6 +1024,25 @@ function deriveEffects(op: string, p: Record<string, any>, itemId: string, creat
         out.push({ kind: 'patch', table: 'products', id: String(p.id), patch: { is_active: p.is_active !== false } })
       }
       break
+    case 'attendance.mark':
+    case 'attendance.details':
+      // Upsert by (employee_id, date) — the natural-key dedupe in the
+      // overlay replaces any replica row for the same day, and consecutive
+      // queued marks collapse to the latest status.
+      out.push({
+        kind: 'row',
+        table: 'attendance',
+        row: stamp({
+          id: synthId('att'),
+          employee_id: p.employee_id,
+          date: p.date,
+          status: p.status ?? 'present',
+          check_in: p.check_in ?? null,
+          check_out: p.check_out ?? null,
+          notes: p.notes ?? null,
+        }),
+      })
+      break
     case 'customer_note.create':
       out.push({
         kind: 'row',
@@ -1145,9 +1195,12 @@ export async function pendingOverlayFor(table: string): Promise<Overlay> {
       }
     }
 
-    const rows = collected
-      .filter((r) => !deletes.has(String(r.id)))
-      .map((r) => (patches.has(String(r.id)) ? applyPatchChain(r, patches.get(String(r.id))!) : r))
+    const rows = dedupeByNaturalKey(
+      table,
+      collected
+        .filter((r) => !deletes.has(String(r.id)))
+        .map((r) => (patches.has(String(r.id)) ? applyPatchChain(r, patches.get(String(r.id))!) : r))
+    )
 
     const overlay: Overlay = { rows, patches, deletes }
     if (token !== changeToken) return overlay // outbox changed mid-read — caller re-reads soon

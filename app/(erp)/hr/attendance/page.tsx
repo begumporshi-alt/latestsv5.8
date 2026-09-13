@@ -158,11 +158,14 @@ export default function AttendancePage() {
           date,
           status,
         };
+        // Patch only an EXISTING cache — creating a partial one for a day
+        // never loaded would mask the replica on the next offline read;
+        // the pending overlay surfaces the mark there (natural-key deduped).
         setAttendance(prev => new Map(prev).set(employeeId, local));
         await mutateCache<AttendanceRecord[]>(`attendance:date:${date}`, list =>
-          [...(list || []).filter(r => r.employee_id !== employeeId), local]);
+          list ? [...list.filter(r => r.employee_id !== employeeId), local] : null);
         await mutateCache<{ employee_id: string; status: AttendanceStatus }[]>(`attendance:month:${date.slice(0, 7)}`, list =>
-          [...(list || []).filter(r => r.employee_id !== employeeId), { employee_id: employeeId, status }]);
+          list ? [...list.filter(r => r.employee_id !== employeeId), { employee_id: employeeId, status }] : null);
         void recomputeMonthlyFromCache();
       } catch (err: any) {
         toast({ title: 'Could not queue', description: err?.message || 'Offline storage error', variant: 'destructive' });
@@ -258,7 +261,7 @@ export default function AttendancePage() {
         } as AttendanceRecord;
         setAttendance(prev => new Map(prev).set(employeeId, local));
         await mutateCache<AttendanceRecord[]>(`attendance:date:${date}`, list =>
-          [...(list || []).filter(r => r.employee_id !== employeeId), local]);
+          list ? [...list.filter(r => r.employee_id !== employeeId), local] : null);
       } catch (err: any) {
         toast({ title: 'Could not queue', description: err?.message || 'Offline storage error', variant: 'destructive' });
         setSavingId(null);
