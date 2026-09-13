@@ -68,7 +68,11 @@ export default function ReportsPage() {
       applyDateRange(supabase.from('purchase_orders').select('total_amount'), 'order_date'),
       supabase.from('customers').select('total_purchases'),
       supabase.from('products').select('id, unit'),
-      applyDateRange(supabase.from('invoice_items').select('product_id, quantity, subtotal, unit_name, cost_price, product:products(name)').order('quantity', { ascending: false }).limit(50), 'created_at'),
+      // invoice_items has no created_at column — filter through the parent
+      // invoice's invoice_date (embed with !inner so the filter constrains
+      // rows), and exclude cancelled/draft so top products match the revenue
+      // basis used everywhere else on this page.
+      applyDateRange(supabase.from('invoice_items').select('product_id, quantity, subtotal, unit_name, cost_price, product:products(name), invoices!inner(invoice_date, status)').neq('invoices.status', 'cancelled').neq('invoices.status', 'draft').order('quantity', { ascending: false }).limit(50), 'invoices.invoice_date'),
       supabase.from('customers').select('name, total_purchases').order('total_purchases', { ascending: false }).limit(10),
       applyDateRange(supabase.from('payments').select('amount').eq('payment_type', 'received'), 'payment_date'),
       supabase.from('accounts').select('id, code, name, account_type').eq('is_active', true),
@@ -228,11 +232,16 @@ export default function ReportsPage() {
   }
 
   async function getCategoryRevenue(startDate: string, endDate: string | null) {
+    // invoice_items has no created_at column — filter through the parent
+    // invoice's invoice_date, excluding cancelled/draft invoices like the
+    // revenue figures do.
     let query = supabase
       .from('invoice_items')
-      .select('subtotal, product:products(category:categories(name))')
-      .gte('created_at', startDate);
-    if (endDate) query = query.lte('created_at', endDate);
+      .select('subtotal, product:products(category:categories(name)), invoices!inner(invoice_date, status)')
+      .neq('invoices.status', 'cancelled')
+      .neq('invoices.status', 'draft')
+      .gte('invoices.invoice_date', startDate);
+    if (endDate) query = query.lte('invoices.invoice_date', endDate);
     const { data } = await query;
 
     const catTotals: Record<string, number> = {};
