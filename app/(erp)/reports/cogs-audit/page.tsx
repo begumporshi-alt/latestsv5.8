@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, Calendar, CalendarDays, ChevronDown, ChevronRight, Download, FileText,
   Loader2, Printer, RefreshCw, Search, Trash2, X, XCircle,
@@ -46,6 +46,24 @@ interface ItemFIFOTotal {
   fifo_total: number;
   batch_count: number;
   fifo_vs_cost: string;
+}
+
+// Per-product COGS sources from get_invoice_item_cogs_detail (item drift modal)
+interface ItemCogsDetail {
+  product_id: string;
+  product_name: string;
+  sku: string;
+  unit: string;
+  item_qty: number;
+  item_unit_cost: number | null;
+  line_cost_a: number;
+  history_qty: number;
+  history_unit_cost: number | null;
+  history_cost_b: number;
+  history_rows: number;
+  fifo_cost_d: number;
+  batch_count: number;
+  batches: { batch_number: string; consume_qty: number; cost_per_unit: number; total_cost: number }[];
 }
 
 interface AuditRow {
@@ -246,6 +264,9 @@ export default function COGSAuditPage() {
   const [singleReason, setSingleReason] = useState('');
   const [showRepairModal, setShowRepairModal] = useState<{ invoiceId: string; action: 'repost-cogs' | 'refresh-history' } | null>(null);
   const [repairReason, setRepairReason] = useState('');
+  const [itemModalInvoiceId, setItemModalInvoiceId] = useState<string | null>(null);
+  const [itemDetail, setItemDetail] = useState<ItemCogsDetail[] | null>(null);
+  const [itemDetailLoading, setItemDetailLoading] = useState(false);
   const cancelRef = useRef(false);
 
   useEffect(() => { loadData(); }, []);
@@ -518,6 +539,26 @@ export default function COGSAuditPage() {
     URL.revokeObjectURL(url);
   }
 
+  // ── Item-wise drift modal (per-product A/B/D breakdown) ──
+  async function openItemModal(invoiceId: string) {
+    setItemModalInvoiceId(invoiceId);
+    setItemDetail(null);
+    setItemDetailLoading(true);
+    try {
+      const { data, error } = await supabase.rpc('get_invoice_item_cogs_detail', {
+        p_invoice_id: invoiceId,
+      });
+      if (error) throw error;
+      setItemDetail((data as ItemCogsDetail[]) || []);
+    } catch (e: any) {
+      console.error('Failed to load item COGS detail:', e);
+      alert('Failed to load item COGS detail: ' + e.message);
+      setItemModalInvoiceId(null);
+    } finally {
+      setItemDetailLoading(false);
+    }
+  }
+
   // ── Chart data ───────────────────────────────────────
   const pieData = useMemo(() => [
     { name: 'Consistent', value: stats.consistent, color: STATUS_COLORS.CONSISTENT },
@@ -641,7 +682,7 @@ export default function COGSAuditPage() {
               sale time. Ranked by |C − B|. Common causes: sales returns reverse journal COGS but never rewrite
               history; edited invoices keep their pre-edit history snapshot; occasionally COGS was posted at the
               wrong amount outright. Use Expected (A) — current items × cost — to decide which side is wrong:
-              if the journal matches A, refresh the history; if the journal doesn't match A, repost the journal.
+              if the journal matches A, refresh the history; if the journal doesn&apos;t match A, repost the journal.
               Both repairs are per-row, audited, and require a reason.
             </p>
           </div>
@@ -926,6 +967,7 @@ export default function COGSAuditPage() {
                 }}
                 onDeleteJE={(jeId) => setShowReasonModal({ invoiceId: r.invoice_id, jeId })}
                 onRepair={(action) => setShowRepairModal({ invoiceId: r.invoice_id, action })}
+                onShowItems={() => openItemModal(r.invoice_id)}
               />
             ))}
           </tbody>
@@ -1098,6 +1140,20 @@ export default function COGSAuditPage() {
           </div>
         );
       })()}
+
+      {/* ── Item-wise drift modal ─────────────────────── */}
+      {itemModalInvoiceId && (() => {
+        const row = rows.find(r => r.invoice_id === itemModalInvoiceId);
+        if (!row) return null;
+        return (
+          <ItemDriftModal
+            row={row}
+            detail={itemDetail}
+            loading={itemDetailLoading}
+            onClose={() => { setItemModalInvoiceId(null); setItemDetail(null); }}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -1114,7 +1170,7 @@ function StatCard({ label, value, color, onClick }: { label: string; value: numb
 }
 
 function AuditTableRow({
-  row, selected, expanded, onToggleSelect, onToggleExpand, onDeleteJE, onRepair,
+  row, selected, expanded, onToggleSelect, onToggleExpand, onDeleteJE, onRepair, onShowItems,
 }: {
   row: AuditRow;
   selected: boolean;
@@ -1123,6 +1179,7 @@ function AuditTableRow({
   onToggleExpand: () => void;
   onDeleteJE: (jeId: string) => void;
   onRepair: (action: 'repost-cogs' | 'refresh-history') => void;
+  onShowItems: () => void;
 }) {
   const statusColor = STATUS_COLORS[row.audit_status] || '#6b7280';
   const fixColor = FIX_COLORS[row.fix_action] || '#6b7280';
@@ -1150,7 +1207,15 @@ function AuditTableRow({
         </td>
         <td className="p-2 text-xs">{row.invoice_date}</td>
         <td className="p-2 text-xs">{row.customer_name || '—'}</td>
-        <td className="p-2 text-right">{row.item_count}</td>
+        <td className="p-2 text-right">
+          <button
+            onClick={onShowItems}
+            className="text-blue-600 hover:underline font-medium"
+            title="Item-wise COGS drift breakdown (per-product items / history / FIFO)"
+          >
+            {row.item_count}
+          </button>
+        </td>
         <td className="p-2 text-right font-mono text-xs">{formatCurrency(row.expected_cogs_a)}</td>
         <td className="p-2 text-right font-mono text-xs">
           {row.expected_cogs_b > 0 ? formatCurrency(row.expected_cogs_b) : '—'}
@@ -1334,5 +1399,243 @@ function AuditTableRow({
         </tr>
       )}
     </>
+  );
+}
+
+// ── Item-wise drift modal ─────────────────────────────────
+// Per-product COGS sources for ONE invoice: A (current items × cost_price),
+// B (cost_price_history snapshot at save time), D (FIFO batch draws). Journal
+// (C) stays invoice-level — lump ^COGS entries carry no product linkage.
+function ItemDriftModal({ row, detail, loading, onClose }: {
+  row: AuditRow;
+  detail: ItemCogsDetail[] | null;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
+
+  // Drifted products first, then by items cost descending
+  const sorted = useMemo(() => {
+    if (!detail) return [];
+    const driftRank = (d: ItemCogsDetail) =>
+      (Math.abs(d.line_cost_a - d.history_cost_b) > 0.01 ||
+       Math.abs(d.line_cost_a - d.fifo_cost_d) > 0.01) ? 0 : 1;
+    return [...detail].sort((x, y) =>
+      driftRank(x) - driftRank(y) || y.line_cost_a - x.line_cost_a);
+  }, [detail]);
+
+  const driftedCount = sorted.filter(d =>
+    Math.abs(d.line_cost_a - d.history_cost_b) > 0.01 ||
+    Math.abs(d.line_cost_a - d.fifo_cost_d) > 0.01).length;
+  const hasAnyHistory = (detail || []).some(d => d.history_rows > 0);
+
+  const statusColor = STATUS_COLORS[row.audit_status] || '#6b7280';
+  const dA_B = row.expected_cogs_a - row.expected_cogs_b;  // items vs history
+  const dA_D = row.expected_cogs_a - row.fifo_cogs_d;      // items vs FIFO
+  const dC_A = row.journal_cogs_c - row.expected_cogs_a;   // journal vs items
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg w-full max-w-5xl max-h-[88vh] flex flex-col">
+        {/* Header */}
+        <div className="p-4 border-b flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-bold">Item-wise COGS drift</h2>
+            <div className="text-sm text-gray-600 mt-0.5">
+              <Link href={`/sales?highlight=${row.invoice_id}`} className="text-blue-600 hover:underline font-mono">
+                {row.invoice_number}
+              </Link>
+              <span className="mx-1.5">•</span>{row.invoice_date}
+              <span className="mx-1.5">•</span>{row.customer_name || '—'}
+              <span className="mx-1.5">•</span>
+              <span className="inline-block px-1.5 py-0.5 rounded text-white text-xs align-middle"
+                    style={{ backgroundColor: statusColor }}>
+                {STATUS_LABELS[row.audit_status] || row.audit_status}
+              </span>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Invoice-level summary (same four sources as the audit row) */}
+        <div className="p-4 border-b bg-gray-50">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-center">
+            <div className="bg-white border rounded p-2">
+              <div className="text-xs text-gray-500">Expected (A) items × cost</div>
+              <div className="font-mono font-semibold">{formatCurrency(row.expected_cogs_a)}</div>
+            </div>
+            <div className="bg-white border rounded p-2">
+              <div className="text-xs text-gray-500">History (B) snapshot</div>
+              <div className="font-mono font-semibold">{formatCurrency(row.expected_cogs_b)}</div>
+            </div>
+            <div className="bg-white border rounded p-2">
+              <div className="text-xs text-gray-500">Journal (C) posted</div>
+              <div className="font-mono font-semibold">{formatCurrency(row.journal_cogs_c)}</div>
+            </div>
+            <div className="bg-white border rounded p-2">
+              <div className="text-xs text-gray-500">FIFO (D) consumed</div>
+              <div className="font-mono font-semibold">{formatCurrency(row.fifo_cogs_d)}</div>
+            </div>
+          </div>
+          <div className="flex flex-wrap justify-center gap-x-6 gap-y-1 mt-2 text-xs">
+            <span>Δ Journal−items: <SignedAmount value={dC_A} /></span>
+            <span>Δ History−items: <SignedAmount value={-dA_B} /></span>
+            <span>Δ FIFO−items: <SignedAmount value={-dA_D} /></span>
+          </div>
+          {row.invoice_status === 'cancelled' && (
+            <p className="text-xs text-cyan-700 mt-2 text-center">
+              Cancelled invoice: the cards above show net-of-reversal figures; the per-product
+              table below shows the raw original rows.
+            </p>
+          )}
+        </div>
+
+        {/* Per-product table */}
+        <div className="overflow-y-auto flex-1">
+          {loading ? (
+            <div className="flex items-center justify-center p-12">
+              <Loader2 className="h-6 w-6 animate-spin text-blue-500" />
+            </div>
+          ) : !detail || detail.length === 0 ? (
+            <p className="p-8 text-center text-gray-500">No item rows found for this invoice.</p>
+          ) : (
+            <>
+              <div className="px-4 pt-3 text-xs text-gray-600">
+                {driftedCount > 0 ? (
+                  <span className="text-amber-700 font-medium">
+                    {driftedCount} of {detail.length} products show drift
+                  </span>
+                ) : (
+                  <span className="text-green-700 font-medium">
+                    All {detail.length} products agree across items / history / FIFO
+                  </span>
+                )}
+                <span className="text-gray-400 ml-2">(drifted products listed first)</span>
+              </div>
+              <table className="w-full text-xs mt-2">
+                <thead className="bg-gray-50 uppercase text-gray-600 sticky top-0">
+                  <tr>
+                    <th className="p-2 w-6"></th>
+                    <th className="p-2 text-left">Product</th>
+                    <th className="p-2 text-right">Qty</th>
+                    <th className="p-2 text-right">Cost/unit now</th>
+                    <th className="p-2 text-right">Cost/unit hist</th>
+                    <th className="p-2 text-right">A items</th>
+                    <th className="p-2 text-right">B history</th>
+                    <th className="p-2 text-right">D fifo</th>
+                    <th className="p-2 text-right">Δ (A−B)</th>
+                    <th className="p-2 text-right">Δ (A−D)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.map(d => {
+                    const driftAB = d.line_cost_a - d.history_cost_b;
+                    const driftAD = d.line_cost_a - d.fifo_cost_d;
+                    const drifted = Math.abs(driftAB) > 0.01 || Math.abs(driftAD) > 0.01;
+                    const unitDiff = d.item_unit_cost != null && d.history_unit_cost != null &&
+                      Math.abs(d.item_unit_cost - d.history_unit_cost) > 0.01;
+                    const isExpanded = expandedProduct === d.product_id;
+                    return (
+                      <Fragment key={d.product_id}>
+                        <tr
+                          className={`border-t cursor-pointer hover:bg-gray-50 ${drifted ? 'bg-amber-50' : ''}`}
+                          onClick={() => d.batch_count > 0 && setExpandedProduct(isExpanded ? null : d.product_id)}
+                          title={d.batch_count > 0 ? 'Click to show the FIFO batch draws' : undefined}
+                        >
+                          <td className="p-2">
+                            {d.batch_count > 0 && (
+                              isExpanded
+                                ? <ChevronDown className="h-3.5 w-3.5 text-gray-400" />
+                                : <ChevronRight className="h-3.5 w-3.5 text-gray-400" />
+                            )}
+                          </td>
+                          <td className="p-2">
+                            <div className="font-medium">{d.product_name}</div>
+                            <div className="font-mono text-gray-500">{d.sku || '—'}</div>
+                          </td>
+                          <td className="p-2 text-right font-mono">
+                            {d.item_qty > 0 ? `${d.item_qty.toLocaleString()} ${d.unit}` : '—'}
+                          </td>
+                          <td className="p-2 text-right font-mono">
+                            {d.item_unit_cost != null && d.item_qty > 0 ? formatCurrency(d.item_unit_cost) : '—'}
+                          </td>
+                          <td className={`p-2 text-right font-mono ${unitDiff ? 'text-amber-700 font-semibold' : ''}`}>
+                            {d.history_unit_cost != null ? formatCurrency(d.history_unit_cost) : '—'}
+                          </td>
+                          <td className="p-2 text-right font-mono">{formatCurrency(d.line_cost_a)}</td>
+                          <td className="p-2 text-right font-mono">
+                            {d.history_rows > 0 ? formatCurrency(d.history_cost_b) : <span className="text-gray-400" title="No history snapshot row for this product">—</span>}
+                          </td>
+                          <td className="p-2 text-right font-mono">
+                            {d.batch_count > 0 ? formatCurrency(d.fifo_cost_d) : <span className="text-gray-400" title="No FIFO consumption record (pre-FIFO invoice or zero stock)">—</span>}
+                          </td>
+                          <td className="p-2 text-right font-mono">
+                            {Math.abs(driftAB) > 0.01 ? <SignedAmount value={driftAB} /> : <span className="text-gray-400">—</span>}
+                          </td>
+                          <td className="p-2 text-right font-mono">
+                            {Math.abs(driftAD) > 0.01 ? <SignedAmount value={driftAD} /> : <span className="text-gray-400">—</span>}
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr className="bg-gray-50">
+                            <td colSpan={10} className="px-4 pb-2">
+                              <div className="text-gray-600 mb-1">
+                                FIFO batch draws for {d.product_name}
+                                {d.history_rows > 0 && <> • history snapshot rows: {d.history_rows}</>}
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {d.batches.map((b, i) => (
+                                  <div key={i} className="bg-white border rounded px-2 py-1 font-mono">
+                                    <span className="text-gray-500">{b.batch_number || 'no batch#'}</span>
+                                    <span className="mx-1.5">•</span>
+                                    {b.consume_qty} @ {formatCurrency(b.cost_per_unit)}
+                                    <span className="mx-1.5">•</span>
+                                    <span className="font-semibold">{formatCurrency(b.total_cost)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+                <tfoot className="bg-gray-50 border-t-2 font-semibold">
+                  <tr>
+                    <td></td>
+                    <td className="p-2">Total ({detail.length} products)</td>
+                    <td colSpan={3}></td>
+                    <td className="p-2 text-right font-mono">{formatCurrency(sorted.reduce((s, d) => s + d.line_cost_a, 0))}</td>
+                    <td className="p-2 text-right font-mono">{formatCurrency(sorted.reduce((s, d) => s + d.history_cost_b, 0))}</td>
+                    <td className="p-2 text-right font-mono">{formatCurrency(sorted.reduce((s, d) => s + d.fifo_cost_d, 0))}</td>
+                    <td className="p-2 text-right font-mono">
+                      <SignedAmount value={sorted.reduce((s, d) => s + d.line_cost_a - d.history_cost_b, 0)} />
+                    </td>
+                    <td className="p-2 text-right font-mono">
+                      <SignedAmount value={sorted.reduce((s, d) => s + d.line_cost_a - d.fifo_cost_d, 0)} />
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </>
+          )}
+        </div>
+
+        {/* Legend */}
+        <div className="p-3 border-t text-xs text-gray-500 leading-relaxed">
+          <b>A</b> current invoice items × cost_price (what a COGS repost would book) •{' '}
+          <b>B</b> cost price history snapshot written when the invoice was saved — edits after save
+          can leave it stale •{' '}
+          <b>D</b> FIFO batches actually consumed at their recorded cost.{' '}
+          {!hasAnyHistory && detail && detail.length > 0 && (
+            <span className="text-amber-700">This invoice has no history snapshot rows at all. </span>
+          )}
+          Per-batch unit cost is base-unit scale; all money columns are comparable.
+        </div>
+      </div>
+    </div>
   );
 }
