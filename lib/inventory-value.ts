@@ -7,96 +7,44 @@ export interface InventoryValueResult {
   productCount: number;
 }
 
+// One jsonb row returned by the get_inventory_page_aggregates RPC. The
+// products map is keyed by product id; per-warehouse fifo is null when that
+// pair has no positive batch layer (callers fall back to qty × cost_price,
+// matching the old client-side semantics).
+export interface InventoryAggregates {
+  total_value?: number;
+  fallback_value?: number;
+  stock_pair_count?: number;
+  stock_pair_product_count?: number;
+  products?: Record<string, {
+    stock: number;
+    sold: number;
+    fifo: number;
+    warehouses?: Record<string, { stock: number; fifo: number | null }>;
+  }>;
+  batch_only_pairs?: Record<string, Record<string, number>>;
+}
+
 export async function getInventoryValue(
   supabase: SupabaseClient
 ): Promise<InventoryValueResult> {
-  // Primary path: the existing FIFO RPC sums remaining batch qty * unit_cost.
+  // One set-based RPC computes the whole valuation: positive FIFO layers
+  // company-wide plus the qty × cost_price fallback for stock pairs with no
+  // batch layer. This used to be a scalar RPC followed by two full paginated
+  // table downloads classified client-side; the scalar-only RPC mode
+  // (p_include_products = false) returns just the four fields in one call.
   try {
-    const { data: fifoValue, error: rpcError } = await supabase.rpc('get_fifo_inventory_value');
-    const fifoTotal = Number(fifoValue || 0);
-    if (rpcError) throw rpcError;
-
-    // Find products that have stock but no remaining batches for that
-    // product+warehouse. Those need the fallback qty * cost_price.
-    // Fetch the set of (product_id, warehouse_id) that DO have a remaining
-    // batch, then classify in memory to avoid an N+1 query.
-    let missing: any[] = [];
-    let batchKeys = new Set<string>();
-    try {
-      // Paginate both queries to handle >1000 rows (Supabase row cap).
-      let pg = 0;
-      while (true) {
-        const { data: invPage } = await supabase
-          .from('inventory_items')
-          .select('product_id, warehouse_id, quantity_on_hand, product:products(id, cost_price)')
-          .gt('quantity_on_hand', 0)
-          .order('id')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        const page = invPage || [];
-        missing.push(...page);
-        if (page.length < 1000) break;
-        pg++;
-      }
-      pg = 0;
-      while (true) {
-        const { data: batchPage } = await supabase
-          .from('inventory_batches')
-          .select('product_id, warehouse_id')
-          .gt('quantity_remaining', 0)
-          .order('id')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        const page = batchPage || [];
-        for (const b of page) {
-          batchKeys.add(`${b.product_id}|${b.warehouse_id}`);
-        }
-        if (page.length < 1000) break;
-        pg++;
-      }
-    } catch {
-      missing = [];
-    }
-
-    const missingProducts = new Set<string>();
-    let fallbackValue = 0;
-    let productCount = 0;
-    for (const item of missing) {
-      const key = `${item.product_id}|${item.warehouse_id}`;
-      productCount++;
-      if (item.product?.id) missingProducts.add(item.product.id);
-      if (!batchKeys.has(key)) {
-        fallbackValue += Number(item.quantity_on_hand) * Number(item.product?.cost_price || 0);
-      }
-    }
-
+    const { data, error } = await supabase.rpc('get_inventory_page_aggregates', { p_include_products: false });
+    if (error) throw error;
+    const agg = (data || {}) as InventoryAggregates;
+    const fallback = Number(agg.fallback_value) || 0;
     return {
-      total: fifoTotal + fallbackValue,
-      source: fallbackValue > 0 ? 'fifo_with_fallback' : 'fifo',
-      productsWithoutBatches: fallbackValue > 0 ? missingProducts.size : 0,
-      productCount,
+      total: Number(agg.total_value) || 0,
+      source: fallback > 0 ? 'fifo_with_fallback' : 'fifo',
+      productsWithoutBatches: fallback > 0 ? (Number(agg.stock_pair_product_count) || 0) : 0,
+      productCount: Number(agg.stock_pair_count) || 0,
     };
   } catch {
-    // RPC failed — fall back to a simple quantity * cost_price sum.
-    try {
-      let total = 0;
-      let count = 0;
-      let pg = 0;
-      while (true) {
-        const { data: pageData } = await supabase
-          .from('inventory_items')
-          .select('quantity_on_hand, product:products(cost_price)')
-          .order('id')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        const page = pageData || [];
-        for (const item of page) {
-          total += Number(item.quantity_on_hand) * Number((item.product as any)?.cost_price || 0);
-          count++;
-        }
-        if (page.length < 1000) break;
-        pg++;
-      }
-      return { total, source: 'fallback_simple', productsWithoutBatches: 0, productCount: count };
-    } catch {
-      return { total: 0, source: 'error', productsWithoutBatches: 0, productCount: 0 };
-    }
+    return { total: 0, source: 'error', productsWithoutBatches: 0, productCount: 0 };
   }
 }
