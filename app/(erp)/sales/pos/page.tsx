@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, Layers, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, Layers, TriangleAlert as AlertTriangle, Printer } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -31,6 +31,40 @@ import { enqueueOp } from '@/lib/offline/outbox';
 import { fetchAll } from '@/lib/fetch-all';
 import { REPLICA, replicaRows, buildPosSnapshotFromReplica } from '@/lib/offline/replica';
 import type { LedgerStock } from '@/lib/oversell-gate';
+import PrintTemplate from '@/components/PrintTemplate';
+import { printNode } from '@/lib/print';
+
+// Snapshot of a completed charge, taken before the cart resets, so the
+// receipt can be printed afterwards — online with the real number, offline
+// with the device's temporary reference plus the provisional banner.
+interface PosReceipt {
+  number: string;
+  offline: boolean;
+  date: string;
+  status: string;
+  customer: { name: string; code?: string; phone?: string; address?: string } | null;
+  items: {
+    product_name: string;
+    product_sku?: string;
+    quantity: number;
+    unit_price: number;
+    discount_percent: number;
+    subtotal: number;
+    unit_name?: string;
+  }[];
+  subtotal: number;
+  cartDiscount: number;
+  cartDiscountPercent: number;
+  extraDiscount: number;
+  taxAmount: number;
+  shipping: number;
+  total: number;
+  amountPaid: number;
+  cashPaid: number;
+  storeCredit: number;
+  paymentMethod: string;
+  reference: string;
+}
 
 interface CartItem {
   id: string;
@@ -101,6 +135,10 @@ export default function POSPage() {
       setVatSettings(s);
       setApplyVat(s.enabled && s.default_on);
     });
+    // Company header for the printed receipt. Offline this resolves from the
+    // local replica / cached result via the wrapped client.
+    supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle()
+      .then(({ data }: any) => setCompanySettings(data?.setting_value || null));
   }, []);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
@@ -117,6 +155,11 @@ export default function POSPage() {
   const [orderComplete, setOrderComplete] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [lastInvoiceNumber, setLastInvoiceNumber] = useState('');
+  const [lastReceipt, setLastReceipt] = useState<PosReceipt | null>(null);
+  const [showReceipt, setShowReceipt] = useState(false);
+  const [companySettings, setCompanySettings] = useState<any>(null);
+  const receiptPrintRef = useRef<HTMLDivElement>(null);
+  const orderCompleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [unitSelectorProduct, setUnitSelectorProduct] = useState<ProductData | null>(null);
   const [unitSelectorQty, setUnitSelectorQty] = useState('1');
   const [showScanner, setShowScanner] = useState(false);
@@ -758,6 +801,14 @@ export default function POSPage() {
   // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
   const grandTotal = posVat.total + (shipping || 0);
 
+  // Auto-hide the Order Complete panel after 30s — long enough to click
+  // Print Receipt, short enough that the next sale isn't blocked for long.
+  // Re-armed per order so a stale timer can never hide a newer panel.
+  function armOrderCompleteHide() {
+    if (orderCompleteTimerRef.current) clearTimeout(orderCompleteTimerRef.current);
+    orderCompleteTimerRef.current = setTimeout(() => setOrderComplete(false), 30_000);
+  }
+
   async function processOrder() {
     // One Charge click = one order. Extra clicks while a submission is in
     // flight (the gates below await fetches that hang offline, before the
@@ -858,7 +909,7 @@ export default function POSPage() {
         const queued = await queueOfflineOrder();
         if (queued) {
           setProcessing(false);
-          setTimeout(() => setOrderComplete(false), 4000);
+          armOrderCompleteHide();
         }
         return;
       }
@@ -1036,6 +1087,36 @@ export default function POSPage() {
         if (payError) console.error('Payment record error:', payError.message);
       }
 
+      // Receipt snapshot — taken while the cart is still populated.
+      setLastReceipt({
+        number: invoiceNumber,
+        offline: false,
+        date: invoiceDate,
+        status: invoiceStatus,
+        customer: customers.find(c => c.id === customerId) || null,
+        items: cart.map(item => ({
+          product_name: item.name,
+          product_sku: item.sku,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          discount_percent: item.discount_percent || 0,
+          subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
+          unit_name: item.selected_unit?.unit_name ?? undefined,
+        })),
+        subtotal,
+        cartDiscount: cartDiscountAmount,
+        cartDiscountPercent: discount,
+        extraDiscount,
+        taxAmount: posVat.taxAmount,
+        shipping,
+        total: grandTotal,
+        amountPaid: paymentTerm === 'full' ? grandTotal : (paymentTerm === 'partial' ? amountPaid : 0),
+        cashPaid: cashToPay,
+        storeCredit: creditToApply,
+        paymentMethod,
+        reference,
+      });
+
       setCart([]);
       setDiscount(0);
       setExtraDiscount(0);
@@ -1063,7 +1144,7 @@ export default function POSPage() {
     }
 
     setProcessing(false);
-    setTimeout(() => setOrderComplete(false), 4000);
+    armOrderCompleteHide();
   }
 
   // Offline checkout: mirror processOrder's number computation and payload
@@ -1199,6 +1280,38 @@ export default function POSPage() {
         byPair[key] = (byPair[key] ?? 0) - l.base_quantity;
       }
       return { ...base, byPair };
+    });
+
+    // Receipt snapshot — taken while the cart is still populated. The number
+    // is the device's temporary reference; the printout carries the
+    // provisional banner until sync assigns the real POS- number.
+    setLastReceipt({
+      number: tempNumber,
+      offline: true,
+      date: invoiceDate,
+      status: invoiceStatus,
+      customer: customers.find(c => c.id === customerId) || null,
+      items: cart.map(item => ({
+        product_name: item.name,
+        product_sku: item.sku,
+        quantity: item.quantity,
+        unit_price: item.unit_price,
+        discount_percent: item.discount_percent || 0,
+          subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
+          unit_name: item.selected_unit?.unit_name ?? undefined,
+        })),
+        subtotal,
+        cartDiscount: cartDiscountAmount,
+        cartDiscountPercent: discount,
+        extraDiscount,
+        taxAmount: posVat.taxAmount,
+        shipping,
+        total: grandTotal,
+        amountPaid,
+      cashPaid: cashToPay,
+      storeCredit: creditToApply,
+      paymentMethod,
+      reference,
     });
 
     // Same cart reset as the online path.
@@ -1995,7 +2108,20 @@ export default function POSPage() {
             <h3 className="font-bold text-lg text-foreground">Order Complete!</h3>
             <p className="text-sm text-muted-foreground mt-1">{lastInvoiceNumber}</p>
             <div className="flex items-center gap-2 mt-4">
-              <button onClick={() => setOrderComplete(false)} className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition">New Order</button>
+              {lastReceipt && (
+                <button
+                  onClick={() => setShowReceipt(true)}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-sm font-semibold transition"
+                >
+                  <Printer className="w-4 h-4" />Print Receipt
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  if (orderCompleteTimerRef.current) clearTimeout(orderCompleteTimerRef.current);
+                  setOrderComplete(false);
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 transition">New Order</button>
             </div>
           </div>
         )}
@@ -2035,6 +2161,78 @@ export default function POSPage() {
           partialAmount={partialAmount}
           setPartialAmount={setPartialAmount}
         />
+      )}
+
+      {/* Receipt preview + print — opened from the Order Complete panel.
+          Works offline: everything renders from the charge snapshot, and
+          printNode is a purely local operation. */}
+      {showReceipt && lastReceipt && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="print-modal bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="no-print flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-muted-foreground">Receipt Preview</span>
+                {lastReceipt.offline && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 font-medium">
+                    Queued offline — provisional number
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => printNode(receiptPrintRef.current)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition"
+                >
+                  <Printer className="w-3.5 h-3.5" />Print
+                </button>
+                <button onClick={() => setShowReceipt(false)} className="p-1.5 hover:bg-gray-100 rounded-lg transition">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="p-8" ref={receiptPrintRef}>
+              <PrintTemplate
+                docType="INVOICE"
+                docNumber={lastReceipt.number}
+                docDate={lastReceipt.date}
+                status={lastReceipt.status}
+                company={{
+                  name: companySettings?.name || 'Your Company',
+                  address: companySettings?.address,
+                  phone: companySettings?.phone,
+                  email: companySettings?.email,
+                  logo_url: companySettings?.logo_url,
+                }}
+                customer={{
+                  name: lastReceipt.customer?.name || 'Walk In',
+                  code: lastReceipt.customer?.code,
+                  phone: lastReceipt.customer?.phone,
+                  address: lastReceipt.customer?.address,
+                }}
+                items={lastReceipt.items}
+                subtotal={lastReceipt.subtotal}
+                discountTotal={lastReceipt.items.reduce((s, i) => s + i.quantity * i.unit_price * (i.discount_percent || 0) / 100, 0)}
+                cartDiscount={lastReceipt.cartDiscount}
+                cartDiscountPercent={lastReceipt.cartDiscountPercent}
+                extraDiscount={lastReceipt.extraDiscount}
+                taxAmount={lastReceipt.taxAmount}
+                taxLabel={vatSettings.enabled ? `VAT (${vatSettings.rate}%)` : 'VAT'}
+                shippingAmount={lastReceipt.shipping}
+                totalAmount={lastReceipt.total}
+                amountPaid={lastReceipt.amountPaid}
+                balanceDue={Math.max(0, lastReceipt.total - lastReceipt.amountPaid)}
+                reference={lastReceipt.reference || undefined}
+                provisional={lastReceipt.offline}
+                payments={lastReceipt.cashPaid > 0 ? [{
+                  payment_number: '',
+                  payment_date: lastReceipt.date,
+                  amount: lastReceipt.cashPaid,
+                  payment_method: lastReceipt.paymentMethod,
+                }] : undefined}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {shortfallConfirmOpen && (

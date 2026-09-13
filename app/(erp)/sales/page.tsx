@@ -528,6 +528,16 @@ export default function SalesPage() {
           <div className="no-print flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
             <div className="flex flex-wrap items-center gap-4">
               <span className="text-sm font-semibold text-muted-foreground">Invoice Preview</span>
+              {(invoice as any).__pending && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 font-medium" title="Created on this device — will sync when back online">
+                  Queued offline — provisional number
+                </span>
+              )}
+              {(invoice as any).client_temp_number && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-300 font-medium" title="The temporary reference printed on the offline receipt before this invoice synced">
+                  Offline ref: {(invoice as any).client_temp_number}
+                </span>
+              )}
               <div className="flex items-center gap-1 bg-muted/40 rounded-lg p-0.5">
                 <button onClick={() => setViewTab('details')} className={`px-3 py-1 rounded-md text-xs font-medium transition ${viewTab === 'details' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Details</button>
                 <button onClick={() => setViewTab('history')} className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-medium transition ${viewTab === 'history' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
@@ -651,6 +661,7 @@ export default function SalesPage() {
               balanceDue={balance}
               notes={(invoice as any).notes}
               reference={(invoice as any).reference}
+              provisional={!!(invoice as any).__pending}
               payments={payments?.map((p: any) => ({
                 payment_number: p.payment_number,
                 payment_date: p.payment_date,
@@ -741,7 +752,7 @@ export default function SalesPage() {
 
   const filtered = invoices.filter(i => {
     // Basic filters
-    if (search && !i.invoice_number.toLowerCase().includes(search.toLowerCase()) && !i.customer?.name?.toLowerCase().includes(search.toLowerCase()) && !(i.reference || '').toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !i.invoice_number.toLowerCase().includes(search.toLowerCase()) && !i.customer?.name?.toLowerCase().includes(search.toLowerCase()) && !(i.reference || '').toLowerCase().includes(search.toLowerCase()) && !(i.client_temp_number || '').toLowerCase().includes(search.toLowerCase())) return false;
     if (filterStatus === 'refundable') {
       // Invoices eligible for return (paid or partially paid, with remaining balance)
       if (i.status !== 'paid' && i.status !== 'partially_paid') return false;
@@ -3772,7 +3783,7 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
   }, []);
 
   const filtered = invoices.filter(inv => {
-    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase()) || (inv.reference || '').toLowerCase().includes(search.toLowerCase());
+    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase()) || (inv.reference || '').toLowerCase().includes(search.toLowerCase()) || (inv.client_temp_number || '').toLowerCase().includes(search.toLowerCase());
     const matchStatus = !filterStatus || (filterStatus === 'overdue' ? isInvoiceOverdue(inv) : inv.status === filterStatus);
     return matchSearch && matchStatus;
   });

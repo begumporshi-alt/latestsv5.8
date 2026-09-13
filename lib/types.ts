@@ -288,6 +288,9 @@ export interface Invoice {
   is_pos: boolean;
   edit_count?: number;
   reference?: string;
+  /** Device temp reference (OFF-…) printed on receipts while offline; the
+   *  final number is assigned by the server at sync. */
+  client_temp_number?: string;
   created_at: string;
   updated_at: string;
   customer?: Customer;
