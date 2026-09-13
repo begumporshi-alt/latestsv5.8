@@ -9,6 +9,7 @@
 import { supabaseRaw } from '@/lib/supabase-raw';
 import { cacheGet, cachePut, isNetworkError } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
+import { REPLICA, replicaRows } from '@/lib/offline/replica';
 
 export interface LedgerStock {
   // `${productId}|${warehouseId}` → base-unit qty remaining in FIFO batches
@@ -66,8 +67,16 @@ export async function fetchLedgerStockFor(
   if (error || !data) {
     if (isNetworkError(error)) {
       const cached = await cacheGet<LedgerStock>(CACHE_KEYS.gateStock);
-      if (cached) {
-        return { byPair: cached.byPair ?? {}, defaultWarehouseId: cached.defaultWarehouseId ?? defaultWh, stale: true };
+      // Offline fallback #1: the local replica's full batch ledger (refreshed
+      // every 15 min while online). Without it, any product never gate-checked
+      // online from this device reads "ledger 0" and false-fires the oversell
+      // warning — the gate snapshot only covers products in previous carts.
+      const replicaByPair = await ledgerByPairFromReplica(ids);
+      // Cached pairs come from the most recent ONLINE gate check, which can be
+      // newer than the last replica refresh — they win per pair.
+      const byPair = { ...replicaByPair, ...(cached?.byPair ?? {}) };
+      if (Object.keys(byPair).length > 0) {
+        return { byPair, defaultWarehouseId: cached?.defaultWarehouseId ?? defaultWh, stale: true };
       }
     }
     return null;
@@ -88,6 +97,27 @@ export async function fetchLedgerStockFor(
   return stock;
 }
 
+// Sum quantity_remaining per product|warehouse from the local replica's
+// inventory_batches table, restricted to the requested products. A missing
+// pair means the product genuinely has no batch rows on this device's
+// snapshot — a legitimate ledger-zero.
+async function ledgerByPairFromReplica(ids: string[]): Promise<Record<string, number>> {
+  try {
+    const idSet = new Set(ids);
+    const batches = await replicaRows<any>(REPLICA['Inventory batches']);
+    const byPair: Record<string, number> = {};
+    for (const b of batches) {
+      const pid = String(b.product_id ?? '');
+      if (!idSet.has(pid)) continue;
+      const key = `${pid}|${b.warehouse_id ?? null}`;
+      byPair[key] = (byPair[key] ?? 0) + Number(b.quantity_remaining ?? 0);
+    }
+    return byPair;
+  } catch {
+    return {};
+  }
+}
+
 async function resolveDefaultWarehouseId(): Promise<string | null> {
   const { data, error } = await supabaseRaw
     .from('warehouses')
@@ -97,7 +127,16 @@ async function resolveDefaultWarehouseId(): Promise<string | null> {
     .limit(1);
   if ((error || !data) && isNetworkError(error)) {
     const cached = await cacheGet<Array<{ id: string; is_default: boolean; is_active: boolean }>>(CACHE_KEYS.warehouses);
-    return cached?.find((w) => w.is_default && w.is_active)?.id ?? null;
+    const cachedDefault = cached?.find((w) => w.is_default && w.is_active)?.id;
+    if (cachedDefault) return cachedDefault;
+    // Last resort: the replica's warehouses table — without a default id,
+    // items with no warehouse_id read as ledger 0 and false-fire the gate.
+    try {
+      const warehouses = await replicaRows<any>(REPLICA['Warehouses']);
+      return warehouses.find((w) => w.is_default && w.is_active)?.id ?? null;
+    } catch {
+      return null;
+    }
   }
   return data?.[0]?.id ?? null;
 }

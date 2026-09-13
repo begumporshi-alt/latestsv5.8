@@ -268,13 +268,19 @@ export default function CRMPage() {
   async function handleDelete() {
     if (!deletingCustomer) return;
     // Offline: soft-delete is a customer.update op (is_active: false) with the
-    // full field set, version-checked against the cached row.
+    // full field set, version-checked against the cached row — except for
+    // rows this device created offline, whose only server version comes from
+    // their own queued create (no competing writer to check against).
     if (!networkMonitor.getState().online) {
       const { ...row } = deletingCustomer;
       try {
+        const versionStamp: any = {};
+        if (!(row as any).__pending) {
+          versionStamp.expected_updated_at = (row as any).updated_at ?? null;
+        }
         await enqueueOp('customer.update', {
           id: row.id,
-          expected_updated_at: (row as any).updated_at ?? null,
+          ...versionStamp,
           data: {
             name: row.name, code: row.code, type: row.type, phone: row.phone ?? null,
             mobile: row.mobile ?? null, email: row.email ?? null, company_name: row.company_name ?? null,
@@ -684,12 +690,21 @@ function CustomerModal({ customer, onClose, onSaved }: { customer?: Customer | n
     };
 
     // Offline: queue the same field set. Code generation happens server-side
-    // at sync time when the code is empty.
+    // at sync time when the code is empty. Creates mint a client UUID the
+    // server honors — the pending row carries a real id, so a queued edit of
+    // the just-created customer references a valid uuid at sync time.
     if (!networkMonitor.getState().online) {
       const payload: any = { data };
       if (isEdit) {
         payload.id = customer!.id;
-        payload.expected_updated_at = (customer as any).updated_at ?? null;
+        // A row created offline by this device has no competing server
+        // version — omit the version stamp so the edit applies cleanly
+        // behind its own queued create instead of always conflicting.
+        if (!(customer as any).__pending) {
+          payload.expected_updated_at = (customer as any).updated_at ?? null;
+        }
+      } else {
+        payload.id = crypto.randomUUID();
       }
       try {
         await enqueueOp(isEdit ? 'customer.update' : 'customer.create', payload,

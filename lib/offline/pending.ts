@@ -60,6 +60,10 @@ export const OP_TABLES: Record<string, string[]> = {
   'supplier.create': ['suppliers'],
   'supplier.update': ['suppliers'],
   'customer.create': ['customers'],
+  'customer.update': ['customers'],
+  'employee.create': ['employees'],
+  'employee.update': ['employees'],
+  'product.update': ['products'],
   'po.create': ['purchase_orders', 'purchase_order_items'],
   'po.update': ['purchase_orders', 'purchase_order_items'],
   'po.status': ['purchase_orders'],
@@ -83,6 +87,34 @@ export const OP_TABLES: Record<string, string[]> = {
   'customer_note.create': ['customer_notes'],
   'customer_note.delete': ['customer_notes'],
   'stock_transfer.create': ['stock_movements'],
+}
+
+/**
+ * Page-level cachedQuery keys (PREFIXES — the sales key carries a period
+ * suffix) that an op's data change makes stale. Dropping them forces the
+ * next offline read through the replica engine, where the pending overlay
+ * surfaces queued rows — without this, a page whose aggregate was warmed
+ * before the change keeps serving the pre-change snapshot indefinitely.
+ * Pages that read through the wrapped client directly (quotations,
+ * purchases, deliveries, suppliers…) only need the q:from drops above.
+ */
+export const OP_CACHE_KEYS: Record<string, string[]> = {
+  'invoice.create': ['sales:page-data:', 'invoices:recent'],
+  'payment.create': ['sales:page-data:', 'invoices:recent'],
+  'invoice.status': ['sales:page-data:'],
+  'invoice.cancel': ['sales:page-data:'],
+  'sales_return.create': ['sales:page-data:'],
+  'advance.receive': ['sales:page-data:'],
+  'advance.apply': ['sales:page-data:'],
+  'advance.refund': ['sales:page-data:'],
+  'store_credit.issue': ['sales:page-data:'],
+  'store_credit.expire': ['sales:page-data:'],
+  'customer.create': ['crm:page-data', 'customers:all'],
+  'customer.update': ['crm:page-data', 'customers:all'],
+  'employee.create': ['employees:all', 'attendance:employees'],
+  'employee.update': ['employees:all', 'attendance:employees'],
+  'product.update': ['inventory:page-data', 'products:all'],
+  'product.status': ['inventory:page-data', 'products:all'],
 }
 
 type Patch = Record<string, any> | ((row: any) => Record<string, any>)
@@ -457,6 +489,46 @@ function deriveEffects(op: string, p: Record<string, any>, itemId: string, creat
         out.push({ kind: 'patch', table: 'suppliers', id: String(p.id), patch: { ...(p.data || {}), updated_at: now } })
       }
       break
+    case 'customer.update':
+      // Full-field-set PATCH from the CRM modal (or the deactivate flow,
+      // which sends the whole row with is_active: false).
+      if (p.id) {
+        out.push({ kind: 'patch', table: 'customers', id: String(p.id), patch: { ...(p.data || {}), updated_at: now } })
+      }
+      break
+    case 'employee.update':
+      if (p.id) {
+        out.push({ kind: 'patch', table: 'employees', id: String(p.id), patch: { ...(p.data || {}), updated_at: now } })
+      }
+      break
+    case 'product.update':
+      // The inventory modal also carries colors/sizes/units/stock; only the
+      // products-row fields patch the list view — nested aggregates are
+      // rebuilt at sync time.
+      if (p.id) {
+        out.push({ kind: 'patch', table: 'products', id: String(p.id), patch: { ...(p.data || {}), updated_at: now } })
+      }
+      break
+    case 'employee.create': {
+      const d = p.data || {}
+      out.push({
+        kind: 'row',
+        table: 'employees',
+        row: stamp({
+          id: p.id || synthId('emp'),
+          employee_id: str(d.employee_id),
+          full_name: d.full_name ?? null,
+          designation: str(d.designation),
+          department: str(d.department),
+          email: str(d.email),
+          phone: str(d.phone),
+          salary: num(d.salary),
+          join_date: d.join_date ?? null,
+          status: d.status || 'active',
+        }),
+      })
+      break
+    }
     case 'customer.create': {
       const d = p.data || {}
       out.push({
@@ -1033,18 +1105,24 @@ function parentKeyOf(table: string, row: any): string | null {
 /**
  * Drop the wrapper's per-query read caches for the tables an op touches, so
  * offline page reads re-run through the replica engine and pick up the new
- * pending rows instead of serving the pre-enqueue cached list.
+ * pending rows instead of serving the pre-enqueue cached list. Page-level
+ * cachedQuery aggregates (OP_CACHE_KEYS) are dropped the same way — their
+ * fetchers replay against the replica too and pick up the overlay.
  */
 export async function invalidateQueryCachesForOp(op: string): Promise<void> {
   try {
     if (typeof window === 'undefined') return
     const tables = OP_TABLES[op]
-    if (!tables || tables.length === 0) return
+    const keyPrefixes = OP_CACHE_KEYS[op] || []
+    if ((!tables || tables.length === 0) && keyPrefixes.length === 0) return
     const userId = await resolveUserId()
     if (!userId) return
     const db = getDB()
-    for (const table of tables) {
+    for (const table of tables || []) {
       await db.cache.where('key').startsWith(`${userId}:q:from:${table}:`).delete()
+    }
+    for (const prefix of keyPrefixes) {
+      await db.cache.where('key').startsWith(`${userId}:${prefix}`).delete()
     }
   } catch {
     // best-effort — a stale list refreshes on the next outbox change

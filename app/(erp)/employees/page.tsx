@@ -243,11 +243,20 @@ function EmployeeModal({ employee, onClose, onSaved }: { employee?: Employee | n
     };
 
     // Offline: queue the same field set for atomic server-side application.
+    // Creates mint a client UUID the server honors, so a queued edit of the
+    // just-created employee references a valid uuid at sync time.
     if (!networkMonitor.getState().online) {
       const payload: any = { data };
       if (isEdit) {
         payload.id = employee!.id;
-        payload.expected_updated_at = (employee as any).updated_at ?? null;
+        // A row created offline by this device has no competing server
+        // version — omit the version stamp so the edit applies cleanly
+        // behind its own queued create instead of always conflicting.
+        if (!(employee as any).__pending) {
+          payload.expected_updated_at = (employee as any).updated_at ?? null;
+        }
+      } else {
+        payload.id = crypto.randomUUID();
       }
       try {
         await enqueueOp(isEdit ? 'employee.update' : 'employee.create', payload,

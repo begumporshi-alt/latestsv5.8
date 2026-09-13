@@ -987,7 +987,12 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
       const payload: any = { data, colors: validColors, sizes: validSizes, units: validUnits, stock };
       if (isEdit) {
         payload.id = product!.id;
-        payload.expected_updated_at = (product as any).updated_at ?? null;
+        // A row created offline by this device has no competing server
+        // version — omit the version stamp so the update applies cleanly
+        // behind its own queued create instead of always conflicting.
+        if (!(product as any).__pending) {
+          payload.expected_updated_at = (product as any).updated_at ?? null;
+        }
       } else {
         payload.id = newProductId;
       }
