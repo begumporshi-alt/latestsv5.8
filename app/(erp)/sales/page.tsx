@@ -1605,8 +1605,23 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   // invoice (gate-confirm re-runs, double-clicks) shares it, so the server
   // can never apply the same invoice intent twice.
   const intentKeyRef = useRef(crypto.randomUUID());
+  // Synchronous re-entrancy guard — the server-side intent key makes a
+  // double-click harmless at sync, but N clicks still queue N outbox items
+  // (junk in the Sync Center). A guard that depends on state set after an
+  // await is not a re-entrancy guard — only a synchronous ref is.
+  const savingRef = useRef(false);
 
   async function handleSave(e?: React.FormEvent) {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    try {
+      await doSave(e);
+    } finally {
+      savingRef.current = false;
+    }
+  }
+
+  async function doSave(e?: React.FormEvent) {
     e?.preventDefault();
     if (!form.customer_id) { setError('Please select a customer'); return; }
     if (items.length === 0) { setError('Please add at least one item'); return; }
@@ -1733,7 +1748,11 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           title: 'Invoice queued offline',
           description: `${tempNumber} (${formatCurrency(grandTotal)}) saved on this device — it will sync automatically when you reconnect.`,
         });
+        // Same closing handshake as the online path — without onClose() the
+        // modal stays open over a successfully queued invoice, inviting
+        // repeated Create clicks.
         onSaved();
+        onClose();
       } catch (err: any) {
         setError(err?.message || 'Could not queue the invoice offline');
       }
