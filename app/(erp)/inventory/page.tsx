@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
-import { getInventoryValue } from '@/lib/inventory-value';
+import { fetchAll } from '@/lib/fetch-all';
+import type { InventoryAggregates } from '@/lib/inventory-value';
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
 import JsBarcode from 'jsbarcode';
@@ -217,88 +218,55 @@ export default function InventoryPage() {
   }
 
   async function fetchInventoryData(): Promise<InventoryPageData> {
-    // Supabase caps queries at 1000 rows by default. Paginate to fetch all products.
-    let allProds: any[] = [];
-    let page = 0;
-    const PAGE = 1000;
-    while (true) {
-      const { data, error } = await supabase
+    // Stock, sold totals and FIFO valuation used to be computed client-side
+    // from every inventory_items / invoice_items / inventory_batches row —
+    // 10+ sequential 1000-row round trips per load. The
+    // get_inventory_page_aggregates RPC computes the same numbers set-based
+    // and returns them as ONE jsonb row (immune to the 1000-row cap that
+    // forced those pagination loops), so the page loads with three parallel
+    // groups instead: products, the aggregate RPC, and reference tables.
+    const [allProds, aggRes, refRes] = await Promise.all([
+      fetchAll(() => supabase
         .from('products')
         .select('*, category:categories(name), brand:brands(name), product_colors(id, name, hex_code), product_sizes(id, name)')
         .order('created_at', { ascending: false })
-        .order('id', { ascending: false })
-        .range(page * PAGE, (page + 1) * PAGE - 1);
-      // A failed first page means nothing was loaded — throw so the cache
-      // layer keeps the previous snapshot instead of storing a partial list.
-      if (error) {
-        if (page === 0) throw error;
-        break;
-      }
-      allProds = allProds.concat(data || []);
-      if (!data || data.length < PAGE) break;
-      page++;
-    }
-
-    // Paginate inventory_items to avoid the 1000-row default cap
-    let allInvItems: any[] = [];
-    {
-      let pg = 0;
-      while (true) {
-        const { data: invPage, error: invErr } = await supabase
-          .from('inventory_items')
-          .select('product_id, warehouse_id, quantity_on_hand')
-          .order('id')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        if (invErr) {
-          if (pg === 0) throw invErr;
-          break;
-        }
-        allInvItems = allInvItems.concat(invPage || []);
-        if (!invPage || invPage.length < 1000) break;
-        pg++;
-      }
-    }
-
-    // Fetch total sold quantities from invoice_items for sold-out detection
-    let allSoldItems: any[] = [];
-    {
-      let pg = 0;
-      while (true) {
-        const { data: soldPage, error: soldErr } = await supabase
-          .from('invoice_items')
-          .select('product_id, quantity')
-          .order('id')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        if (soldErr) {
-          if (pg === 0) throw soldErr;
-          break;
-        }
-        allSoldItems = allSoldItems.concat(soldPage || []);
-        if (!soldPage || soldPage.length < 1000) break;
-        pg++;
-      }
-    }
-    const soldMap: Record<string, number> = {};
-    allSoldItems.forEach((i: any) => {
-      soldMap[i.product_id] = (soldMap[i.product_id] || 0) + Number(i.quantity);
-    });
-
-    const [catRes, brandRes, whRes, colorRes, sizeRes, unitTypeRes] = await Promise.all([
-      supabase.from('categories').select('*').eq('is_active', true),
-      supabase.from('brands').select('*').eq('is_active', true),
-      supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
-      supabase.from('product_colors').select('id, name, hex_code').order('name'),
-      supabase.from('product_sizes').select('id, name').order('name'),
-      supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
+        .order('id', { ascending: false })),
+      supabase.rpc('get_inventory_page_aggregates'),
+      Promise.all([
+        supabase.from('categories').select('*').eq('is_active', true),
+        supabase.from('brands').select('*').eq('is_active', true),
+        supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
+        // Unbounded reference tables — paginate past the 1000-row cap too.
+        fetchAll(() => supabase.from('product_colors').select('id, name, hex_code').order('name').order('id')),
+        fetchAll(() => supabase.from('product_sizes').select('id, name').order('name').order('id')),
+        supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
+      ]),
     ]);
+    if (aggRes.error) throw aggRes.error;
+    const [catRes, brandRes, whRes, colorRows, sizeRows, unitTypeRes] = refRes;
 
+    const agg = (aggRes.data || {}) as InventoryAggregates;
     const stockMap: Record<string, number> = {};
     const byWarehouse: Record<string, Record<string, number>> = {};
-    allInvItems.forEach((i: any) => {
-      stockMap[i.product_id] = (stockMap[i.product_id] || 0) + Number(i.quantity_on_hand);
-      if (!byWarehouse[i.product_id]) byWarehouse[i.product_id] = {};
-      byWarehouse[i.product_id][i.warehouse_id] = Number(i.quantity_on_hand);
-    });
+    const soldMap: Record<string, number> = {};
+    const fMap: Record<string, number> = {};
+    for (const [pid, a] of Object.entries(agg.products || {})) {
+      stockMap[pid] = Number(a.stock) || 0;
+      soldMap[pid] = Number(a.sold) || 0;
+      fMap[pid] = Number(a.fifo) || 0;
+      byWarehouse[pid] = {};
+      for (const [wid, w] of Object.entries(a.warehouses || {})) {
+        byWarehouse[pid][wid] = Number(w.stock) || 0;
+        // A null pair fifo must stay unset so pairFifoValue keeps falling
+        // back to qty × cost_price for batch-less stock pairs.
+        if (w.fifo !== null && w.fifo !== undefined) fMap[`${pid}|${wid}`] = Number(w.fifo);
+      }
+    }
+    // Positive-batch pairs with no inventory_items row (ledger drift) — the
+    // old client keyed fMap by every positive batch pair, counters or not.
+    for (const [pid, ws] of Object.entries(agg.batch_only_pairs || {})) {
+      for (const [wid, val] of Object.entries(ws)) fMap[`${pid}|${wid}`] = Number(val);
+    }
 
     const prods = allProds.map((p: any) => ({
       ...p,
@@ -311,14 +279,14 @@ export default function InventoryPage() {
     }));
 
     const seenColors = new Set<string>();
-    const uniqueColors = (colorRes.data || []).filter((c: any) => {
+    const uniqueColors = (colorRows as any[]).filter((c: any) => {
       if (seenColors.has(c.name)) return false;
       seenColors.add(c.name);
       return true;
     });
 
     const seenSizes = new Set<string>();
-    const uniqueSizes = (sizeRes.data || []).filter((s: any) => {
+    const uniqueSizes = (sizeRows as any[]).filter((s: any) => {
       if (seenSizes.has(s.name)) return false;
       seenSizes.add(s.name);
       return true;
@@ -327,32 +295,6 @@ export default function InventoryPage() {
     const activeProds = prods.filter((p: any) => p.is_active);
     const lowStock = activeProds.filter((p: any) => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length;
     const outOfStock = activeProds.filter((p: any) => (p.total_stock || 0) === 0).length;
-    // Fetch FIFO batch data for accurate valuation (paginated to avoid the 1000-row cap).
-    // Keyed both by product (all-warehouse total) and by product|warehouse so the
-    // Filtered value readout can scope to one warehouse when a warehouse filter is set.
-    const fMap: Record<string, number> = {};
-    {
-      let pg = 0;
-      while (true) {
-        const { data: batchPage } = await supabase
-          .from('inventory_batches')
-          .select('product_id, warehouse_id, quantity_remaining, unit_cost')
-          .gt('quantity_remaining', 0)
-          .order('id')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        const page = batchPage || [];
-        page.forEach((b: any) => {
-          const batchValue = Number(b.quantity_remaining) * Number(b.unit_cost);
-          fMap[b.product_id] = (fMap[b.product_id] || 0) + batchValue;
-          const pairKey = `${b.product_id}|${b.warehouse_id}`;
-          fMap[pairKey] = (fMap[pairKey] || 0) + batchValue;
-        });
-        if (page.length < 1000) break;
-        pg++;
-      }
-    }
-
-    const invResult = await getInventoryValue(supabase);
 
     return {
       prods,
@@ -368,7 +310,7 @@ export default function InventoryPage() {
         total: activeProds.length,
         lowStock,
         outOfStock,
-        value: invResult.total,
+        value: Number(agg.total_value) || 0,
       },
     };
   }
@@ -387,7 +329,8 @@ export default function InventoryPage() {
     setDataStale(stale);
   }
 
-  const filtered = products.filter(p => {
+  // Memoized: these run over all 2,700+ products on every keystroke otherwise.
+  const filtered = useMemo(() => products.filter(p => {
     const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());
     const matchCat = !filterCategory || p.category_id === filterCategory;
     const matchBrand = !filterBrand || p.brand_id === filterBrand;
@@ -403,8 +346,8 @@ export default function InventoryPage() {
     const matchSize = !filterSize || p.product_sizes?.some(s => s.name === filterSize);
     const matchUnit = !filterUnit || (p.unit && p.unit.toLowerCase() === filterUnit.toLowerCase());
     return matchSearch && matchCat && matchBrand && matchWarehouse && matchStatus && matchColor && matchSize && matchUnit;
-  });
-  const pagedFiltered = filtered.slice((page - 1) * pageSize, page * pageSize);
+  }), [products, search, filterCategory, filterBrand, filterWarehouse, filterStatus, filterColor, filterSize, filterUnit, inventoryByWarehouse]);
+  const pagedFiltered = useMemo(() => filtered.slice((page - 1) * pageSize, page * pageSize), [filtered, page, pageSize]);
   // Reset to page 1 when filters change
   useEffect(() => { setPage(1); }, [search, filterCategory, filterBrand, filterStatus, filterWarehouse, filterColor, filterSize, filterUnit]);
 
@@ -418,10 +361,10 @@ export default function InventoryPage() {
   };
   // Warehouse-scoped readouts: with a warehouse filter active, count only that
   // warehouse's stock and FIFO value, not the product's all-warehouse totals.
-  const filteredStock = filterWarehouse
+  const filteredStock = useMemo(() => filterWarehouse
     ? filtered.reduce((sum, p) => sum + (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0), 0)
-    : filtered.reduce((sum, p) => sum + (p.total_stock || 0), 0);
-  const filteredValue = filterWarehouse
+    : filtered.reduce((sum, p) => sum + (p.total_stock || 0), 0), [filtered, filterWarehouse, inventoryByWarehouse]);
+  const filteredValue = useMemo(() => filterWarehouse
     ? filtered.reduce((sum, p) => sum + pairFifoValue(p.id, filterWarehouse, Number(p.cost_price || 0)), 0)
     : filtered.reduce((sum, p) => {
         let value = fifoValueMap[p.id] || 0;
@@ -431,7 +374,7 @@ export default function InventoryPage() {
           }
         }
         return sum + value;
-      }, 0);
+      }, 0), [filtered, filterWarehouse, fifoValueMap, inventoryByWarehouse]);
 
   function getStockBadge(qty: number, min: number) {
     if (qty === 0) return <span className="badge-status bg-red-50 text-red-600">Out of Stock</span>;
