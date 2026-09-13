@@ -50,6 +50,8 @@ export default function StoreCreditPage() {
   const [detailCredit, setDetailCredit] = useState<StoreCredit | null>(null);
   const [detailRedemptions, setDetailRedemptions] = useState<Redemption[]>([]);
   const [showIssue, setShowIssue] = useState(false);
+  const [expireTarget, setExpireTarget] = useState<StoreCredit | null>(null);
+  const [expiring, setExpiring] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
@@ -167,6 +169,19 @@ export default function StoreCreditPage() {
     } else {
       toast({ title: 'Store credit expired', description: 'The credit has been marked as expired.' });
       loadData();
+    }
+  }
+
+  // Confirmed expiry — the modal calls this after the user acknowledges
+  // what expiring means for the remaining balance.
+  async function confirmExpire() {
+    if (!expireTarget) return;
+    setExpiring(true);
+    try {
+      await expireCredit(expireTarget.id);
+      setExpireTarget(null);
+    } finally {
+      setExpiring(false);
     }
   }
 
@@ -312,7 +327,7 @@ export default function StoreCreditPage() {
                         </button>
                         {c.status === 'active' && (
                           <button
-                            onClick={() => expireCredit(c.id)}
+                            onClick={() => setExpireTarget(c)}
                             className="p-1.5 hover:bg-red-50 rounded text-red-500 text-xs font-medium"
                             title="Expire credit"
                           >
@@ -421,6 +436,38 @@ export default function StoreCreditPage() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {expireTarget && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h3 className="font-semibold text-foreground">Expire Store Credit?</h3>
+              <button onClick={() => setExpireTarget(null)} className="p-1 hover:bg-muted rounded"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="text-sm text-foreground">
+                <p><span className="text-muted-foreground">Credit:</span> <span className="font-semibold">{expireTarget.credit_number}</span></p>
+                <p><span className="text-muted-foreground">Customer:</span> {expireTarget.customer_name}</p>
+                <p><span className="text-muted-foreground">Remaining balance:</span> <span className="font-semibold text-purple-600">{formatCurrency(expireTarget.balance)}</span></p>
+              </div>
+              {expireTarget.balance > 0 ? (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+                  <p className="font-medium mb-1">This credit still has {formatCurrency(expireTarget.balance)} unredeemed.</p>
+                  <p>Expiring makes it unspendable at POS, but the Customer Refund Payable (2200) liability stays on the books until it is reversed or redeemed. This action is recorded in the audit log.</p>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">The balance is fully redeemed. This action is recorded in the audit log.</p>
+              )}
+              <div className="flex justify-end gap-2 pt-2">
+                <button onClick={() => setExpireTarget(null)} className="px-4 py-2 border border-border rounded-lg text-sm font-medium hover:bg-muted">Cancel</button>
+                <button onClick={confirmExpire} disabled={expiring} className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
+                  {expiring ? 'Expiring…' : 'Confirm Expire'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
