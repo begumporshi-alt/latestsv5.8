@@ -6,7 +6,7 @@ import { formatCurrency } from '@/lib/format';
 import { useToast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
-import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle, Plus } from 'lucide-react';
+import { Search, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Eye, X, TrendingUp, Clock, CircleCheck as CheckCircle2, CircleAlert as AlertCircle, Plus, Banknote } from 'lucide-react';
 import CustomerSearchInput, { type CustomerResult } from '@/components/ui/CustomerSearchInput';
 
 interface StoreCredit {
@@ -21,6 +21,7 @@ interface StoreCredit {
   notes: string;
   expires_at: string | null;
   created_at: string;
+  updated_at: string | null;
   sales_return_id: string | null;
   return_number: string | null;
 }
@@ -52,6 +53,7 @@ export default function StoreCreditPage() {
   const [showIssue, setShowIssue] = useState(false);
   const [expireTarget, setExpireTarget] = useState<StoreCredit | null>(null);
   const [expiring, setExpiring] = useState(false);
+  const [cashTarget, setCashTarget] = useState<StoreCredit | null>(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -61,7 +63,7 @@ export default function StoreCreditPage() {
     const { data: creditData } = await supabase
       .from('customer_store_credits')
       .select(`
-        id, credit_number, customer_id, amount, balance, status, notes, expires_at, created_at,
+        id, credit_number, customer_id, amount, balance, status, notes, expires_at, created_at, updated_at,
         sales_return_id,
         customer:customers!inner(name, code),
         sales_return:sales_returns(return_number)
@@ -80,6 +82,7 @@ export default function StoreCreditPage() {
       notes: c.notes || '',
       expires_at: c.expires_at,
       created_at: c.created_at,
+      updated_at: c.updated_at,
       sales_return_id: c.sales_return_id,
       return_number: c.sales_return?.return_number || null,
     }));
@@ -151,7 +154,7 @@ export default function StoreCreditPage() {
         await enqueueOp('store_credit.expire', {
           idempotency_key: crypto.randomUUID(),
           credit_id: creditId,
-          expected_updated_at: (credit as any)?.updated_at || null,
+          expected_updated_at: credit?.updated_at || null,
         }, `Expire store credit ${credit?.credit_number || ''}`);
         toast({ title: 'Queued offline', description: 'The credit will be marked expired when you reconnect.' });
         loadData();
@@ -325,6 +328,15 @@ export default function StoreCreditPage() {
                         <button onClick={() => viewDetail(c)} className="p-1.5 hover:bg-blue-50 rounded text-blue-600" title="View details">
                           <Eye className="w-3.5 h-3.5" />
                         </button>
+                        {c.status === 'active' && c.balance > 0 && (
+                          <button
+                            onClick={() => setCashTarget(c)}
+                            className="p-1.5 hover:bg-green-50 rounded text-green-600 text-xs font-medium"
+                            title="Refund the remaining balance to the customer in cash/bank"
+                          >
+                            <Banknote className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {c.status === 'active' && (
                           <button
                             onClick={() => setExpireTarget(c)}
@@ -457,7 +469,7 @@ export default function StoreCreditPage() {
               {expireTarget.balance > 0 ? (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
                   <p className="font-medium mb-1">This credit still has {formatCurrency(expireTarget.balance)} unredeemed.</p>
-                  <p>Expiring makes it unspendable at POS, but the Customer Refund Payable (2200) liability stays on the books until it is reversed or redeemed. This action is recorded in the audit log.</p>
+                  <p>Expiring makes it unspendable at POS, but the Customer Refund Payable (2200) liability stays on the books until it is reversed or redeemed. If the customer is taking the money now, use the <span className="font-medium">cash refund action</span> instead — it settles the balance and the liability together. This action is recorded in the audit log.</p>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">The balance is fully redeemed. This action is recorded in the audit log.</p>
@@ -472,6 +484,144 @@ export default function StoreCreditPage() {
           </div>
         </div>
       )}
+
+      {cashTarget && (
+        <CashRefundModal
+          credit={cashTarget}
+          onClose={() => setCashTarget(null)}
+          onSaved={() => { setCashTarget(null); loadData(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CashRefundModal({ credit, onClose, onSaved }: { credit: StoreCredit; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [accounts, setAccounts] = useState<{ id: string; code: string; name: string; balance: number }[]>([]);
+  const [liabilityAccountId, setLiabilityAccountId] = useState<string | null>(null);
+  const [form, setForm] = useState({ amount: String(credit.balance), payment_account_id: '', notes: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    supabase.from('accounts')
+      .select('id, code, name, balance')
+      .eq('is_active', true)
+      .eq('account_type', 'asset')
+      .order('code')
+      .then(({ data }) => {
+        if (data) {
+          setAccounts(data);
+          // Default to Cash in Hand when it exists
+          const cash = (data as any[]).find(a => a.code === '1001');
+          if (cash) setForm(f => ({ ...f, payment_account_id: f.payment_account_id || cash.id }));
+        }
+      });
+    // The offline overlay needs 2200's id for the Dr journal line (the
+    // server RPC resolves it itself).
+    supabase.from('accounts').select('id').eq('code', '2200').maybeSingle()
+      .then(({ data }) => { if (data) setLiabilityAccountId(data.id); });
+  }, []);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    const amount = parseFloat(form.amount);
+    if (!amount || amount <= 0) { setError('Please enter an amount'); return; }
+    if (amount > credit.balance) { setError(`Amount cannot exceed the remaining balance (${formatCurrency(credit.balance)})`); return; }
+    if (!form.payment_account_id) { setError('Please select the cash/bank account the refund is paid from'); return; }
+
+    setSaving(true);
+    try {
+      // Offline: queue a version-checked cash-out; sync_store_credit_cash_out
+      // redeems the credit and posts Dr 2200 / Cr payment account atomically
+      // at sync time.
+      if (!networkMonitor.getState().online) {
+        await enqueueOp('store_credit.cash_out', {
+          idempotency_key: crypto.randomUUID(),
+          credit_id: credit.id,
+          customer_id: credit.customer_id,
+          customer_name: credit.customer_name,
+          credit_number: credit.credit_number,
+          amount,
+          payment_account_id: form.payment_account_id,
+          liability_account_id: liabilityAccountId,
+          notes: form.notes || null,
+          expected_updated_at: credit.updated_at || null,
+        }, `Cash refund ${formatCurrency(amount)} — ${credit.customer_name} (${credit.credit_number})`);
+        toast({ title: 'Cash refund queued offline', description: `${formatCurrency(amount)} to ${credit.customer_name} will post when you reconnect.` });
+        onSaved();
+        return;
+      }
+
+      const { data: result, error: rpcError } = await supabase.rpc('cash_out_store_credit', {
+        p_credit_id: credit.id,
+        p_amount: amount,
+        p_payment_account_id: form.payment_account_id,
+        p_notes: form.notes || null,
+      });
+      if (rpcError) throw rpcError;
+      if (result?.status === 'conflict') {
+        setError(result.reason || 'This store credit changed on the server. Reload and try again.');
+        return;
+      }
+
+      const remaining = Number(result?.new_balance ?? 0);
+      toast({
+        title: 'Cash refund paid',
+        description: `${formatCurrency(amount)} to ${credit.customer_name} via ${accounts.find(a => a.id === form.payment_account_id)?.name || 'account'}. Journal entry ${result?.entry_number || ''}.${remaining > 0 ? ` Remaining balance: ${formatCurrency(remaining)}.` : ' Credit fully settled.'}`,
+      });
+      onSaved();
+    } catch (err: any) {
+      setError(err.message || 'Failed to cash out the store credit');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const selectedAccount = accounts.find(a => a.id === form.payment_account_id);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white">
+          <h2 className="text-base font-bold flex items-center gap-2"><Banknote className="w-4 h-4 text-green-600" />Refund Store Credit in Cash</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div className="p-3 bg-muted/30 rounded-lg text-sm space-y-1">
+            <div className="flex justify-between"><span className="text-muted-foreground">Credit</span><span className="font-semibold">{credit.credit_number}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Customer</span><span className="font-medium">{credit.customer_name}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Remaining balance</span><span className="font-bold text-purple-600">{formatCurrency(credit.balance)}</span></div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Amount *</label>
+              <input type="number" required min="0.01" max={credit.balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              {credit.balance > 0 && (
+                <button type="button" onClick={() => setForm({ ...form, amount: String(credit.balance) })} className="text-[11px] text-blue-600 hover:underline mt-1">Full balance ({formatCurrency(credit.balance)})</button>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Pay From *</label>
+              <select required value={form.payment_account_id} onChange={e => setForm({ ...form, payment_account_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+                <option value="">Select account</option>
+                {accounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}
+              </select>
+            </div>
+          </div>
+          {selectedAccount && (
+            <p className="text-[11px] text-muted-foreground">Current balance of {selectedAccount.code} {selectedAccount.name}: {formatCurrency(Number(selectedAccount.balance))}. The refund is posted as Dr 2200 Customer Refund Payable / Cr {selectedAccount.code}, settling the store's liability to the customer.</p>
+          )}
+          <div><label className="block text-xs font-medium mb-1">Notes</label><input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Reason, e.g. customer requested cash back..." className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">{saving ? 'Paying…' : 'Pay Cash Refund'}</button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

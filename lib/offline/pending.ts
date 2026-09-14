@@ -56,6 +56,7 @@ export const OP_TABLES: Record<string, string[]> = {
   'advance.refund': ['customer_advances', 'customer_advance_refunds'],
   'store_credit.issue': ['customer_store_credits'],
   'store_credit.expire': ['customer_store_credits'],
+  'store_credit.cash_out': ['customer_store_credits', 'store_credit_redemptions', 'journal_entries', 'journal_lines'],
   'expense.create': ['journal_entries', 'journal_lines'],
   'transfer.create': ['journal_entries', 'journal_lines'],
   'supplier.create': ['suppliers'],
@@ -143,6 +144,7 @@ export const OP_CACHE_KEYS: Record<string, string[]> = {
   'advance.refund': ['sales:page-data:'],
   'store_credit.issue': ['sales:page-data:'],
   'store_credit.expire': ['sales:page-data:'],
+  'store_credit.cash_out': ['sales:page-data:'],
   'customer.create': ['crm:page-data', 'customers:all'],
   'customer.update': ['crm:page-data', 'customers:all'],
   'employee.create': ['employees:all', 'attendance:employees'],
@@ -454,6 +456,71 @@ function deriveEffects(op: string, p: Record<string, any>, itemId: string, creat
         out.push({ kind: 'patch', table: 'customer_store_credits', id: String(p.credit_id), patch: { status: 'expired' } })
       }
       break
+    case 'store_credit.cash_out': {
+      // Mirrors the server: redemption row (trigger decrements balance /
+      // flips status there — here the patch does it) + Dr 2200 / Cr payment
+      // account journal entry.
+      const amount = num(p.amount)
+      out.push({
+        kind: 'row',
+        table: 'store_credit_redemptions',
+        row: stamp({
+          id: synthId('scr'),
+          store_credit_id: p.credit_id ?? null,
+          customer_id: p.customer_id ?? null,
+          invoice_id: null,
+          amount,
+          notes: str(p.notes),
+        }),
+      })
+      if (p.credit_id) {
+        out.push({
+          kind: 'patch',
+          table: 'customer_store_credits',
+          id: String(p.credit_id),
+          patch: (row: any) => {
+            const balance = num(row.balance) - amount
+            return { balance, status: balance <= 0.001 ? 'redeemed' : 'active' }
+          },
+        })
+      }
+      const jeId = synthId('je')
+      out.push({
+        kind: 'row',
+        table: 'journal_entries',
+        row: stamp({
+          id: jeId,
+          entry_number: `JE-OFF-${String(createdAt).slice(-6)}`,
+          entry_date: null,
+          description: `Cash refund — ${str(p.customer_name)} (${str(p.credit_number)}) (queued offline)`,
+          reference_type: 'store_credit_cash_out',
+          reference_id: p.credit_id ?? null,
+          total_debit: amount,
+          total_credit: amount,
+          is_posted: true,
+        }),
+      })
+      const lines = [
+        { account_id: p.liability_account_id ?? null, debit: amount, credit: 0 },
+        { account_id: p.payment_account_id ?? null, debit: 0, credit: amount },
+      ]
+      lines.forEach((l, i) => {
+        out.push({
+          kind: 'row',
+          table: 'journal_lines',
+          row: stamp({
+            id: synthId(`jl${i}`),
+            journal_entry_id: jeId,
+            account_id: l.account_id,
+            description: 'Store credit cash refund (queued offline)',
+            debit: l.debit,
+            credit: l.credit,
+            sort_order: i,
+          }),
+        })
+      })
+      break
+    }
     case 'expense.create': {
       const id = synthId('je')
       const amount = num(p.amount)

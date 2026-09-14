@@ -56,6 +56,8 @@ const refIcons: Record<string, React.ElementType> = {
   product_creation: Boxes,
   advance: Wallet,
   advance_refund: Undo2,
+  store_credit: Wallet,
+  store_credit_cash_out: Banknote,
   cleanup: Wrench,
   cogs_repair: Wrench,
   cogs_correction: Wrench,
@@ -83,6 +85,8 @@ const refLabels: Record<string, string> = {
   product_creation: 'Opening Stock',
   advance: 'Customer Advance',
   advance_refund: 'Advance Refund',
+  store_credit: 'Store Credit',
+  store_credit_cash_out: 'Store Credit Cash Refund',
   cleanup: 'COGS Cleanup',
   cogs_repair: 'COGS Repair',
   cogs_correction: 'COGS Correction',
@@ -110,6 +114,8 @@ const refColors: Record<string, string> = {
   product_creation: 'bg-slate-50 text-slate-600',
   advance: 'bg-violet-50 text-violet-600',
   advance_refund: 'bg-purple-50 text-purple-600',
+  store_credit: 'bg-violet-50 text-violet-600',
+  store_credit_cash_out: 'bg-green-50 text-green-600',
   cleanup: 'bg-orange-50 text-orange-600',
   cogs_repair: 'bg-amber-50 text-amber-600',
   cogs_correction: 'bg-amber-50 text-amber-600',
@@ -134,6 +140,8 @@ const DOC_SOURCES: Record<string, { table: string; numberField: string; label: s
   product_creation: { table: 'inventory_batches', numberField: 'batch_number', label: 'Opening Stock' },
   advance: { table: 'customer_advances', numberField: 'advance_number', label: 'Advance' },
   advance_refund: { table: 'customer_advances', numberField: 'advance_number', label: 'Advance' },
+  store_credit: { table: 'customer_store_credits', numberField: 'credit_number', label: 'Store Credit' },
+  store_credit_cash_out: { table: 'customer_store_credits', numberField: 'credit_number', label: 'Store Credit' },
 };
 
 // Where a grouped entry's source document lives in the app, for clickable
@@ -145,6 +153,7 @@ function docHref(refType: string, refId: string): string | null {
   if (['purchase_receipt', 'purchase_cancellation'].includes(refType)) return `/purchases?highlight=${refId}`;
   if (refType === 'purchase_return') return `/purchases/returns?highlight=${refId}`;
   if (refType === 'sales_return') return `/sales/returns?highlight=${refId}`;
+  if (['store_credit', 'store_credit_cash_out'].includes(refType)) return `/sales/store-credit?highlight=${refId}`;
   return null;
 }
 
