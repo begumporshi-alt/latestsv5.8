@@ -1849,11 +1849,21 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
 
     const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems);
     if (itemsError) {
-      // Don't leave an item-less invoice husk behind: the row was just
-      // created above and nothing references it yet (draft = no AR journal
-      // entry). Non-draft invoices keep an AR journal entry, so they stay.
+      // Don't leave an item-less invoice husk behind. Drafts have no journal
+      // entry yet, so a plain delete is safe; non-draft invoices carry an AR
+      // journal entry — cancel through the standard reversal path instead.
       if (invoice.status === 'draft') {
         await supabase.from('invoices').delete().eq('id', invoice.id);
+      } else {
+        try {
+          await supabase.rpc('cancel_invoice', {
+            p_invoice_id: invoice.id,
+            p_reason: `Auto-cancel — invoice item insert failed: ${itemsError.message}`.slice(0, 300),
+            p_cancelled_by: 'invoice-modal-cleanup',
+          });
+        } catch {
+          // Best-effort cleanup; the error below still surfaces the cause.
+        }
       }
       setError(itemsError.message);
       setSaving(false);

@@ -1013,7 +1013,22 @@ export default function POSPage() {
       });
 
       const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems);
-      if (itemsError) throw itemsError;
+      if (itemsError) {
+        // The invoice shell above was already committed by its own request; if
+        // the item insert fails and we just throw, the shell survives as a
+        // 0-item husk (with its auto-posted JE) — every retry adds another.
+        // Cancel it through the standard reversal path before surfacing the error.
+        try {
+          await supabase.rpc('cancel_invoice', {
+            p_invoice_id: invoice.id,
+            p_reason: `Auto-cancel — POS item insert failed: ${itemsError.message}`.slice(0, 300),
+            p_cancelled_by: 'pos-checkout-cleanup',
+          });
+        } catch {
+          // Best-effort cleanup; the thrown error below still surfaces the cause.
+        }
+        throw itemsError;
+      }
 
       // Record cost price history snapshot for each item at time of sale
       const costHistoryRecords = cart.map(item => {
