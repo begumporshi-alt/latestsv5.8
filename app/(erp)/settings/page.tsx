@@ -3,9 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
-import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator } from 'lucide-react';
+import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator, Zap } from 'lucide-react';
 
-type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'tax' | 'estimates' | 'data';
+type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'quick_sell' | 'tax' | 'estimates' | 'data';
 
 interface DeleteTarget {
   key: string;
@@ -57,6 +57,11 @@ interface PLEstimatesSettings {
   manual_cogs_percent: number;
 }
 
+interface QuickSellSettingsState {
+  show_qty: boolean;
+  show_in_inventory: boolean;
+}
+
 interface ProfileData {
   full_name: string;
   email: string;
@@ -106,6 +111,7 @@ export default function SettingsPage() {
     allow_partial_add: true,
   });
   const [plEstimates, setPlEstimates] = useState<PLEstimatesSettings>({ manual_cogs_percent: 90 });
+  const [quickSell, setQuickSell] = useState<QuickSellSettingsState>({ show_qty: false, show_in_inventory: false });
   const [profile, setProfile] = useState<ProfileData>({
     full_name: '',
     email: '',
@@ -237,13 +243,14 @@ export default function SettingsPage() {
   async function loadSettings() {
     setLoading(true);
 
-    const [companyRes, notifRes, appearRes, invRes, vatRes, estRes, profileRes] = await Promise.all([
+    const [companyRes, notifRes, appearRes, invRes, vatRes, estRes, qsRes, profileRes] = await Promise.all([
       supabase.from('app_settings').select('*').eq('setting_key', 'company').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'notifications').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'appearance').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'inventory').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'vat').maybeSingle(),
       supabase.from('app_settings').select('*').eq('setting_key', 'pl_estimates').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('setting_key', 'quick_sell').maybeSingle(),
       supabase.from('profiles').select('*').limit(1).single(),
     ]);
 
@@ -264,6 +271,9 @@ export default function SettingsPage() {
     }
     if (estRes.data?.setting_value) {
       setPlEstimates(s => ({ ...s, ...estRes.data.setting_value as PLEstimatesSettings }));
+    }
+    if (qsRes.data?.setting_value) {
+      setQuickSell(s => ({ ...s, ...qsRes.data.setting_value as QuickSellSettingsState }));
     }
     if (profileRes.data) {
       setProfile({
@@ -346,6 +356,7 @@ export default function SettingsPage() {
   const tabs = [
     { id: 'general', label: 'General', icon: Settings },
     { id: 'inventory', label: 'Inventory', icon: Package },
+    { id: 'quick_sell', label: 'Quick Sell', icon: Zap },
     { id: 'tax', label: 'Tax / VAT', icon: Receipt },
     { id: 'estimates', label: 'P&L Estimates', icon: Calculator },
     { id: 'profile', label: 'Profile', icon: User },
@@ -569,6 +580,66 @@ export default function SettingsPage() {
                     <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${inventorySettings.allow_partial_add ? 'left-5' : 'left-0.5'}`} />
                   </button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'quick_sell' && (
+            <div>
+              <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+                <div>
+                  <h2 className="text-base font-bold">Quick Sell</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">The ⚡ buy-on-demand flow — what the form asks for and where its items live</p>
+                </div>
+                <button
+                  onClick={() => saveSettings('quick_sell', quickSell)}
+                  disabled={saving}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition disabled:opacity-60"
+                >
+                  <Save className="w-4 h-4" />{saving ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div className="flex items-center justify-between gap-6 max-w-2xl border border-border rounded-xl p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Show Quick Sell items in inventory</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 max-w-xl">
+                      When on, items created by Quick Sell appear in the inventory products list, marked Non-stock.
+                      When off they stay out of the list — they still work everywhere else (Quick Sell reuse,
+                      reports, invoice history).
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setQuickSell(s => ({ ...s, show_in_inventory: !s.show_in_inventory }))}
+                    className={`w-10 h-5 rounded-full transition relative shrink-0 ${quickSell.show_in_inventory ? 'bg-blue-600' : 'bg-gray-300'}`}
+                    title={quickSell.show_in_inventory ? 'Quick Sell items appear in the inventory list' : 'Quick Sell items are hidden from the inventory list'}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${quickSell.show_in_inventory ? 'left-5' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between gap-6 max-w-2xl border border-border rounded-xl p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Show quantity field in Quick Sell</p>
+                    <p className="text-xs text-muted-foreground mt-0.5 max-w-xl">
+                      When on, each Quick Sell line has a Qty field. When off, every line sells exactly 1 —
+                      add another line for more of the same item.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setQuickSell(s => ({ ...s, show_qty: !s.show_qty }))}
+                    className={`w-10 h-5 rounded-full transition relative shrink-0 ${quickSell.show_qty ? 'bg-blue-600' : 'bg-gray-300'}`}
+                    title={quickSell.show_qty ? 'Qty field visible on every Quick Sell line' : 'Every Quick Sell line sells exactly 1'}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${quickSell.show_qty ? 'left-5' : 'left-0.5'}`} />
+                  </button>
+                </div>
+
+                <p className="text-xs text-muted-foreground max-w-2xl">
+                  These settings shape the form only — accounting never changes. A Quick Sell always posts the sale
+                  (Dr A/R or cash / Cr Revenue) plus its cost (Dr COGS / Cr the account the source shop was paid from),
+                  and Quick Sell items never touch stock whatever the toggles say.
+                </p>
               </div>
             </div>
           )}
@@ -1142,6 +1213,7 @@ export default function SettingsPage() {
               onClick={() => {
                 if (activeTab === 'general') saveSettings('company', company);
                 else if (activeTab === 'inventory') saveSettings('inventory', inventorySettings);
+                else if (activeTab === 'quick_sell') saveSettings('quick_sell', quickSell);
                 else if (activeTab === 'notifications') saveSettings('notifications', notifications);
                 else if (activeTab === 'appearance') saveSettings('appearance', appearance);
                 else if (activeTab === 'profile') saveProfile();

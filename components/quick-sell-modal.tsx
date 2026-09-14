@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
+import { loadQuickSellSettings, DEFAULT_QUICK_SELL_SETTINGS, type QuickSellSettings } from '@/lib/quick-sell-settings';
 import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/credit-gate';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
 import CustomerSearchInput, { type CustomerResult } from '@/components/ui/CustomerSearchInput';
@@ -79,6 +80,8 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
   const [partialAmount, setPartialAmount] = useState('');
   const [costMethod, setCostMethod] = useState('cash');
   const [reference, setReference] = useState('');
+  const [notes, setNotes] = useState('');
+  const [qsSettings, setQsSettings] = useState<QuickSellSettings>(DEFAULT_QUICK_SELL_SETTINGS);
   const [submitting, setSubmitting] = useState(false);
   const [creditCheck, setCreditCheck] = useState<CreditCheck | null>(null);
   const [nonStock, setNonStock] = useState<NonStockProduct[]>([]);
@@ -95,6 +98,7 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
       const settings = await loadVatSettings(supabase);
       setVatSettings(settings);
       setVatApplied(settings.enabled && settings.default_on);
+      setQsSettings(await loadQuickSellSettings(supabase));
       const { data: pm } = await supabase
         .from('payment_methods')
         .select('code, name')
@@ -157,6 +161,7 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
     setCostMethod('cash');
     setPartialAmount('');
     setReference('');
+    setNotes('');
     setVatApplied(vatSettings ? vatSettings.enabled && vatSettings.default_on : false);
     setCreditCheck(null);
     creditConfirmedRef.current = false;
@@ -175,7 +180,9 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
         product_id: r.product_id ?? undefined,
         name: r.name.trim() || undefined,
         unit: r.unit || 'pcs',
-        quantity: parseFloat(r.quantity) || 0,
+        // Qty field hidden (admin setting) = every line sells exactly 1 —
+        // don't trust a stale typed value from before the setting loaded.
+        quantity: qsSettings.show_qty ? parseFloat(r.quantity) || 0 : 1,
         cost_price: parseFloat(r.cost_price) || 0,
         sale_price: parseFloat(r.sale_price) || 0,
         source_shop: r.source_shop.trim() || undefined,
@@ -209,6 +216,7 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
       items,
       tax_amount: vat.taxAmount,
       reference: reference.trim() || undefined,
+      notes: notes.trim() || undefined,
       cash_payment: cashToPay > 0 ? { amount: cashToPay, method: paymentMethod } : undefined,
       cost_payment_method: costMethod,
       idempotency_key: crypto.randomUUID(),
@@ -248,7 +256,7 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, customer, rows, paymentTerm, partialAmount, grandTotal, cashToPay, creditCheck, vat.taxAmount, reference, paymentMethod, costMethod, isPos, resetForm, onClose, onCreated]);
+  }, [submitting, customer, rows, paymentTerm, partialAmount, grandTotal, cashToPay, creditCheck, vat.taxAmount, reference, notes, qsSettings, paymentMethod, costMethod, isPos, resetForm, onClose, onCreated]);
 
   if (!open) return null;
 
@@ -349,16 +357,18 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
                       </button>
                     )}
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div>
-                      <label className="block text-[11px] text-muted-foreground mb-1">Qty</label>
-                      <input
-                        type="number" min="0" step="any"
-                        className="w-full border border-border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        value={r.quantity}
-                        onChange={(e) => updateRow(r.key, { quantity: e.target.value })}
-                      />
-                    </div>
+                  <div className={`grid grid-cols-2 ${qsSettings.show_qty ? 'sm:grid-cols-4' : 'sm:grid-cols-3'} gap-2`}>
+                    {qsSettings.show_qty && (
+                      <div>
+                        <label className="block text-[11px] text-muted-foreground mb-1">Qty</label>
+                        <input
+                          type="number" min="0" step="any"
+                          className="w-full border border-border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          value={r.quantity}
+                          onChange={(e) => updateRow(r.key, { quantity: e.target.value })}
+                        />
+                      </div>
+                    )}
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">Cost ৳ (paid to shop)</label>
                       <input
@@ -421,6 +431,18 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
                   </label>
                 )}
               </div>
+            </div>
+
+            {/* note */}
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">Note (optional)</label>
+              <textarea
+                rows={2}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y"
+                placeholder="Anything worth remembering about this sale — saved on the invoice and shown on its view/print"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+              />
             </div>
 
             {/* totals */}

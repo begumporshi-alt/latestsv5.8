@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { fetchAll, fetchAllParallel } from '@/lib/fetch-all';
 import type { InventoryAggregates } from '@/lib/inventory-value';
+import { loadQuickSellSettings } from '@/lib/quick-sell-settings';
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
 import JsBarcode from 'jsbarcode';
@@ -228,7 +229,7 @@ export default function InventoryPage() {
     // and returns them as ONE jsonb row (immune to the 1000-row cap that
     // forced those pagination loops), so the page loads with three parallel
     // groups instead: products, the aggregate RPC, and reference tables.
-    const [allProds, aggRes, refRes] = await Promise.all([
+    const [allProds, aggRes, refRes, qsSettings] = await Promise.all([
       // Products change slowly and the list spans 3+ pages — fetch the pages
       // in parallel (one round trip) instead of serially.
       fetchAllParallel(() => supabase
@@ -246,6 +247,7 @@ export default function InventoryPage() {
         fetchAll(() => supabase.from('product_sizes').select('id, name').order('name').order('id')),
         supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
       ]),
+      loadQuickSellSettings(supabase),
     ]);
     if (aggRes.error) throw aggRes.error;
     const [catRes, brandRes, whRes, colorRows, sizeRows, unitTypeRes] = refRes;
@@ -273,7 +275,14 @@ export default function InventoryPage() {
       for (const [wid, val] of Object.entries(ws)) fMap[`${pid}|${wid}`] = Number(val);
     }
 
-    const prods = allProds.map((p: any) => ({
+    // Quick Sell catalog entries stay out of the inventory list (and its
+    // stats) unless the admin setting allows them in. They keep working
+    // everywhere else — Quick Sell reuse, reports, invoice history.
+    const listedProds = qsSettings.show_in_inventory
+      ? allProds
+      : (allProds as any[]).filter((p: any) => !p.is_quick_sell);
+
+    const prods = listedProds.map((p: any) => ({
       ...p,
       total_stock: stockMap[p.id] || 0,
       total_sold: soldMap[p.id] || 0,
