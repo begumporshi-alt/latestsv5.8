@@ -1337,6 +1337,18 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
     (mode === 'templates' && !!selectedTemplate?.lines.some(l => l.accountCode === '2000'));
   const touchesAr = mode === 'custom' && lines.some(l => l.accountId && arAccountIds.includes(l.accountId));
 
+  // Bank deposit/withdrawal templates resolve to this tenant's active
+  // cash/bank accounts (the seeded 1001/1002 pair may be renamed or
+  // deactivated) and post via record_fund_transfer so they land in transfer
+  // history (reference_type='transfer', overdraft-guarded).
+  const activeCash = accounts.find(a => a.is_cash && a.account_type === 'asset');
+  const activeBank = accounts.find(a => a.is_bank && !a.is_cash && a.account_type === 'asset' && Number(a.balance) > 0)
+    || accounts.find(a => a.is_bank && !a.is_cash && a.account_type === 'asset');
+  const isTransferTemplate = selectedTemplate?.id === 'bank_deposit' || selectedTemplate?.id === 'bank_withdrawal';
+  const transferAccounts = selectedTemplate?.id === 'bank_deposit'
+    ? { from: activeCash?.id, to: activeBank?.id }
+    : { from: activeBank?.id, to: activeCash?.id };
+
   function applyTemplate(tmpl: JournalTemplate) {
     setSelectedTemplate(tmpl);
     setDescription(tmpl.name);
@@ -1387,14 +1399,39 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
     let finalLines: { accountId: string; debit: number; credit: number; description: string }[] = [];
 
     if (mode === 'templates' && selectedTemplate) {
+      if (!amount || parseFloat(amount) <= 0) {
+        setError('Please enter an amount');
+        return;
+      }
+      if (isTransferTemplate) {
+        if (!transferAccounts.from || !transferAccounts.to) {
+          setError('Could not resolve active cash and bank accounts — use the Transfers & Withdrawals page or Custom Entry.');
+          return;
+        }
+        setSaving(true);
+        try {
+          const { data: result, error: rpcError } = await supabase.rpc('record_fund_transfer', {
+            p_from_account_id: transferAccounts.from,
+            p_to_account_id: transferAccounts.to,
+            p_amount: parseFloat(amount),
+            p_transfer_date: entryDate,
+            p_notes: description.trim() && description !== selectedTemplate.name ? description.trim() : null,
+          });
+          if (rpcError) throw rpcError;
+
+          toast({ title: 'Success', description: `Transfer posted — ${result?.entry_number || ''}` });
+          onSaved();
+        } catch (err: any) {
+          setError(err.message || 'Failed to post the transfer');
+        } finally {
+          setSaving(false);
+        }
+        return;
+      }
       finalLines = buildLinesFromTemplate();
       const missingLines = selectedTemplate.lines.filter(l => !accounts.find(a => a.code === l.accountCode));
       if (missingLines.length > 0) {
         setError(`Account(s) not found in your chart of accounts: ${missingLines.map(l => `${l.accountCode} (${l.accountName})`).join(', ')}. Please create them first or use Custom Entry.`);
-        return;
-      }
-      if (!amount || parseFloat(amount) <= 0) {
-        setError('Please enter an amount');
         return;
       }
     } else {
@@ -1557,7 +1594,13 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
                           </tr>
                         </thead>
                         <tbody>
-                          {selectedTemplate.lines.map((l, i) => {
+                          {(isTransferTemplate
+                            ? selectedTemplate.lines.map(l => {
+                                const acc = l.accountCode === '1001' ? activeCash : activeBank;
+                                return { ...l, accountCode: acc?.code || l.accountCode, accountName: acc?.name || l.accountName };
+                              })
+                            : selectedTemplate.lines
+                          ).map((l, i) => {
                             const acc = accounts.find(a => a.code === l.accountCode);
                             return (
                               <tr key={i} className="border-t border-border/50">

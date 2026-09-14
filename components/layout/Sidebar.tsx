@@ -79,6 +79,7 @@ const navItems: NavItem[] = [
       { title: 'Balance Sheet', href: '/accounting/balance-sheet' },
       { title: 'Cash Flow', href: '/accounting/cash-flow' },
       { title: 'Bank Reconciliation', href: '/accounting/bank-reconciliation' },
+      { title: 'Transfers & Withdrawals', href: '/accounting/transfers' },
       { title: 'Expenses', href: '/expenses' },
       { title: 'Payment Methods', href: '/accounting/payment-methods' },
       { title: 'JE Guide', href: '/accounting/journal-guide' },
