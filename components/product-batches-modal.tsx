@@ -8,11 +8,12 @@
 // multi-unit products the sale-unit equivalent is shown next to them,
 // matching the POS batch-preview convention.
 
-import { useEffect, useMemo, useState } from 'react';
-import { Layers, Loader2, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Layers, Loader2, Pencil, X } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { fmtQty } from '@/lib/batch-allocation';
+import { BatchCostCorrectionDialog, type BatchCostCorrectionTarget } from '@/components/batch-cost-correction-dialog';
 
 export interface ProductBatchesModalProduct {
   id: string;
@@ -37,6 +38,7 @@ interface BatchRow {
   product?: {
     unit?: string | null;
     base_unit?: string | null;
+    cost_price?: number | null;
     product_units?: {
       unit_name: string;
       unit_short: string;
@@ -67,29 +69,27 @@ export function ProductBatchesModal({ product, onClose }: {
   const [rows, setRows] = useState<BatchRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [availableOnly, setAvailableOnly] = useState(true);
+  const [costTarget, setCostTarget] = useState<BatchCostCorrectionTarget | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data, error: fetchError } = await supabase
-          .from('inventory_batches')
-          .select(`id, batch_number, batch_type, quantity_received, quantity_remaining, unit_cost,
-                   expiry_date, created_at, reference_number, notes,
-                   warehouse:warehouses(name),
-                   product:products(id, unit, base_unit, product_units(id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, is_active))`)
-          .eq('product_id', product.id)
-          .order('created_at', { ascending: true })
-          .order('id', { ascending: true });
-        if (cancelled) return;
-        if (fetchError) throw fetchError;
-        setRows((data || []) as unknown as BatchRow[]);
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'Failed to load batches');
-      }
-    })();
-    return () => { cancelled = true; };
+  const load = useCallback(async () => {
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('inventory_batches')
+        .select(`id, batch_number, batch_type, quantity_received, quantity_remaining, unit_cost,
+                 expiry_date, created_at, reference_number, notes,
+                 warehouse:warehouses(name),
+                 product:products(id, unit, base_unit, cost_price, product_units(id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, is_active))`)
+        .eq('product_id', product.id)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+      if (fetchError) throw fetchError;
+      setRows((data || []) as unknown as BatchRow[]);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to load batches');
+    }
   }, [product.id]);
+
+  useEffect(() => { setRows(null); setError(null); load(); }, [load]);
 
   const units = useMemo(() => {
     const base = rows?.[0]?.product?.base_unit || rows?.[0]?.product?.unit || product.unit || 'pcs';
@@ -100,6 +100,12 @@ export function ProductBatchesModal({ product, onClose }: {
     );
     return { base, sale };
   }, [rows, product.unit]);
+
+  // Product's cost per base unit — pre-fills the correction dialog.
+  const productCost = useMemo(
+    () => (rows?.[0]?.product?.cost_price != null ? Number(rows[0].product.cost_price) : null),
+    [rows]
+  );
 
   const displayed = useMemo(
     () => (rows || []).filter((b) => !availableOnly || Number(b.quantity_remaining) > 0),
@@ -173,7 +179,8 @@ export function ProductBatchesModal({ product, onClose }: {
                       <th className="py-2 pr-2 text-right">Unit Cost</th>
                       <th className="py-2 pr-2 text-right">Value</th>
                       <th className="py-2 pr-2">Expiry</th>
-                      <th className="py-2">Date</th>
+                      <th className="py-2 pr-2">Date</th>
+                      <th className="py-2"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
@@ -212,6 +219,23 @@ export function ProductBatchesModal({ product, onClose }: {
                             {b.expiry_date || '—'}
                           </td>
                           <td className="py-2 text-xs text-muted-foreground whitespace-nowrap">{new Date(b.created_at).toLocaleDateString()}</td>
+                          <td className="py-2 text-right">
+                            <button
+                              title="Correct this batch's unit cost"
+                              onClick={() => setCostTarget({
+                                batchId: b.id,
+                                batchNumber: b.batch_number,
+                                productName: product.name,
+                                unitCost: Number(b.unit_cost),
+                                quantityRemaining: remaining,
+                                baseUnit: units.base,
+                                productCost: productCost ?? null,
+                              })}
+                              className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-blue-600 border border-transparent hover:border-blue-200 rounded px-1.5 py-1 transition"
+                            >
+                              <Pencil className="w-3 h-3" /> Correct
+                            </button>
+                          </td>
                         </tr>
                       );
                     })}
@@ -228,6 +252,14 @@ export function ProductBatchesModal({ product, onClose }: {
           </>
         )}
       </div>
+
+      {costTarget && (
+        <BatchCostCorrectionDialog
+          target={costTarget}
+          onClose={() => setCostTarget(null)}
+          onCorrected={() => { setCostTarget(null); load(); }}
+        />
+      )}
     </div>
   );
 }

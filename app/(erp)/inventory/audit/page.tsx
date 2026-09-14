@@ -6,9 +6,10 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { printNode } from '@/lib/print';
 import { toast } from '@/hooks/use-toast';
+import { BatchCostCorrectionDialog, type BatchCostCorrectionTarget } from '@/components/batch-cost-correction-dialog';
 import {
   RefreshCw, Printer, AlertTriangle, CheckCircle2, Info, Trash2,
-  ShieldCheck, Layers, History as HistoryIcon,
+  ShieldCheck, Layers, History as HistoryIcon, Pencil,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,24 @@ interface DriftAccount {
   gap: number;
 }
 
+interface CostOutlier {
+  batch_id: string;
+  batch_number: string | null;
+  batch_type: string | null;
+  product_id: string;
+  product_name: string;
+  product_sku: string;
+  base_unit: string;
+  warehouse: string | null;
+  quantity_remaining: number;
+  unit_cost: number;
+  product_cost: number;
+  ratio: number;
+  current_value: number;
+  expected_value: number;
+  created_at: string;
+}
+
 interface LogRow {
   id: number;
   checked_at: string;
@@ -70,7 +89,7 @@ function logChecks(h: LogRow): { sort_key: number; check_name: string; status: s
   return [];
 }
 
-type Tab = 'layers' | 'balances' | 'history';
+type Tab = 'layers' | 'balances' | 'costs' | 'history';
 
 const KIND_META: Record<string, { label: string; className: string; desc: string }> = {
   ADJ: { label: 'Oversell IOU', className: 'bg-red-50 text-red-700 border-red-200', desc: 'a sale took more units than the ledger held (old flow, before the warn-and-confirm gate)' },
@@ -103,6 +122,7 @@ export default function InventoryAuditPage() {
   const [checks, setChecks] = useState<ReconCheck[]>([]);
   const [layers, setLayers] = useState<Layer[]>([]);
   const [drift, setDrift] = useState<DriftAccount[]>([]);
+  const [outliers, setOutliers] = useState<CostOutlier[]>([]);
   const [history, setHistory] = useState<LogRow[]>([]);
 
   const [tab, setTab] = useState<Tab>('layers');
@@ -118,6 +138,7 @@ export default function InventoryAuditPage() {
 
   const [repairOpen, setRepairOpen] = useState(false);
   const [repairing, setRepairing] = useState(false);
+  const [costTarget, setCostTarget] = useState<BatchCostCorrectionTarget | null>(null);
 
   const sheetRef = useRef<HTMLDivElement>(null);
 
@@ -128,21 +149,24 @@ export default function InventoryAuditPage() {
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const [reconRes, layersRes, driftRes, logRes] = await Promise.all([
+      const [reconRes, layersRes, driftRes, outlierRes, logRes] = await Promise.all([
         supabase.rpc('get_inventory_reconciliation'),
         supabase.rpc('get_negative_inventory_layers'),
         supabase.rpc('get_account_balance_drift'),
+        supabase.rpc('get_batch_cost_outliers'),
         supabase.from('inventory_reconciliation_log')
           .select('*').order('checked_at', { ascending: false }).limit(30),
       ]);
       if (reconRes.error) throw reconRes.error;
       if (layersRes.error) throw layersRes.error;
       if (driftRes.error) throw driftRes.error;
+      if (outlierRes.error) throw outlierRes.error;
       if (logRes.error) throw logRes.error;
 
       setChecks(((reconRes.data || []) as ReconCheck[]).sort((a, b) => a.sort_key - b.sort_key));
       setLayers((layersRes.data || []) as Layer[]);
       setDrift((driftRes.data || []) as DriftAccount[]);
+      setOutliers((outlierRes.data || []) as CostOutlier[]);
       setHistory((logRes.data || []) as LogRow[]);
     } catch (e: unknown) {
       toast({
@@ -353,12 +377,40 @@ export default function InventoryAuditPage() {
             </button>
           );
         })}
+        {/* Batch cost scale outliers — synthesized check card (own RPC, not part
+            of get_inventory_reconciliation). A mis-scaled cost (e.g. a coil
+            price entered per meter) blocks sales and inflates inventory value. */}
+        {(() => {
+          if (outliers.length === 0) return null;
+          const overstated = outliers.reduce((s, o) => s + (o.current_value - o.expected_value), 0);
+          return (
+            <button
+              onClick={() => setTab('costs')}
+              className={`text-left rounded-xl border p-4 transition hover:shadow-sm cursor-pointer ${STATUS_STYLE.drift.border}`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-red-600" />
+                  <span className="text-sm font-semibold truncate">Batch Cost Scale Outliers</span>
+                </div>
+                <span className={`text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full shrink-0 ${STATUS_STYLE.drift.badge}`}>
+                  drift
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                {outliers.length} batch{outliers.length === 1 ? '' : 'es'} with remaining stock priced far off the product cost
+                {overstated > 0 && <> — inventory value overstated by ~{formatCurrency(overstated)}</>}. These can block sales and post inflated COGS.
+              </p>
+            </button>
+          );
+        })()}
       </div>
 
       {/* Tabs */}
       <div className="flex items-center gap-2 border-b border-border pb-3 flex-wrap">
         {([
           ['layers', 'Negative Layers', Layers, layers.length],
+          ['costs', 'Cost Outliers', AlertTriangle, outliers.length],
           ['balances', 'Balance Cache', ShieldCheck, drift.length],
           ['history', 'History', HistoryIcon, history.length],
         ] as [Tab, string, typeof Layers, number][]).map(([key, label, Icon, count]) => (
@@ -614,6 +666,89 @@ export default function InventoryAuditPage() {
             purge. Where it matches (or is lower), the goods really left — keep the layer.
             {negCheck ? ` (Currently ${negCheck.drift} layer(s).)` : ''}
           </p>
+        </div>
+      )}
+
+      {/* ----------------------------------------------------------------- */}
+      {/* Tab: Cost Outliers                                                */}
+      {/* ----------------------------------------------------------------- */}
+      {tab === 'costs' && (
+        <div className="space-y-3">
+          <div className="rounded-xl border border-border bg-muted/30 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Info className="w-4 h-4 text-blue-600 shrink-0" />
+              What is a cost scale outlier?
+            </div>
+            <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+              A batch whose unit cost is more than 20× (or less than 1/20×) the product&rsquo;s cost per
+              base unit — usually a sale-unit price entered per base unit, e.g. a <b>coil price typed
+              per meter (100× too high)</b>. Left alone it inflates inventory value, posts inflated
+              COGS, and can block sales outright (the cost-scale guard rejects the invoice).
+              Correcting rewrites the batch cost and posts a value-delta journal entry so the GL
+              follows. The reason you type is kept in the audit log.
+            </p>
+          </div>
+
+          {outliers.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-8 text-center">
+              No cost scale outliers — every batch with stock is priced within 20× of its product cost.
+            </p>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-border bg-white">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] font-semibold text-muted-foreground border-b border-border bg-muted/30">
+                    <th className="py-2.5 px-3">Product</th>
+                    <th className="py-2.5 px-3">Batch</th>
+                    <th className="py-2.5 px-3">Warehouse</th>
+                    <th className="py-2.5 px-3 text-right">Remaining</th>
+                    <th className="py-2.5 px-3 text-right">Unit Cost</th>
+                    <th className="py-2.5 px-3 text-right">Product Cost</th>
+                    <th className="py-2.5 px-3 text-right">Ratio</th>
+                    <th className="py-2.5 px-3 text-right">Value Now</th>
+                    <th className="py-2.5 px-3 text-right">Value at Product Cost</th>
+                    <th className="py-2.5 px-3"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {outliers.map(o => (
+                    <tr key={o.batch_id}>
+                      <td className="py-2.5 px-3">
+                        <p className="font-medium">{o.product_name}</p>
+                        <p className="text-xs text-muted-foreground">{o.product_sku}</p>
+                      </td>
+                      <td className="py-2.5 px-3 text-xs">{o.batch_number || o.batch_id.slice(0, 8)}</td>
+                      <td className="py-2.5 px-3 text-xs">{o.warehouse || '—'}</td>
+                      <td className="py-2.5 px-3 text-right text-xs">{Number(o.quantity_remaining).toLocaleString()} {o.base_unit}</td>
+                      <td className="py-2.5 px-3 text-right text-xs font-semibold text-red-600">{formatCurrency(Number(o.unit_cost))}</td>
+                      <td className="py-2.5 px-3 text-right text-xs">{formatCurrency(Number(o.product_cost))}</td>
+                      <td className="py-2.5 px-3 text-right">
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700">{Number(o.ratio).toLocaleString()}×</span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-xs">{formatCurrency(Number(o.current_value))}</td>
+                      <td className="py-2.5 px-3 text-right text-xs">{formatCurrency(Number(o.expected_value))}</td>
+                      <td className="py-2.5 px-3 text-right">
+                        <button
+                          onClick={() => setCostTarget({
+                            batchId: o.batch_id,
+                            batchNumber: o.batch_number,
+                            productName: o.product_name,
+                            unitCost: Number(o.unit_cost),
+                            quantityRemaining: Number(o.quantity_remaining),
+                            baseUnit: o.base_unit,
+                            productCost: Number(o.product_cost),
+                          })}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-300 rounded-lg px-2.5 py-1.5 transition"
+                        >
+                          <Pencil className="w-3.5 h-3.5" /> Correct
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -911,6 +1046,14 @@ export default function InventoryAuditPage() {
           </p>
         </div>
       </div>
+
+      {costTarget && (
+        <BatchCostCorrectionDialog
+          target={costTarget}
+          onClose={() => setCostTarget(null)}
+          onCorrected={() => { setCostTarget(null); loadData(); }}
+        />
+      )}
     </div>
   );
 }
