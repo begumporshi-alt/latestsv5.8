@@ -103,6 +103,7 @@ export default function CustomerDetailPage() {
   const [receivablesFilter, setReceivablesFilter] = useState<'all' | 'invoice' | 'manual'>('all');
   const [receivablesDateFrom, setReceivablesDateFrom] = useState('');
   const [receivablesDateTo, setReceivablesDateTo] = useState('');
+  const [showReversals, setShowReversals] = useState(false);
 
   useEffect(() => { loadCustomerData(); }, [customerId]);
 
@@ -128,7 +129,7 @@ export default function CustomerDetailPage() {
       fetchAll(() => supabase.from('quotations').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).order('id')),
       fetchAll(() => supabase.from('deliveries').select('*').eq('customer_id', customerId).order('created_at', { ascending: false }).order('id')),
       supabase.from('journal_entries').select('id, entry_number, entry_date, description, total_debit, created_at').eq('customer_id', customerId).eq('reference_type', 'receivable').eq('is_posted', true).order('entry_date', { ascending: false }),
-      supabase.from('payments').select('reference_id, amount, bad_debt_amount').eq('reference_type', 'receivable'),
+      supabase.from('payments').select('reference_id, amount, bad_debt_amount').eq('reference_type', 'receivable').eq('customer_id', customerId),
       supabase.from('sales_returns').select('*, invoice:invoices(invoice_number)').eq('customer_id', customerId).order('created_at', { ascending: false }),
       supabase.from('customer_store_credits').select('balance').eq('customer_id', customerId).eq('status', 'active'),
       fetchAll(() => supabase.from('payments').select('*').eq('customer_id', customerId).order('payment_date', { ascending: false }).order('id')),
@@ -321,6 +322,20 @@ export default function CustomerDetailPage() {
 
   const filteredReceivables = getFilteredReceivables();
 
+  // Payment layers. "Live" rows are the current assertion of money that
+  // actually moved: receipts not superseded by an edit/cancel, plus real
+  // refunds (RVP- / sales-return). REV- rows are bookkeeping mirrors of
+  // superseded receipts — no cash event — and receipts with is_reversed
+  // were superseded by a later edit/cancel. Both stay in the audit trail
+  // (toggle) but never enter the totals.
+  const isReversalRow = (p: Payment) => !!p.payment_number?.startsWith('REV-');
+  const isLivePayment = (p: Payment) =>
+    !isReversalRow(p) && !(p.payment_type === 'received' && p.is_reversed);
+  const livePayments = payments.filter(isLivePayment);
+  const actualCollected = livePayments.filter(p => p.payment_type === 'received').reduce((s, p) => s + Number(p.amount), 0);
+  const actualRefunded = livePayments.filter(p => p.payment_type === 'refund').reduce((s, p) => s + Number(p.amount), 0);
+  const reversalCount = payments.length - livePayments.length;
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center gap-4">
@@ -506,7 +521,7 @@ export default function CustomerDetailPage() {
             <div className="flex border-b border-border overflow-x-auto">
               {[
                 { key: 'invoices', label: 'Invoices', icon: Receipt },
-                { key: 'payments', label: `Payments${payments.length > 0 ? ` (${payments.length})` : ''}`, icon: HandCoins },
+                { key: 'payments', label: `Payments${livePayments.length > 0 ? ` (${livePayments.length})` : ''}`, icon: HandCoins },
                 { key: 'returns', label: `Returns${salesReturns.length > 0 ? ` (${salesReturns.length})` : ''}`, icon: RotateCcw },
                 { key: 'receivables', label: 'Receivables', icon: User },
                 { key: 'quotations', label: 'Quotations', icon: FileText },
@@ -579,28 +594,61 @@ export default function CustomerDetailPage() {
 
               {activeTab === 'payments' && (
                 <div className="space-y-4">
-                  {/* Payment summary cards */}
+                  {/* Actual money movement — live layer only (see isLivePayment):
+                      receipts not superseded by edits/cancels, minus real refunds */}
                   <div className="grid grid-cols-3 gap-3">
                     <div className="bg-green-50 rounded-lg p-3">
-                      <p className="text-xs text-green-600 font-medium">Total Collected</p>
-                      <p className="text-lg font-bold text-green-700">{formatCurrency(payments.filter(p => p.payment_type === 'received').reduce((s, p) => s + Number(p.amount), 0))}</p>
+                      <p className="text-xs text-green-600 font-medium">Collected (actual)</p>
+                      <p className="text-lg font-bold text-green-700">{formatCurrency(actualCollected)}</p>
+                      <p className="text-[10px] text-green-600/70">cash received, net of edit/cancel reversals</p>
                     </div>
-                    <div className="bg-orange-50 rounded-lg p-3">
-                      <p className="text-xs text-orange-600 font-medium">Total Bad Debt</p>
-                      <p className="text-lg font-bold text-orange-700">{formatCurrency(payments.reduce((s, p) => s + Number(p.bad_debt_amount || 0), 0))}</p>
+                    <div className="bg-red-50 rounded-lg p-3">
+                      <p className="text-xs text-red-600 font-medium">Refunded (actual)</p>
+                      <p className="text-lg font-bold text-red-700">{formatCurrency(actualRefunded)}</p>
+                      <p className="text-[10px] text-red-600/70">money returned to the customer</p>
                     </div>
                     <div className="bg-blue-50 rounded-lg p-3">
-                      <p className="text-xs text-blue-600 font-medium">Total Payments</p>
-                      <p className="text-lg font-bold text-blue-700">{payments.length}</p>
+                      <p className="text-xs text-blue-600 font-medium">Net Cash</p>
+                      <p className="text-lg font-bold text-blue-700">{formatCurrency(actualCollected - actualRefunded)}</p>
+                      <p className="text-[10px] text-blue-600/70">
+                        {livePayments.length} live payment{livePayments.length === 1 ? '' : 's'}
+                        {reversalCount > 0 ? ` · ${reversalCount} reversal row${reversalCount === 1 ? '' : 's'} hidden` : ''}
+                      </p>
                     </div>
                   </div>
 
-                  {/* Payments table */}
+                  {/* Audit controls: bad-debt note + reversal toggle */}
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    {livePayments.reduce((s, p) => s + Number(p.bad_debt_amount || 0), 0) > 0 ? (
+                      <p className="text-xs text-orange-600">
+                        Bad debt written off: {formatCurrency(livePayments.reduce((s, p) => s + Number(p.bad_debt_amount || 0), 0))}
+                      </p>
+                    ) : <span />}
+                    {reversalCount > 0 && (
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showReversals}
+                          onChange={e => setShowReversals(e.target.checked)}
+                          className="accent-blue-600"
+                        />
+                        Show edit/cancel reversals ({reversalCount})
+                      </label>
+                    )}
+                  </div>
+
+                  {/* Payments table — live rows by default, full audit ledger with the toggle */}
                   <div className="overflow-x-auto">
                     {payments.length === 0 ? (
                       <div className="text-center py-8 text-muted-foreground text-sm">
                         <HandCoins className="w-10 h-10 mx-auto mb-2 opacity-30" />
                         No payments recorded yet
+                      </div>
+                    ) : (showReversals ? payments : livePayments).length === 0 ? (
+                      <div className="text-center py-8 text-muted-foreground text-sm">
+                        <HandCoins className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                        Every payment on this account was reversed by an invoice edit/cancel —
+                        enable &quot;Show edit/cancel reversals&quot; for the audit trail.
                       </div>
                     ) : (
                         <table className="w-full">
@@ -617,14 +665,27 @@ export default function CustomerDetailPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border">
-                          {payments.map(p => (
-                            <tr key={p.id} className="hover:bg-muted/30">
+                          {(showReversals ? payments : livePayments).map(p => {
+                            const reversal = isReversalRow(p);
+                            const superseded = p.payment_type === 'received' && p.is_reversed;
+                            return (
+                            <tr key={p.id} className={`hover:bg-muted/30 ${reversal || superseded ? 'opacity-60' : ''}`}>
                               <td className="px-3 py-2 text-sm font-semibold text-blue-600">{p.payment_number}</td>
                               <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(p.payment_date)}</td>
                               <td className="px-3 py-2">
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.payment_type === 'received' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
-                                  {p.payment_type === 'received' ? 'received' : 'refund'}
-                                </span>
+                                {reversal ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600" title="Accounting reversal from an invoice edit/cancel — no money moved">
+                                    reversal
+                                  </span>
+                                ) : superseded ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600" title="Superseded by an invoice edit/cancel — replaced by a later payment">
+                                    received · superseded
+                                  </span>
+                                ) : (
+                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.payment_type === 'received' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                                    {p.payment_type === 'received' ? 'received' : 'refund'}
+                                  </span>
+                                )}
                               </td>
                               <td className="px-3 py-2">
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.reference_type === 'invoice' ? 'bg-blue-50 text-blue-600' : p.reference_type === 'receivable' ? 'bg-purple-50 text-purple-600' : 'bg-slate-50 text-slate-600'}`}>
@@ -632,7 +693,11 @@ export default function CustomerDetailPage() {
                                 </span>
                               </td>
                               <td className="px-3 py-2 text-sm capitalize text-muted-foreground">{p.payment_method.replace(/_/g, ' ')}</td>
-                              <td className={`px-3 py-2 text-sm text-right font-semibold ${p.payment_type === 'refund' ? 'text-red-600' : 'text-green-600'}`}>
+                              <td className={`px-3 py-2 text-sm text-right font-semibold ${
+                                reversal || superseded ? 'text-slate-500'
+                                  : p.payment_type === 'refund' ? 'text-red-600'
+                                  : 'text-green-600'
+                              }`}>
                                 {p.payment_type === 'refund' ? '−' : ''}{formatCurrency(Number(p.amount))}
                               </td>
                               <td className="px-3 py-2 text-sm text-right font-semibold">
@@ -644,13 +709,14 @@ export default function CustomerDetailPage() {
                               </td>
                               <td className="px-3 py-2 text-sm text-muted-foreground">{p.reference_number || '—'}</td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                         <tfoot>
                           <tr className="bg-muted/40 border-t-2 border-border">
-                            <td colSpan={5} className="px-3 py-2 text-sm font-semibold text-muted-foreground">Total</td>
-                            <td className="px-3 py-2 text-sm text-right font-bold text-green-600">{formatCurrency(payments.filter(p => p.payment_type === 'received').reduce((s, p) => s + Number(p.amount), 0))}</td>
-                            <td className="px-3 py-2 text-sm text-right font-bold text-orange-600">{formatCurrency(payments.reduce((s, p) => s + Number(p.bad_debt_amount || 0), 0))}</td>
+                            <td colSpan={5} className="px-3 py-2 text-sm font-semibold text-muted-foreground">Total (actual)</td>
+                            <td className="px-3 py-2 text-sm text-right font-bold text-green-600">{formatCurrency(actualCollected)}</td>
+                            <td className="px-3 py-2 text-sm text-right font-bold text-orange-600">{formatCurrency(livePayments.reduce((s, p) => s + Number(p.bad_debt_amount || 0), 0))}</td>
                             <td></td>
                           </tr>
                         </tfoot>

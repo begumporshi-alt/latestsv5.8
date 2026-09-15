@@ -476,6 +476,7 @@ export interface Payment {
   supplier_id?: string;
   amount: number;
   bad_debt_amount?: number;
+  is_reversed?: boolean;
   payment_method: PaymentMethod;
   payment_date: string;
   reference_number?: string;
