@@ -614,7 +614,7 @@ export default function CustomerDetailPage() {
                         No payments recorded yet
                       </div>
                     ) : (
-                      <table className="w-full">
+                        <table className="w-full">
                         <thead>
                           <tr className="border-b border-border">
                             <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Payment #</th>
@@ -633,13 +633,19 @@ export default function CustomerDetailPage() {
                               <td className="px-3 py-2 text-sm font-semibold text-blue-600">{p.payment_number}</td>
                               <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(p.payment_date)}</td>
                               <td className="px-3 py-2">
-                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.reference_type === 'invoice' ? 'bg-blue-50 text-blue-600' : 'bg-purple-50 text-purple-600'}`}>
-                                  {p.reference_type}
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.payment_type === 'received' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
+                                  {p.payment_type === 'received' ? 'received' : 'refund'}
                                 </span>
                               </td>
-                              <td className="px-3 py-2 text-sm capitalize text-muted-foreground">{p.payment_type}</td>
+                              <td className="px-3 py-2">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.reference_type === 'invoice' ? 'bg-blue-50 text-blue-600' : p.reference_type === 'receivable' ? 'bg-purple-50 text-purple-600' : 'bg-slate-50 text-slate-600'}`}>
+                                  {p.reference_type?.replace('invoice_cancel', 'invoice (cancelled)').replace('invoice_edit', 'invoice (edit)')}
+                                </span>
+                              </td>
                               <td className="px-3 py-2 text-sm capitalize text-muted-foreground">{p.payment_method.replace(/_/g, ' ')}</td>
-                              <td className="px-3 py-2 text-sm text-right font-semibold text-green-600">{formatCurrency(Number(p.amount))}</td>
+                              <td className={`px-3 py-2 text-sm text-right font-semibold ${p.payment_type === 'refund' ? 'text-red-600' : 'text-green-600'}`}>
+                                {p.payment_type === 'refund' ? '−' : ''}{formatCurrency(Number(p.amount))}
+                              </td>
                               <td className="px-3 py-2 text-sm text-right font-semibold">
                                 {Number(p.bad_debt_amount || 0) > 0 ? (
                                   <span className="text-orange-600">{formatCurrency(Number(p.bad_debt_amount))}</span>
