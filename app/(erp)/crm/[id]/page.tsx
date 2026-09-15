@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
@@ -11,9 +11,9 @@ import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw, Filter, Search, X, HandCoins, Printer, StickyNote, Plus, Trash2 } from 'lucide-react';
 import type { Customer, Invoice, Quotation, Delivery, Payment } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
+import CustomerStatementModal from '@/components/CustomerStatementModal';
 import { fetchAll } from '@/lib/fetch-all';
 import { isInvoiceOverdue } from '@/lib/format';
-import { printNode } from '@/lib/print';
 
 interface SalesReturn {
   id: string;
@@ -93,13 +93,11 @@ export default function CustomerDetailPage() {
   const [activeTab, setActiveTab] = useState<'invoices' | 'payments' | 'quotations' | 'deliveries' | 'receivables' | 'returns' | 'notes'>('invoices');
   const [payments, setPayments] = useState<Payment[]>([]);
   const [showCollect, setShowCollect] = useState(false);
+  const [showStatement, setShowStatement] = useState(false);
   const [notes, setNotes] = useState<CustomerNote[]>([]);
   const [newNote, setNewNote] = useState('');
   const [newNoteType, setNewNoteType] = useState<CustomerNote['note_type']>('general');
   const [noteSaving, setNoteSaving] = useState(false);
-  const [statement, setStatement] = useState<any[] | null>(null);
-  const [printing, setPrinting] = useState(false);
-  const statementRef = useRef<HTMLDivElement>(null);
 
   // Receivables filter state
   const [receivablesFilter, setReceivablesFilter] = useState<'all' | 'invoice' | 'manual'>('all');
@@ -258,25 +256,6 @@ export default function CustomerDetailPage() {
     setNotes(notes.filter(n => n.id !== noteId));
   }
 
-  async function handlePrintStatement() {
-    setPrinting(true);
-    try {
-      if (!statement) {
-        const { data, error } = await supabase.rpc('get_customer_ar_statement', { p_customer_id: customerId });
-        if (error) throw error;
-        setStatement((data || []) as any[]);
-        // Wait for the off-screen statement to render before printing it
-        setTimeout(() => printNode(statementRef.current), 150);
-      } else {
-        printNode(statementRef.current);
-      }
-    } catch (err: any) {
-      toast({ title: 'Error', description: err.message || 'Failed to build statement', variant: 'destructive' });
-    } finally {
-      setPrinting(false);
-    }
-  }
-
   // Combine and filter receivables
   const getFilteredReceivables = (): ReceivableItem[] => {
     const invoiceReceivables: InvoiceReceivable[] = invoices
@@ -350,10 +329,9 @@ export default function CustomerDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={handlePrintStatement}
-            disabled={printing}
-            className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50"
-            title="Print the receivable statement for this customer"
+            onClick={() => setShowStatement(true)}
+            className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition"
+            title="Period statement or AR ledger — preview and print for the customer"
           >
             <Printer className="w-4 h-4" />Statement
           </button>
@@ -1007,60 +985,12 @@ export default function CustomerDetailPage() {
         />
       )}
 
-      {/* Off-screen statement for printing (printNode prints this node) */}
-      <div ref={statementRef} className="bg-white p-6 text-black" style={{ width: '760px' }}>
-        <div className="flex items-baseline justify-between border-b-2 border-black pb-2 mb-3">
-          <div>
-            <h1 className="text-lg font-bold">Customer Statement</h1>
-            <p className="text-sm">{customer.name} ({customer.code}){customer.company_name ? ` — ${customer.company_name}` : ''}</p>
-            {customer.phone && <p className="text-xs">{customer.phone}</p>}
-            {customer.address && <p className="text-xs">{customer.address}{customer.city ? `, ${customer.city}` : ''}</p>}
-          </div>
-          <div className="text-right text-xs">
-            <p className="font-semibold">{new Date().toLocaleDateString()}</p>
-            <p>Credit terms: {customer.credit_days} days</p>
-            {Number(customer.credit_limit) > 0 && <p>Limit: {formatCurrency(customer.credit_limit)}</p>}
-          </div>
-        </div>
-
-        <div className="flex gap-4 mb-3 text-xs">
-          <div className="flex-1 border border-black p-2">
-            <p className="font-semibold border-b border-black pb-1 mb-1">Summary</p>
-            <div className="flex justify-between"><span>Lifetime purchases</span><span className="font-mono">{formatCurrency(stats.totalPurchases)}</span></div>
-            <div className="flex justify-between"><span>Total returned</span><span className="font-mono">{formatCurrency(stats.totalRefunds)}</span></div>
-            <div className="flex justify-between font-bold"><span>Balance due</span><span className="font-mono">{formatCurrency(customer.outstanding_balance)}</span></div>
-          </div>
-        </div>
-
-        <table className="w-full border-collapse text-[11px]" style={{ tableLayout: 'fixed' }}>
-          <thead>
-            <tr>
-              {['Date', 'Entry #', 'Type', 'Description', 'Debit', 'Credit', 'Balance'].map(h => (
-                <th key={h} className="border border-black px-1.5 py-1.5 text-left bg-gray-100">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {!statement || statement.length === 0 ? (
-              <tr><td className="border border-black px-1.5 py-3 text-center" colSpan={7}>No receivable activity</td></tr>
-            ) : statement.map((row: any, i: number) => (
-              <tr key={i}>
-                <td className="border border-black px-1.5 py-1.5">{formatDate(row.entry_date)}</td>
-                <td className="border border-black px-1.5 py-1.5">{row.entry_number}</td>
-                <td className="border border-black px-1.5 py-1.5">{row.doc_type}</td>
-                <td className="border border-black px-1.5 py-1.5 truncate">{row.description}</td>
-                <td className="border border-black px-1.5 py-1.5 text-right font-mono">{Number(row.debit) > 0 ? formatCurrency(row.debit) : ''}</td>
-                <td className="border border-black px-1.5 py-1.5 text-right font-mono">{Number(row.credit) > 0 ? formatCurrency(row.credit) : ''}</td>
-                <td className="border border-black px-1.5 py-1.5 text-right font-mono">{formatCurrency(row.balance)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p className="text-[10px] mt-2 text-gray-600">
-          Debit increases what the customer owes (invoices, receivables). Credit reduces it (payments, returns, bad debt).
-          Generated from the customer profile · {statement?.length ?? 0} entr{(statement?.length ?? 0) === 1 ? 'y' : 'ies'}.
-        </p>
-      </div>
+      {showStatement && customer && (
+        <CustomerStatementModal
+          customer={customer}
+          onClose={() => setShowStatement(false)}
+        />
+      )}
     </div>
   );
 }
