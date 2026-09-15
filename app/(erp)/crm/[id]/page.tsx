@@ -8,7 +8,7 @@ import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
-import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw, Filter, Search, X, HandCoins, Printer, StickyNote, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Phone, Mail, MapPin, Building, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Receipt, Truck, FileText, User, RotateCcw, Filter, Search, X, HandCoins, Printer, StickyNote, Plus, Trash2, BookOpen } from 'lucide-react';
 import type { Customer, Invoice, Quotation, Delivery, Payment } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
 import CustomerStatementModal from '@/components/CustomerStatementModal';
@@ -165,7 +165,11 @@ export default function CustomerDetailPage() {
     const invData = invRes;
     const returnsData = returnsRes.data || [];
     const totalPaid = invData.reduce((s, i) => s + Number(i.amount_paid), 0);
-    const totalOut = invData.reduce((s, i) => s + Number(i.balance_due ?? i.total_amount - i.amount_paid), 0);
+    // Cancelled invoices are excluded — the receivables table filters them,
+    // and the summary card must agree with the table total below it
+    const totalOut = invData
+      .filter(i => i.status !== 'cancelled')
+      .reduce((s, i) => s + Number(i.balance_due ?? i.total_amount - i.amount_paid), 0);
     const manualReceivablesOutstanding = receivablesWithPayments.reduce((s, r) => s + r.outstanding_balance, 0);
     const totalRefunds = returnsData.reduce((s, r) => s + Number(r.total_refund_amount), 0);
     const actualTotalPurchases = (invTotalsRes.data || []).reduce((s, i) => s + Number(i.total_amount), 0);
@@ -343,6 +347,13 @@ export default function CustomerDetailPage() {
               <HandCoins className="w-4 h-4" />Collect Payment
             </button>
           )}
+          <Link
+            href={`/accounting/journal?customer=${customer.id}`}
+            className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition"
+            title="This customer's journal entries — invoices, payments, COGS"
+          >
+            <BookOpen className="w-4 h-4" />Journal
+          </Link>
           <Link href={`/crm?edit=${customer.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">
             <Edit className="w-4 h-4" />Edit
           </Link>

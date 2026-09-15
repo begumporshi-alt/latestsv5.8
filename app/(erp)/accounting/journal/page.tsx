@@ -337,16 +337,23 @@ export default function JournalPage() {
 
   useEffect(() => { loadData(); }, [period, customFrom, customTo, filterSupplier, filterCustomer]);
 
-  // Deep links: ?supplier=<id> from the supplier profile, ?highlight=<je id>
-  // from the account statement and sales returns. Both widen to all periods —
-  // today's window usually hides the target. highlight also narrows the search
-  // to the entry's number so the row is impossible to miss.
+  // Deep links: ?supplier=<id> from the supplier profile, ?customer=<id>
+  // from the customer profile, ?highlight=<je id> from the account statement
+  // and sales returns. All widen to all periods — today's window usually
+  // hides the target. highlight also narrows the search to the entry's
+  // number so the row is impossible to miss.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const sid = params.get('supplier');
+    const cid = params.get('customer');
     const hid = params.get('highlight');
     if (sid) {
       setFilterSupplier(sid);
+      setPeriod('all');
+      setPage(1);
+    }
+    if (cid) {
+      setFilterCustomer(cid);
       setPeriod('all');
       setPage(1);
     }
@@ -363,7 +370,7 @@ export default function JournalPage() {
           }
         });
     }
-    if (sid || hid) window.history.replaceState({}, '', '/accounting/journal');
+    if (sid || cid || hid) window.history.replaceState({}, '', '/accounting/journal');
   }, []);
 
   // Payment JEs reference the payment row, not the invoice — resolve that link
@@ -423,6 +430,7 @@ export default function JournalPage() {
         grnIds = (supplierGrns || []).map((g: any) => g.id);
       }
       let customerInvoiceIds: string[] = [];
+      let customerPaymentIds: string[] = [];
       if (filterCustomer) {
         const { data: customerInvoices, error: invError } = await supabase
           .from('invoices')
@@ -430,6 +438,15 @@ export default function JournalPage() {
           .eq('customer_id', filterCustomer);
         if (invError) throw invError;
         customerInvoiceIds = (customerInvoices || []).map((i: any) => i.id);
+        // Payment JEs reference the payment row; match them through the
+        // customer's payments so attribution gaps can't hide them (defense
+        // in depth on top of the customer_id backfill)
+        const { data: customerPayments, error: payError } = await supabase
+          .from('payments')
+          .select('id')
+          .eq('customer_id', filterCustomer);
+        if (payError) throw payError;
+        customerPaymentIds = (customerPayments || []).map((p: any) => p.id);
       }
       // fetchAll pages past the row cap — a .limit(500) window silently hid
       // older entries on wide date ranges.
@@ -453,10 +470,16 @@ export default function JournalPage() {
             : query.eq('supplier_id', filterSupplier);
         }
         if (filterCustomer) {
-          // invoice/payment JEs carry customer_id; older ones match through the customer's invoice ids
-          query = customerInvoiceIds.length > 0
-            ? query.or(`customer_id.eq.${filterCustomer},and(reference_type.eq.invoice,reference_id.in.(${customerInvoiceIds.join(',')}))`)
-            : query.eq('customer_id', filterCustomer);
+          // invoice/payment JEs carry customer_id; older or mis-attributed ones
+          // match through the customer's invoice and payment ids
+          const orParts = [`customer_id.eq.${filterCustomer}`];
+          if (customerInvoiceIds.length > 0) {
+            orParts.push(`and(reference_type.eq.invoice,reference_id.in.(${customerInvoiceIds.join(',')}))`);
+          }
+          if (customerPaymentIds.length > 0) {
+            orParts.push(`and(reference_type.eq.payment,reference_id.in.(${customerPaymentIds.join(',')}))`);
+          }
+          query = query.or(orParts.join(','));
         }
         return query;
       };
@@ -820,6 +843,12 @@ export default function JournalPage() {
             { value: 'purchase_receipt', label: 'Purchase Receipt' },
             { value: 'purchase_cancellation', label: 'PO Cancellation' },
             { value: 'opening_balance', label: 'Opening' },
+            { value: 'advance', label: 'Advances' },
+            { value: 'advance_refund', label: 'Advance Refunds' },
+            { value: 'store_credit_cash_out', label: 'Store Credit Out' },
+            { value: 'product_creation', label: 'Opening Stock' },
+            { value: 'balance_adjustment', label: 'Balance Adj.' },
+            { value: 'batch_cost_correction', label: 'Cost Correction' },
           ].map(f => (
             <button
               key={f.value}
