@@ -40,6 +40,10 @@ interface EditItem {
   available_units?: ProductUnit[];
   base_quantity: number;
   subtotal: number;
+  warranty_months?: number;
+  batch_number?: string;
+  batch_expiry_date?: string;
+  batch_expired?: boolean;
 }
 
 export default function EditInvoiceModal({ invoice, customers, products, onClose, onSaved }: EditInvoiceModalProps) {
@@ -151,6 +155,10 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
         available_units: multiUnit ? product.units.filter((u: any) => u.is_active) : undefined,
         base_quantity: Number(item.base_quantity) || Number(item.quantity),
         subtotal: Number(item.subtotal),
+        warranty_months: product?.warranty_months || 0,
+        batch_number: item.batch_number || undefined,
+        batch_expiry_date: item.batch_expiry_date || undefined,
+        batch_expired: item.batch_expired || false,
       };
     });
 
@@ -413,6 +421,8 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                   <thead className="bg-muted/40">
                     <tr>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                      <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Warranty</th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Batch/Expiry</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Price</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc %</th>
@@ -450,6 +460,27 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                             >
                               {item.available_units.map(u => <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>)}
                             </select>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center text-xs">
+                          {item.warranty_months && item.warranty_months > 0 ? (
+                            <span className="text-purple-600 font-medium">{item.warranty_months}mo</span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-left text-xs">
+                          {item.batch_number ? (
+                            <div>
+                              <p className="font-medium text-foreground">{item.batch_number}</p>
+                              {item.batch_expiry_date && (
+                                <p className={`text-[10px] ${item.batch_expired ? 'text-red-600' : 'text-blue-600'}`}>
+                                  Exp: {new Date(item.batch_expiry_date).toLocaleDateString()}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
                           )}
                         </td>
                         <td className="px-3 py-2">

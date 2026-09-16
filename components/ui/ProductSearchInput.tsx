@@ -18,6 +18,9 @@ interface ProductResult {
   image_url?: string;
   inventory_items?: { quantity_on_hand: number }[];
   units?: ProductUnit[];
+  warranty_months: number;
+  has_expiring_batches?: boolean;
+  days_to_expiry?: number;
 }
 
 interface FilterOption {
@@ -77,9 +80,9 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
 
     debounceRef.current = setTimeout(async () => {
       setLoading(true);
-      let dbQuery = supabase
-        .from('products')
-        .select(`id, name, sku, sale_price, cost_price, unit, base_unit, enable_multi_unit, image_url,
+    let dbQuery = supabase
+      .from('products')
+      .select(`id, name, sku, sale_price, cost_price, unit, base_unit, enable_multi_unit, image_url, warranty_months,
           inventory_items(quantity_on_hand),
           units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
         .eq('is_active', true)
@@ -280,6 +283,14 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
                     {showStock && s !== null && (
                       <p className={`text-[10px] font-medium ${s > 0 ? 'text-green-600' : 'text-red-500'}`}>
                         {s > 0 ? `${s} in stock` : 'Out of stock'}
+                      </p>
+                    )}
+                    {p.warranty_months && p.warranty_months > 0 && (
+                      <p className="text-[10px] font-medium text-purple-600">{p.warranty_months}mo warranty</p>
+                    )}
+                    {p.days_to_expiry !== undefined && (
+                      <p className={`text-[10px] font-medium ${p.days_to_expiry < 0 ? 'text-red-600' : p.days_to_expiry <= 30 ? 'text-orange-600' : 'text-blue-600'}`}>
+                        {p.days_to_expiry < 0 ? 'EXPIRED' : p.days_to_expiry <= 30 ? `${p.days_to_expiry} days left` : ''}
                       </p>
                     )}
                   </div>

@@ -10,6 +10,9 @@ export interface PrintItem {
   discount_percent?: number;
   subtotal: number;
   unit_name?: string;
+  warranty_months?: number;
+  batch_number?: string;
+  batch_expiry_date?: string;
 }
 
 export interface PrintMetaField {
@@ -525,6 +528,9 @@ export default function PrintTemplate({
                 { label: 'SL',          align: 'center' as const, width: '36px'  },
                 { label: 'ITEM CODE',   align: 'left'   as const, width: '90px'  },
                 { label: 'ITEM DETAILS',align: 'left'   as const               },
+                { label: 'WARRANTY',    align: 'center' as const, width: '60px'  },
+                { label: 'BATCH',       align: 'left'   as const, width: '70px'  },
+                { label: 'EXPIRY',      align: 'center' as const, width: '64px'  },
                 { label: 'UNIT',        align: 'center' as const, width: '64px'  },
                 { label: 'QTY',         align: 'center' as const, width: '48px'  },
                 ...(hideRate || hideDiscountPercent ? [] : [{ label: 'RATE (৳)',    align: 'right'  as const, width: '80px'  }]),
@@ -567,7 +573,16 @@ export default function PrintTemplate({
                 >
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>{idx + 1}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'left',   fontSize: '11px', color: '#555' }}>{item.product_sku || '—'}</td>
-                  <td style={{ padding: '3px 8px', textAlign: 'left',   fontSize: '11px', fontWeight: '500' }}>{item.product_name}</td>
+                  <td style={{ padding: '3px 8px', textAlign: 'left', fontSize: '11px', fontWeight: '500' }}>{item.product_name}</td>
+                  <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>
+                    {item.warranty_months && item.warranty_months > 0 ? `${item.warranty_months}mo` : '—'}
+                  </td>
+                  <td style={{ padding: '3px 8px', textAlign: 'left', fontSize: '11px', color: '#555' }}>
+                    {item.batch_number || '—'}
+                  </td>
+                  <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>
+                    {item.batch_expiry_date ? new Date(item.batch_expiry_date).toLocaleDateString() : '—'}
+                  </td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>{item.unit_name || '—'}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px' }}>{item.quantity}</td>
                   {!(hideRate || hideDiscountPercent) && (
