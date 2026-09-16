@@ -772,6 +772,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
     category_id: product?.category_id || '',
     brand_id: product?.brand_id || '',
     min_stock_level: product?.min_stock_level?.toString() || '0',
+    warranty_months: product?.warranty_months?.toString() || '0',
     description: product?.description || '',
     is_active: product?.is_active ?? true,
     track_inventory: (product as any)?.track_inventory ?? true,
@@ -941,6 +942,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
       category_id: form.category_id || null,
       brand_id: form.brand_id || null,
       min_stock_level: Number(form.min_stock_level),
+      warranty_months: Number(form.warranty_months),
       description: form.description || null,
       is_active: form.is_active,
       track_inventory: form.track_inventory,
@@ -1237,7 +1239,7 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
           </div>
 
           {!form.enable_multi_unit && (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
               <div>
                 <label className="block text-xs font-medium mb-1">Unit</label>
                 <SearchableSelect
@@ -1258,6 +1260,11 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
               <div>
                 <label className="block text-xs font-medium mb-1">Sale Price *</label>
                 <input type="number" required min="0" step="0.01" value={form.sale_price} onChange={e => setForm({ ...form, sale_price: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium mb-1">Warranty (months)</label>
+                <input type="number" min="0" value={form.warranty_months} onChange={e => setForm({ ...form, warranty_months: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                <p className="text-[10px] text-muted-foreground mt-1">Optional warranty period for this product</p>
               </div>
             </div>
           )}
@@ -1297,6 +1304,11 @@ function ProductModal({ categories, brands, warehouses, unitTypes, product, onCl
                     <div className="col-span-2 text-right">Cost ৳</div>
                     <div className="col-span-1 text-center">Base</div>
                     <div className="col-span-1 text-center">Sale</div>
+                  </div>
+                  <div className="mt-3">
+                    <label className="block text-xs font-medium mb-1">Warranty (months)</label>
+                    <input type="number" min="0" value={form.warranty_months} onChange={e => setForm({ ...form, warranty_months: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                    <p className="text-[10px] text-muted-foreground mt-1">Optional warranty period for this product</p>
                   </div>
 
                   {units.map((unit, index) => (

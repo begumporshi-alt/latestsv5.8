@@ -326,6 +326,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
   const [receiveItems, setReceiveItems] = useState<Record<string, number>>({});
+  const [expiryDates, setExpiryDates] = useState<Record<string, string>>({});
   const [directMode, setDirectMode] = useState(false);
   const [directSupplier, setDirectSupplier] = useState('');
   const [directWarehouse, setDirectWarehouse] = useState('');
@@ -435,6 +436,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
             product_id: item.product_id,
             quantity: Number(qty),
             unit_cost: Number(item.unit_cost),
+            expiry_date: expiryDates[itemId] || null,
           };
         })
         .filter(Boolean);
@@ -656,6 +658,15 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                               max={remaining}
                               value={receiveItems[item.id] || 0}
                               onChange={e => setReceiveItems({ ...receiveItems, [item.id]: Number(e.target.value) })}
+                              className="w-full border border-border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                            />
+                          </div>
+                          <div className="w-40">
+                            <label className="block text-xs text-muted-foreground mb-1">Expiry (optional)</label>
+                            <input
+                              type="date"
+                              value={expiryDates[item.id] || ''}
+                              onChange={e => setExpiryDates({ ...expiryDates, [item.id]: e.target.value })}
                               className="w-full border border-border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                             />
                           </div>
