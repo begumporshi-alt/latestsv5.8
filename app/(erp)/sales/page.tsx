@@ -418,9 +418,9 @@ export default function SalesPage() {
     const balance = Number(invoice.balance_due ?? (Number(invoice.total_amount) - Number(invoice.amount_paid)));
     const discountTotal = items.reduce((s, item) => s + (item.quantity * item.unit_price * (item.discount_percent || 0) / 100), 0);
     const printRef = useRef<HTMLDivElement>(null);
-    const [hideDiscountPercent, setHideDiscountPercent] = useState(false);
-    const [hideRate, setHideRate] = useState(false);
-    const [hideItemDiscount, setHideItemDiscount] = useState(false);
+    const [hideDiscountPercent, setHideDiscountPercent] = useState(true);
+    const [hideRate, setHideRate] = useState(true);
+    const [hideItemDiscount, setHideItemDiscount] = useState(true);
     const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
     const [customerOutstanding, setCustomerOutstanding] = useState<{
       total: number;
