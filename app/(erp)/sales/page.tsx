@@ -420,6 +420,8 @@ export default function SalesPage() {
     const printRef = useRef<HTMLDivElement>(null);
     const [hideDiscountPercent, setHideDiscountPercent] = useState(false);
     const [hideRate, setHideRate] = useState(false);
+    const [hideItemDiscount, setHideItemDiscount] = useState(false);
+    const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
     const [customerOutstanding, setCustomerOutstanding] = useState<{
       total: number;
       invoiceDues: number;
@@ -568,22 +570,52 @@ export default function SalesPage() {
               <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
                 <Printer className="w-3.5 h-3.5" />Print
               </button>
-              <button
-                onClick={() => setHideDiscountPercent(v => !v)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition ${hideDiscountPercent ? 'bg-amber-100 text-amber-700 border border-amber-300' : 'bg-muted/40 text-muted-foreground hover:bg-muted/60'}`}
-                title="Toggle discount percentage visibility on print"
-              >
-                {hideDiscountPercent ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                {hideDiscountPercent ? 'Disc% Hidden' : 'Disc% Visible'}
-              </button>
-              <button
-                onClick={() => setHideRate(v => !v)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition ${hideRate ? 'bg-amber-100 text-amber-700 border border-amber-300' : 'bg-muted/40 text-muted-foreground hover:bg-muted/60'}`}
-                title="Toggle unit rate visibility on print"
-              >
-                {hideRate ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                {hideRate ? 'Rate Hidden' : 'Rate Visible'}
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setPrintOptionsOpen(v => !v)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-muted/40 text-muted-foreground hover:bg-muted/60 transition"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                  Print Options
+                </button>
+                {printOptionsOpen && (
+                  <div className="absolute right-0 mt-2 w-64 bg-white border border-border rounded-lg shadow-lg p-2 z-50">
+                    <button
+                      onClick={() => setHideRate(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <span>Rate Column</span>
+                      {hideRate ? (
+                        <span className="text-amber-700 font-medium">Hidden</span>
+                      ) : (
+                        <span className="text-green-700 font-medium">Visible</span>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setHideDiscountPercent(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <span>Discount % Column</span>
+                      {hideDiscountPercent ? (
+                        <span className="text-amber-700 font-medium">Hidden</span>
+                      ) : (
+                        <span className="text-green-700 font-medium">Visible</span>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setHideItemDiscount(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <span>Item Discount (under subtotal)</span>
+                      {hideItemDiscount ? (
+                        <span className="text-amber-700 font-medium">Hidden</span>
+                      ) : (
+                        <span className="text-green-700 font-medium">Visible</span>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </div>
               <button onClick={onClose} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 transition">
                 <X className="w-4 h-4" />
                 <span className="hidden sm:inline">Close</span>
@@ -658,6 +690,7 @@ export default function SalesPage() {
               shippingAmount={Number((invoice as any).shipping_cost) || 0}
               hideDiscountPercent={hideDiscountPercent}
               hideRate={hideRate}
+              hideItemDiscount={hideItemDiscount}
               totalAmount={Number(invoice.total_amount)}
               amountPaid={Number(invoice.amount_paid)}
               balanceDue={balance}
