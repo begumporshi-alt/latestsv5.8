@@ -691,6 +691,7 @@ export default function SalesPage() {
               hideDiscountPercent={hideDiscountPercent}
               hideRate={hideRate}
               hideItemDiscount={hideItemDiscount}
+              recalculatedSubtotal={items.reduce((sum, item) => sum + (item.subtotal || 0), 0)}
               totalAmount={Number(invoice.total_amount)}
               amountPaid={Number(invoice.amount_paid)}
               balanceDue={balance}
