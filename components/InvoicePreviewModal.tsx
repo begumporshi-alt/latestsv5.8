@@ -96,6 +96,7 @@ export interface InvoicePreviewModalProps {
   showCustomerOutstanding?: boolean;
   showActions?: boolean;
   invoiceId?: string;
+  customer_id?: string;
   onEdit?: () => void;
   onCancel?: () => void;
   onRecordPayment?: () => void;
@@ -128,9 +129,9 @@ export default function InvoicePreviewModal({
   taxAmount = 0,
   taxLabel = 'VAT',
   shippingAmount = 0,
-  hideDiscountPercent = false,
-  hideRate = false,
-  hideItemDiscount = false,
+  hideDiscountPercent: propHideDiscountPercent = false,
+  hideRate: propHideRate = false,
+  hideItemDiscount: propHideItemDiscount = false,
   recalculatedSubtotal,
   totalAmount,
   amountPaid = 0,
@@ -145,6 +146,7 @@ export default function InvoicePreviewModal({
   showCustomerOutstanding = false,
   showActions = false,
   invoiceId,
+  customer_id,
   onEdit,
   onCancel,
   onRecordPayment,
@@ -152,13 +154,82 @@ export default function InvoicePreviewModal({
   onCopyProductList,
   onViewTab,
   currentTab = 'details',
-  customerOutstanding,
+  customerOutstanding: propCustomerOutstanding,
   isOfflinePending = false,
   offlineTempNumber,
   showProductLinks = false,
   renderTabContent,
 }: InvoicePreviewModalProps) {
   const router = useRouter();
+  const [hideDiscountPercent, setHideDiscountPercent] = useState(propHideDiscountPercent);
+  const [hideRate, setHideRate] = useState(propHideRate);
+  const [hideItemDiscount, setHideItemDiscount] = useState(propHideItemDiscount);
+  const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
+  const [localCustomerOutstanding, setLocalCustomerOutstanding] = useState<CustomerOutstanding | null>(null);
+
+  useEffect(() => {
+    async function fetchCustomerOutstanding() {
+      if (!customer_id) return;
+      const { data: unpaidInvoices } = await supabase
+        .from('invoices')
+        .select('balance_due')
+        .eq('customer_id', customer_id)
+        .not('status', 'in', '("cancelled","refunded","paid")')
+        .gt('balance_due', 0);
+      const invoiceDues = (unpaidInvoices || []).reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0);
+
+      const { data: manualEntries } = await supabase
+        .from('journal_entries')
+        .select('id, total_debit')
+        .eq('customer_id', customer_id)
+        .eq('reference_type', 'receivable')
+        .eq('is_posted', true);
+
+      let manualDues = 0;
+      if (manualEntries && manualEntries.length > 0) {
+        for (const entry of manualEntries) {
+          const { data: entryPayments } = await supabase
+            .from('payments')
+            .select('amount')
+            .eq('reference_type', 'receivable')
+            .eq('reference_id', entry.id)
+            .eq('is_reversed', false);
+          const paid = (entryPayments || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+          const outstanding = Number(entry.total_debit) - paid;
+          if (outstanding > 0) manualDues += outstanding;
+        }
+      }
+
+      const { data: credits } = await supabase
+        .from('payments')
+        .select('amount')
+        .eq('customer_id', customer_id)
+        .eq('payment_for', 'store_credit')
+        .eq('is_reversed', false);
+      const storeCredit = (credits || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+
+      const { data: advances } = await supabase
+        .from('payments')
+        .select('amount')
+        .eq('customer_id', customer_id)
+        .eq('payment_for', 'customer_advance')
+        .eq('is_reversed', false);
+      const advanceBalance = (advances || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+
+      setLocalCustomerOutstanding({
+        total: invoiceDues + manualDues,
+        invoiceDues,
+        previousInvoiceDues: invoiceDues,
+        thisInvoiceDues: 0,
+        manualDues,
+        storeCredit,
+        advanceBalance,
+      });
+    }
+    fetchCustomerOutstanding();
+  }, [customer_id]);
+
+  const customerOutstanding = propCustomerOutstanding ?? localCustomerOutstanding;
   const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
     draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
     sent: { label: 'On Credit', color: 'text-blue-600', bg: 'bg-blue-100' },
@@ -277,11 +348,49 @@ export default function InvoicePreviewModal({
             {showPrintOptions && (
               <div className="relative">
                 <button
+                  onClick={() => setPrintOptionsOpen(v => !v)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-muted/40 text-muted-foreground hover:bg-muted/60 transition"
                 >
                   <ChevronDown className="w-4 h-4" />
                   Print Options
                 </button>
+                {printOptionsOpen && (
+                  <div className="absolute right-0 mt-2 w-64 bg-white border border-border rounded-lg shadow-lg p-2 z-50">
+                    <button
+                      onClick={() => setHideRate(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <span>Rate Column</span>
+                      {hideRate ? (
+                        <span className="text-amber-700 font-medium">Hidden</span>
+                      ) : (
+                        <span className="text-green-700 font-medium">Visible</span>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setHideDiscountPercent(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <span>Discount % Column</span>
+                      {hideDiscountPercent ? (
+                        <span className="text-amber-700 font-medium">Hidden</span>
+                      ) : (
+                        <span className="text-green-700 font-medium">Visible</span>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setHideItemDiscount(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <span>Item Discount (under subtotal)</span>
+                      {hideItemDiscount ? (
+                        <span className="text-amber-700 font-medium">Hidden</span>
+                      ) : (
+                        <span className="text-green-700 font-medium">Visible</span>
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             <button

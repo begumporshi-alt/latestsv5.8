@@ -965,6 +965,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
             payment_method: p.payment_method,
           }))}
           onClose={() => setViewingInvoice(null)}
+          customer_id={viewingInvoice.customer_id}
           showTabs={true}
           showCustomerOutstanding={true}
           showPrintOptions={true}
