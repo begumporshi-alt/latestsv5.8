@@ -23,6 +23,7 @@ import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
+import InvoicePreviewModal from '@/components/InvoicePreviewModal';
 import { QuickSellModal } from '@/components/quick-sell-modal';
 import { printNode } from '@/lib/print';
 import { isInvoiceOverdue } from '@/lib/format';
@@ -110,6 +111,7 @@ export default function SalesPage() {
   const [showOutstandingModal, setShowOutstandingModal] = useState(false);
   const [showCogsModal, setShowCogsModal] = useState(false);
   const [viewingInvoice, setViewingInvoice] = useState<InvoiceWithCustomer | null>(null);
+const invoicePrintRef = useRef<HTMLDivElement>(null);
   const [invoiceItems, setInvoiceItems] = useState<any[]>([]);
   const [invoicePayments, setInvoicePayments] = useState<any[]>([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -404,353 +406,6 @@ export default function SalesPage() {
     return true;
   }
 
-  function ViewInvoiceModal({ invoice, items, payments, onClose, onRecordPayment, onUpdateStatus }: {
-    invoice: InvoiceWithCustomer;
-    items: any[];
-    payments: any[];
-    onClose: () => void;
-    onRecordPayment: () => void;
-    onUpdateStatus: (status: InvoiceStatus) => void;
-  }) {
-    const cfg = isInvoiceOverdue(invoice)
-      ? { label: 'Overdue', color: 'text-red-600', bg: 'bg-red-100' }
-      : (statusConfig[invoice.status as InvoiceStatus] || statusConfig.draft);
-    const balance = Number(invoice.balance_due ?? (Number(invoice.total_amount) - Number(invoice.amount_paid)));
-    const discountTotal = items.reduce((s, item) => s + (item.quantity * item.unit_price * (item.discount_percent || 0) / 100), 0);
-    const printRef = useRef<HTMLDivElement>(null);
-    const [hideDiscountPercent, setHideDiscountPercent] = useState(true);
-    const [hideRate, setHideRate] = useState(true);
-    const [hideItemDiscount, setHideItemDiscount] = useState(true);
-    const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
-    const [customerOutstanding, setCustomerOutstanding] = useState<{
-      total: number;
-      invoiceDues: number;
-      manualDues: number;
-      storeCredit: number;
-      advanceBalance: number;
-    } | null>(null);
-
-    useEffect(() => {
-      async function fetchCustomerOutstanding() {
-        if (!invoice.customer_id) return;
-        // Fetch unpaid invoices
-        const { data: unpaidInvoices } = await supabase
-          .from('invoices')
-          .select('balance_due')
-          .eq('customer_id', invoice.customer_id)
-          .not('status', 'in', '("cancelled","refunded","paid")')
-          .gt('balance_due', 0);
-        const invoiceDues = (unpaidInvoices || []).reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0);
-
-        // Fetch manual receivables (journal entries with reference_type='receivable')
-        const { data: manualEntries } = await supabase
-          .from('journal_entries')
-          .select('id, total_debit')
-          .eq('customer_id', invoice.customer_id)
-          .eq('reference_type', 'receivable')
-          .eq('is_posted', true);
-        
-        let manualDues = 0;
-        if (manualEntries && manualEntries.length > 0) {
-          for (const entry of manualEntries) {
-            const { data: entryPayments } = await supabase
-              .from('payments')
-              .select('amount')
-              .eq('reference_type', 'receivable')
-              .eq('reference_id', entry.id)
-              .eq('is_reversed', false);
-            const paid = (entryPayments || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
-            const outstanding = Number(entry.total_debit) - paid;
-            if (outstanding > 0) manualDues += outstanding;
-          }
-        }
-
-        // Fetch store credit and advances
-        const { data: credits } = await supabase
-          .from('payments')
-          .select('amount')
-          .eq('customer_id', invoice.customer_id)
-          .eq('payment_for', 'store_credit')
-          .eq('is_reversed', false);
-        const storeCredit = (credits || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
-
-        const { data: advances } = await supabase
-          .from('payments')
-          .select('amount')
-          .eq('customer_id', invoice.customer_id)
-          .eq('payment_for', 'customer_advance')
-          .eq('is_reversed', false);
-        const advanceBalance = (advances || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
-
-        setCustomerOutstanding({
-          total: invoiceDues + manualDues,
-          invoiceDues,
-          manualDues,
-          storeCredit,
-          advanceBalance,
-        });
-      }
-      fetchCustomerOutstanding();
-    }, [invoice.customer_id]);
-
-    async function copyProductList() {
-      const copiedItems = items.map((item: any) => ({
-        product_id: item.product_id,
-        quantity: Number(item.quantity),
-        unit_price: Number(item.unit_price),
-        discount_percent: Number(item.discount_percent || 0),
-        unit_name: item.unit_name || item.product?.unit || null,
-        warehouse_id: item.warehouse_id || null,
-      }));
-      const text = JSON.stringify({ type: 'invoice-product-list', items: copiedItems });
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-        } else {
-          const textarea = document.createElement('textarea');
-          textarea.value = text;
-          textarea.style.position = 'fixed';
-          textarea.style.opacity = '0';
-          document.body.appendChild(textarea);
-          textarea.focus();
-          textarea.select();
-          const copied = document.execCommand('copy');
-          textarea.remove();
-          if (!copied) throw new Error('copy failed');
-        }
-        toast({ title: 'Copied', description: `${copiedItems.length} product${copiedItems.length === 1 ? '' : 's'} copied from this invoice` });
-      } catch {
-        toast({ title: 'Copy failed', description: 'Your browser blocked clipboard access. Please allow clipboard access and try again.', variant: 'destructive' });
-      }
-    }
-
-    return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-        <div className="print-modal bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
-
-          {/* Toolbar */}
-          <div className="no-print flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
-            <div className="flex flex-wrap items-center gap-4">
-              <span className="text-sm font-semibold text-muted-foreground">Invoice Preview</span>
-              {(invoice as any).__pending && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 font-medium" title="Created on this device — will sync when back online">
-                  Queued offline — provisional number
-                </span>
-              )}
-              {(invoice as any).client_temp_number && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-300 font-medium" title="The temporary reference printed on the offline receipt before this invoice synced">
-                  Offline ref: {(invoice as any).client_temp_number}
-                </span>
-              )}
-              <div className="flex items-center gap-1 bg-muted/40 rounded-lg p-0.5">
-                <button onClick={() => setViewTab('details')} className={`px-3 py-1 rounded-md text-xs font-medium transition ${viewTab === 'details' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>Details</button>
-                <button onClick={() => setViewTab('history')} className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-medium transition ${viewTab === 'history' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
-                  <History className="w-3 h-3" />History
-                  {(invoice as any).edit_count > 0 && <span className="px-1.5 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-bold rounded-full">{(invoice as any).edit_count}</span>}
-                </button>
-                <button onClick={() => setViewTab('cost-history')} className={`flex items-center gap-1 px-3 py-1 rounded-md text-xs font-medium transition ${viewTab === 'cost-history' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
-                  <DollarSign className="w-3 h-3" />Cost Price History
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center justify-end gap-2 w-full lg:w-auto">
-              {canEditInvoice(invoice) && (
-                <button onClick={() => { onClose(); setEditingInvoice(invoice); }} className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm font-medium transition">
-                  <Pencil className="w-3.5 h-3.5" />Edit
-                </button>
-              )}
-              {canCancelInvoice(invoice) && (
-                <button onClick={() => { onClose(); setCancellingInvoice(invoice); }} className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition">
-                  <Ban className="w-3.5 h-3.5" />Cancel
-                </button>
-              )}
-              <button onClick={copyProductList} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition" title="Copy this invoice's product list">
-                <Copy className="w-3.5 h-3.5" />Copy Products
-              </button>
-              <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
-                <Printer className="w-3.5 h-3.5" />Print
-              </button>
-              <div className="relative">
-                <button
-                  onClick={() => setPrintOptionsOpen(v => !v)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-muted/40 text-muted-foreground hover:bg-muted/60 transition"
-                >
-                  <ChevronDown className="w-4 h-4" />
-                  Print Options
-                </button>
-                {printOptionsOpen && (
-                  <div className="absolute right-0 mt-2 w-64 bg-white border border-border rounded-lg shadow-lg p-2 z-50">
-                    <button
-                      onClick={() => setHideRate(v => !v)}
-                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
-                    >
-                      <span>Rate Column</span>
-                      {hideRate ? (
-                        <span className="text-amber-700 font-medium">Hidden</span>
-                      ) : (
-                        <span className="text-green-700 font-medium">Visible</span>
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setHideDiscountPercent(v => !v)}
-                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
-                    >
-                      <span>Discount % Column</span>
-                      {hideDiscountPercent ? (
-                        <span className="text-amber-700 font-medium">Hidden</span>
-                      ) : (
-                        <span className="text-green-700 font-medium">Visible</span>
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setHideItemDiscount(v => !v)}
-                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
-                    >
-                      <span>Item Discount (under subtotal)</span>
-                      {hideItemDiscount ? (
-                        <span className="text-amber-700 font-medium">Hidden</span>
-                      ) : (
-                        <span className="text-green-700 font-medium">Visible</span>
-                      )}
-                    </button>
-                  </div>
-                )}
-              </div>
-              <button onClick={onClose} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-red-50 text-red-600 hover:bg-red-100 border border-red-200 transition">
-                <X className="w-4 h-4" />
-                <span className="hidden sm:inline">Close</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Print body — only visible on details tab */}
-          {viewTab === 'details' ? (
-          <div className="p-8" ref={printRef}>
-            {/* Customer Account Summary Bar */}
-            {customerOutstanding && customerOutstanding.total > 0 && (
-              <div className="no-print mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span className="text-xs font-bold text-red-700">Customer Account Summary</span>
-                </div>
-                <div className="flex flex-wrap gap-4 text-xs">
-                  <span className="font-semibold text-red-600">Total Due: {formatCurrency(customerOutstanding.total)}</span>
-                  {customerOutstanding.invoiceDues > 0 && (
-                    <span className="text-red-500">Invoice Dues: {formatCurrency(customerOutstanding.invoiceDues)}</span>
-                  )}
-                  {customerOutstanding.manualDues > 0 && (
-                    <span className="text-amber-600">Manual Dues: {formatCurrency(customerOutstanding.manualDues)}</span>
-                  )}
-                  {customerOutstanding.storeCredit > 0 && (
-                    <span className="text-green-600">Store Credit: {formatCurrency(customerOutstanding.storeCredit)}</span>
-                  )}
-                  {customerOutstanding.advanceBalance > 0 && (
-                    <span className="text-blue-600">Advance: {formatCurrency(customerOutstanding.advanceBalance)}</span>
-                  )}
-                </div>
-              </div>
-            )}
-            <PrintTemplate
-              docType="INVOICE"
-              docNumber={invoice.invoice_number}
-              docDate={invoice.invoice_date}
-              dueDate={invoice.due_date || undefined}
-              status={cfg.label}
-              company={{
-                name: companySettings.name || 'Your Company',
-                address: companySettings.address,
-                phone: companySettings.phone,
-                email: companySettings.email,
-                logo_url: companySettings.logo_url,
-              }}
-              customer={{
-                name: invoice.customer?.name || '—',
-                code: invoice.customer?.code,
-                phone: invoice.customer?.phone,
-                address: invoice.customer?.address,
-                total_outstanding: customerOutstanding?.total,
-                invoice_outstanding: customerOutstanding?.invoiceDues,
-                manual_outstanding: customerOutstanding?.manualDues,
-              }}
-              items={items.map((item: any) => ({
-                product_name: item.product?.name || '—',
-                product_sku: item.product?.sku,
-                quantity: item.quantity,
-                unit_price: item.unit_price,
-                discount_percent: item.discount_percent || 0,
-                subtotal: item.subtotal,
-                unit_name: item.unit_name || item.product?.unit || null,
-              }))}
-              subtotal={Number(invoice.subtotal)}
-              discountTotal={discountTotal}
-              cartDiscount={Number((invoice as any).discount_amount) || 0}
-              cartDiscountPercent={Number((invoice as any).cart_discount_percent) || 0}
-              extraDiscount={Number((invoice as any).extra_discount) || 0}
-              taxAmount={Number(invoice.tax_amount) || 0}
-              taxLabel={vatSettings.rate > 0 ? `VAT (${vatSettings.rate}%)` : 'VAT'}
-              shippingAmount={Number((invoice as any).shipping_cost) || 0}
-              hideDiscountPercent={hideDiscountPercent}
-              hideRate={hideRate}
-              hideItemDiscount={hideItemDiscount}
-              recalculatedSubtotal={items.reduce((sum, item) => sum + (item.subtotal || 0), 0)}
-              totalAmount={Number(invoice.total_amount)}
-              amountPaid={Number(invoice.amount_paid)}
-              balanceDue={balance}
-              notes={(invoice as any).notes}
-              reference={(invoice as any).reference}
-              payments={payments?.map((p: any) => ({
-                payment_number: p.payment_number,
-                payment_date: p.payment_date,
-                amount: p.amount,
-                payment_method: p.payment_method,
-              }))}
-            />
-
-          {/* Product links (hidden on print) */}
-          <div className="no-print px-8 py-3 border-t border-border">
-            <p className="text-xs text-muted-foreground mb-2">Products in this invoice (click to view details):</p>
-            <div className="flex flex-wrap gap-2">
-              {items.map((item: any, i: number) => (
-                <button
-                  key={i}
-                  onClick={() => router.push(`/inventory/${item.product_id}`)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-muted/40 hover:bg-blue-50 hover:text-blue-600 rounded-lg text-xs font-medium transition border border-transparent hover:border-blue-200"
-                >
-                  <Package className="w-3 h-3" />
-                  {item.product?.name || 'Unknown'}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Action buttons (hidden on print) */}
-          {invoice.status !== 'paid' && invoice.status !== 'cancelled' && invoice.status !== 'refunded' && (
-            <div className="no-print flex items-center justify-end gap-2 px-8 py-4 border-t border-border">
-              {invoice.status === 'draft' && (
-                <button onClick={() => onUpdateStatus('sent')} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition">
-                  <Send className="w-4 h-4" />Mark as On Credit
-                </button>
-              )}
-              {balance > 0 && (invoice.status === 'sent' || invoice.status === 'partially_paid') && (
-                <button onClick={onRecordPayment} className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition">
-                  <CreditCard className="w-4 h-4" />Record Payment
-                </button>
-              )}
-            </div>
-          )}
-          </div>
-          ) : viewTab === 'cost-history' ? (
-          <div className="p-6">
-            <CostPriceHistoryTab items={items} invoiceId={invoice.id} />
-          </div>
-          ) : (
-          <div className="p-6">
-            <EditHistoryPanel invoiceId={invoice.id} />
-          </div>
-          )}
-        </div>
-      </div>
-    );
-  }
 
   function openPaymentModal(invoice: InvoiceWithCustomer) {
     setPaymentInvoice(invoice);
@@ -1263,13 +918,89 @@ export default function SalesPage() {
       />
 
       {viewingInvoice && (
-        <ViewInvoiceModal
-          invoice={viewingInvoice}
-          items={invoiceItems}
-          payments={invoicePayments}
+        <InvoicePreviewModal
+          docType="INVOICE"
+          docNumber={viewingInvoice.invoice_number}
+          docDate={viewingInvoice.invoice_date}
+          dueDate={viewingInvoice.due_date || undefined}
+          status={viewingInvoice.status}
+          company={{
+            name: companySettings?.name || 'Your Company',
+            address: companySettings?.address,
+            phone: companySettings?.phone,
+            email: companySettings?.email,
+            logo_url: companySettings?.logo_url,
+          }}
+          customer={{
+            name: viewingInvoice.customer?.name || '—',
+            code: viewingInvoice.customer?.code,
+            phone: viewingInvoice.customer?.phone,
+            address: viewingInvoice.customer?.address,
+          }}
+          items={invoiceItems.map((item: any) => ({
+            product_name: item.product?.name || '—',
+            product_sku: item.product?.sku,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            discount_percent: item.discount_percent || 0,
+            subtotal: item.subtotal,
+            unit_name: item.unit_name || item.product?.unit || null,
+          }))}
+          subtotal={Number(viewingInvoice.subtotal)}
+          discountTotal={invoiceItems.reduce((s, item) => s + (item.quantity * item.unit_price * (item.discount_percent || 0) / 100), 0)}
+          cartDiscount={Number((viewingInvoice as any).discount_amount) || 0}
+          cartDiscountPercent={Number((viewingInvoice as any).cart_discount_percent) || 0}
+          extraDiscount={Number((viewingInvoice as any).extra_discount) || 0}
+          taxAmount={Number(viewingInvoice.tax_amount) || 0}
+          taxLabel={vatSettings?.rate > 0 ? `VAT (${vatSettings?.rate}%)` : 'VAT'}
+          shippingAmount={Number((viewingInvoice as any).shipping_cost) || 0}
+          totalAmount={Number(viewingInvoice.total_amount)}
+          amountPaid={Number(viewingInvoice.amount_paid)}
+          balanceDue={Number(viewingInvoice.balance_due)}
+          reference={viewingInvoice.reference}
+          payments={invoicePayments?.map((p: any) => ({
+            payment_number: p.payment_number,
+            payment_date: p.payment_date,
+            amount: p.amount,
+            payment_method: p.payment_method,
+          }))}
           onClose={() => setViewingInvoice(null)}
+          showTabs={true}
+          showCustomerOutstanding={true}
+          showPrintOptions={true}
+          showActions={true}
+          onEdit={() => { setViewingInvoice(null); setEditingInvoice(viewingInvoice); }}
+          onCancel={() => { setViewingInvoice(null); setCancellingInvoice(viewingInvoice); }}
           onRecordPayment={() => { setViewingInvoice(null); openPaymentModal(viewingInvoice); }}
           onUpdateStatus={(status) => { setViewingInvoice(null); updateInvoiceStatus(viewingInvoice, status); }}
+          onCopyProductList={() => {
+            const text = JSON.stringify({ type: 'invoice-product-list', items: invoiceItems.map((item: any) => ({
+              product_id: item.product_id,
+              quantity: Number(item.quantity),
+              unit_price: Number(item.unit_price),
+              discount_percent: Number(item.discount_percent || 0),
+              unit_name: item.unit_name || item.product?.unit || null,
+              warehouse_id: item.warehouse_id || null,
+            }))});
+            navigator.clipboard?.writeText(text).then(() => {
+              toast({ title: 'Copied', description: `${invoiceItems.length} product${invoiceItems.length === 1 ? '' : 's'} copied` });
+            }).catch(() => {
+              toast({ title: 'Copy failed', description: 'Your browser blocked clipboard access.', variant: 'destructive' });
+            });
+          }}
+          printRef={invoicePrintRef}
+          onViewTab={(tab) => setViewTab(tab)}
+          currentTab={viewTab}
+          showProductLinks={true}
+          renderTabContent={(tab) => {
+            if (tab === 'cost-history') {
+              return <CostPriceHistoryTab items={invoiceItems} invoiceId={viewingInvoice.id} />;
+            }
+            if (tab === 'history') {
+              return <EditHistoryPanel invoiceId={viewingInvoice.id} />;
+            }
+            return null;
+          }}
         />
       )}
 

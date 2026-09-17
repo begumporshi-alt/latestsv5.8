@@ -28,7 +28,7 @@ export interface PrintPayment {
 }
 
 export interface PrintTemplateProps {
-  docType: 'INVOICE' | 'QUOTATION' | 'SALES ORDER';
+  docType: 'INVOICE' | 'QUOTATION' | 'SALES ORDER' | 'RECEIPT';
   docNumber: string;
   docDate: string;
   dueDate?: string;

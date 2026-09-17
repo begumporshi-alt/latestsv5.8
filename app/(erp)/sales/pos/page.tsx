@@ -8,6 +8,7 @@ import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleC
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
+import InvoicePreviewModal from '@/components/InvoicePreviewModal';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
 import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/credit-gate';
@@ -2206,74 +2207,49 @@ export default function POSPage() {
       )}
 
       {/* Receipt preview + print — opened from the Order Complete panel.
-          Works offline: everything renders from the charge snapshot, and
-          printNode is a purely local operation. */}
+          Works offline: everything renders from the charge snapshot. */}
       {showReceipt && lastReceipt && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="print-modal bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="no-print flex flex-wrap items-center justify-between gap-3 px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-muted-foreground">Receipt Preview</span>
-                {lastReceipt.offline && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-300 font-medium">
-                    Queued offline — provisional number
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => printNode(receiptPrintRef.current)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition"
-                >
-                  <Printer className="w-3.5 h-3.5" />Print
-                </button>
-                <button onClick={() => setShowReceipt(false)} className="p-1.5 hover:bg-gray-100 rounded-lg transition">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-            <div className="p-8" ref={receiptPrintRef}>
-              <PrintTemplate
-                docType="INVOICE"
-                docNumber={lastReceipt.number}
-                docDate={lastReceipt.date}
-                status={lastReceipt.status}
-                company={{
-                  name: companySettings?.name || 'Your Company',
-                  address: companySettings?.address,
-                  phone: companySettings?.phone,
-                  email: companySettings?.email,
-                  logo_url: companySettings?.logo_url,
-                }}
-                customer={{
-                  name: lastReceipt.customer?.name || 'Walk In',
-                  code: lastReceipt.customer?.code,
-                  phone: lastReceipt.customer?.phone,
-                  address: lastReceipt.customer?.address,
-                }}
-                items={lastReceipt.items}
-                subtotal={lastReceipt.subtotal}
-                discountTotal={lastReceipt.items.reduce((s, i) => s + i.quantity * i.unit_price * (i.discount_percent || 0) / 100, 0)}
-                cartDiscount={lastReceipt.cartDiscount}
-                cartDiscountPercent={lastReceipt.cartDiscountPercent}
-                extraDiscount={lastReceipt.extraDiscount}
-                taxAmount={lastReceipt.taxAmount}
-                taxLabel={vatSettings.enabled ? `VAT (${vatSettings.rate}%)` : 'VAT'}
-                shippingAmount={lastReceipt.shipping}
-                totalAmount={lastReceipt.total}
-                amountPaid={lastReceipt.amountPaid}
-                balanceDue={Math.max(0, lastReceipt.total - lastReceipt.amountPaid)}
-                reference={lastReceipt.reference || undefined}
-                payments={lastReceipt.cashPaid > 0 ? [{
-                  payment_number: '',
-                  payment_date: lastReceipt.date,
-                  amount: lastReceipt.cashPaid,
-                  payment_method: lastReceipt.paymentMethod,
-                }] : undefined}
-              />
-            </div>
-          </div>
-        </div>
+        <InvoicePreviewModal
+          docType="INVOICE"
+          docNumber={lastReceipt.number}
+          docDate={lastReceipt.date}
+          status={lastReceipt.status}
+          company={{
+            name: companySettings?.name || 'Your Company',
+            address: companySettings?.address,
+            phone: companySettings?.phone,
+            email: companySettings?.email,
+            logo_url: companySettings?.logo_url,
+          }}
+          customer={{
+            name: lastReceipt.customer?.name || 'Walk In',
+            code: lastReceipt.customer?.code,
+            phone: lastReceipt.customer?.phone,
+            address: lastReceipt.customer?.address,
+          }}
+          items={lastReceipt.items}
+          subtotal={lastReceipt.subtotal}
+          discountTotal={lastReceipt.items.reduce((s, i) => s + i.quantity * i.unit_price * (i.discount_percent || 0) / 100, 0)}
+          cartDiscount={lastReceipt.cartDiscount}
+          cartDiscountPercent={lastReceipt.cartDiscountPercent}
+          extraDiscount={lastReceipt.extraDiscount}
+          taxAmount={lastReceipt.taxAmount}
+          taxLabel={vatSettings.enabled ? `VAT (${vatSettings.rate}%)` : 'VAT'}
+          shippingAmount={lastReceipt.shipping}
+          totalAmount={lastReceipt.total}
+          amountPaid={lastReceipt.cashPaid}
+          balanceDue={Math.max(0, lastReceipt.total - lastReceipt.cashPaid)}
+          reference={lastReceipt.reference || undefined}
+          payments={lastReceipt.cashPaid > 0 ? [{
+            payment_number: '',
+            payment_date: lastReceipt.date,
+            amount: lastReceipt.cashPaid,
+            payment_method: lastReceipt.paymentMethod,
+          }] : undefined}
+          onClose={() => setShowReceipt(false)}
+          printRef={receiptPrintRef}
+          showProductLinks={false}
+        />
       )}
 
       {shortfallConfirmOpen && (
