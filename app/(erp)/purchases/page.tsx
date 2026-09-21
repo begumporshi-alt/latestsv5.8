@@ -89,13 +89,14 @@ export default function PurchasesPage() {
   }, [prefillSupplierId, suppliers]);
 
   // Quick Purchase from a quotation preview: the quotations page writes a
-  // sessionStorage payload and navigates here. Open the create modal once
-  // suppliers are loaded so the prefilled supplier name resolves.
+  // sessionStorage payload and navigates here. Online, wait for the suppliers
+  // list so the prefilled supplier name resolves; offline, open immediately
+  // (suppliers will never arrive, the user can pick one on the form).
   const quickPurchaseOpenedRef = useRef(false);
   useEffect(() => {
     if (quickPurchaseOpenedRef.current) return;
     if (!sessionStorage.getItem('quickPurchaseItems')) return;
-    if (suppliers.length === 0) return;
+    if (suppliers.length === 0 && networkMonitor.getState().online) return;
     quickPurchaseOpenedRef.current = true;
     setShowCreateModal(true);
   }, [suppliers]);
@@ -892,12 +893,21 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
           const rows: any[] = Array.isArray(payload?.items) ? payload.items : [];
           const ids = [...new Set(rows.map((r: any) => r.product_id).filter(Boolean))];
           if (!rows.length || !ids.length) return;
-          const { data: prods } = await supabase
-            .from('products')
-            .select('*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)')
-            .in('id', ids);
+          // Online: fetch full product details (units + inventory). Offline:
+          // fall back to the page-level product list so the prefilled items
+          // still appear (base-unit pricing; user can adjust on the form).
+          let sourceProducts: any[] = [];
+          if (networkMonitor.getState().online) {
+            const { data: prods } = await supabase
+              .from('products')
+              .select('*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)')
+              .in('id', ids);
+            sourceProducts = prods || [];
+          } else {
+            sourceProducts = products.filter((p: any) => ids.includes(p.id));
+          }
           const newItems = rows.map((row: any) => {
-            const p: any = (prods || []).find((x: any) => x.id === row.product_id);
+            const p: any = sourceProducts.find((x: any) => x.id === row.product_id);
             if (!p) return null;
             const units = (p.units || []).filter((u: any) => u.is_active);
             const multi = isMultiUnitEnabled(p);
