@@ -88,6 +88,18 @@ export default function PurchasesPage() {
     }
   }, [prefillSupplierId, suppliers]);
 
+  // Quick Purchase from a quotation preview: the quotations page writes a
+  // sessionStorage payload and navigates here. Open the create modal once
+  // suppliers are loaded so the prefilled supplier name resolves.
+  const quickPurchaseOpenedRef = useRef(false);
+  useEffect(() => {
+    if (quickPurchaseOpenedRef.current) return;
+    if (!sessionStorage.getItem('quickPurchaseItems')) return;
+    if (suppliers.length === 0) return;
+    quickPurchaseOpenedRef.current = true;
+    setShowCreateModal(true);
+  }, [suppliers]);
+
   async function loadData() {
     setLoading(true);
     const [poRes, supRes, prodRes, returnsRes] = await Promise.all([
@@ -866,6 +878,54 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
       } catch (e) {
         console.error('Failed to parse bulk reminder products:', e);
       }
+      })();
+    }
+
+    // Quick Purchase from a quotation preview: prefill items with the
+    // suggested quantities (and supplier) instead of the generic qty:1.
+    const quickRaw = sessionStorage.getItem('quickPurchaseItems');
+    if (quickRaw) {
+      sessionStorage.removeItem('quickPurchaseItems');
+      (async () => {
+        try {
+          const payload = JSON.parse(quickRaw);
+          const rows: any[] = Array.isArray(payload?.items) ? payload.items : [];
+          const ids = [...new Set(rows.map((r: any) => r.product_id).filter(Boolean))];
+          if (!rows.length || !ids.length) return;
+          const { data: prods } = await supabase
+            .from('products')
+            .select('*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)')
+            .in('id', ids);
+          const newItems = rows.map((row: any) => {
+            const p: any = (prods || []).find((x: any) => x.id === row.product_id);
+            if (!p) return null;
+            const units = (p.units || []).filter((u: any) => u.is_active);
+            const multi = isMultiUnitEnabled(p);
+            const selectedUnit = (row.unit_name && units.find((u: any) => u.unit_name === row.unit_name)) || (multi ? getDefaultSaleUnit(units) : null);
+            const quantity = Math.max(1, Number(row.quantity) || 1);
+            const unitPrice = selectedUnit ? (selectedUnit.cost_price || p.cost_price || 0) : (p.cost_price || 0);
+            const baseQty = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
+            const warehouseId = row.warehouse_id || (warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '');
+            return {
+              product_id: p.id, product_name: p.name, product_sku: p.sku,
+              product_unit: p.unit, product_base_unit: p.base_unit,
+              quantity, unit_price: unitPrice, discount_percent: 0,
+              selected_unit: selectedUnit, available_units: units,
+              base_quantity: baseQty, cost_price: unitPrice,
+              warehouse_id: warehouseId,
+            };
+          }).filter(Boolean);
+          if (newItems.length) {
+            setItems(newItems as any[]);
+            setForm((f: typeof form) => ({
+              ...f,
+              supplier_id: payload.supplier_id || f.supplier_id,
+              notes: `Quick purchase from quotation ${payload.source || ''}`.trim(),
+            }));
+          }
+        } catch (e) {
+          console.error('Failed to parse quick purchase items:', e);
+        }
       })();
     }
   }, []);

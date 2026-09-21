@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy } from 'lucide-react';
+import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
@@ -34,6 +35,7 @@ interface QuotationWithCustomer extends Omit<Quotation, 'customer'> {
 }
 
 export default function QuotationsPage() {
+  const router = useRouter();
   const [quotations, setQuotations] = useState<QuotationWithCustomer[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -417,6 +419,12 @@ export default function QuotationsPage() {
           onEdit={() => openEditModal(viewingQuotation)}
           onDelete={() => setDeletingQuotation(viewingQuotation)}
           companySettings={companySettings}
+          products={products}
+          onQuickPurchase={(payload) => {
+            sessionStorage.setItem('quickPurchaseItems', JSON.stringify(payload));
+            setViewingQuotation(null);
+            router.push('/purchases');
+          }}
         />
       )}
 
@@ -2242,7 +2250,7 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
   );
 }
 
-function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDelete, companySettings }: {
+function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDelete, companySettings, products, onQuickPurchase }: {
   quotation: QuotationWithCustomer;
   items: any[];
   onClose: () => void;
@@ -2250,6 +2258,8 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
   onEdit: () => void;
   onDelete: () => void;
   companySettings: any;
+  products: Product[];
+  onQuickPurchase: (payload: any) => void;
 }) {
   const cfg = statusConfig[quotation.status as QuotationStatus] || statusConfig.draft;
   const canEdit = quotation.status === 'draft' || quotation.status === 'sent';
@@ -2258,6 +2268,7 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
   const [hideRate, setHideRate] = useState(false);
   const [hideItemDiscount, setHideItemDiscount] = useState(false);
   const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
+  const [showQuickPurchase, setShowQuickPurchase] = useState(false);
   // VAT rate for the printed quotation's tax row label.
   const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
   useEffect(() => { loadVatSettings(supabase).then(setVatSettings); }, []);
@@ -2344,6 +2355,11 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
             <button onClick={copyProductList} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition" title="Copy this quotation's product list">
               <Copy className="w-3.5 h-3.5" />Copy Products
             </button>
+            {quotation.status !== 'converted' && (
+              <button onClick={() => setShowQuickPurchase(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition" title="Create a purchase order for low-stock items in this quotation">
+                <ShoppingCart className="w-3.5 h-3.5" />Quick Purchase
+              </button>
+            )}
             <div className="relative">
               <button
                 onClick={() => setPrintOptionsOpen(v => !v)}
@@ -2444,6 +2460,238 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
           <div className="no-print flex items-center justify-end px-8 py-4 border-t border-border">
             <button onClick={onConvert} className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition">
               <FileText className="w-4 h-4" />Convert to Invoice
+            </button>
+          </div>
+        )}
+
+        {showQuickPurchase && (
+          <QuickPurchaseModal
+            quotation={quotation}
+            items={items}
+            products={products}
+            onClose={() => setShowQuickPurchase(false)}
+            onConfirm={(payload) => {
+              setShowQuickPurchase(false);
+              onQuickPurchase(payload);
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function QuickPurchaseModal({ quotation, items, products, onClose, onConfirm }: {
+  quotation: QuotationWithCustomer;
+  items: any[];
+  products: Product[];
+  onClose: () => void;
+  onConfirm: (payload: any) => void;
+}) {
+  interface Row {
+    product_id: string;
+    product_name: string;
+    product_sku: string;
+    unit_name: string | null;
+    warehouse_id: string | null;
+    conversion_factor: number;
+    quoted_qty: number;
+    stock: number;
+    min_stock: number;
+    shortfall: boolean;
+    belowReorder: boolean;
+    purchaseQty: number;
+    selected: boolean;
+  }
+
+  const [includeLowStock, setIncludeLowStock] = useState(false);
+  const [supplierId, setSupplierId] = useState('');
+  const [suppliersList, setSuppliersList] = useState<{ id: string; name: string }[]>([]);
+  const [rows, setRows] = useState<Row[]>([]);
+
+  useEffect(() => {
+    supabase.from('suppliers').select('id, name').eq('is_active', true).order('name')
+      .then(({ data }) => setSuppliersList((data || []) as { id: string; name: string }[]));
+  }, []);
+
+  useEffect(() => {
+    const computed = items.map((item: any) => {
+      const product: any = products.find((p: any) => p.id === item.product_id);
+      if (!product) return null;
+      const invItems: any[] = product.inventory_items || [];
+      // Stock at the quotation line's warehouse (fall back to total on hand).
+      const stock = item.warehouse_id
+        ? invItems.filter((i: any) => i.warehouse_id === item.warehouse_id).reduce((s: number, i: any) => s + Number(i.quantity_on_hand || 0), 0)
+        : invItems.reduce((s: number, i: any) => s + Number(i.quantity_on_hand || 0), 0);
+      // Quotation quantities are stored on the item's unit scale; stock is
+      // in base units. unit_conversion_factor converts one quoted unit to base.
+      const factor = Number(item.unit_conversion_factor) || 1;
+      const quotedBase = Number(item.quantity) * factor;
+      const minStock = Number((product as any).min_stock_level) || 0;
+      const shortfall = quotedBase > stock;
+      const belowReorder = minStock > 0 && stock <= minStock;
+      const suggestedBase = shortfall
+        ? quotedBase - stock
+        : (belowReorder ? minStock - stock : 0);
+      if (suggestedBase <= 0) return null;
+      return {
+        product_id: item.product_id,
+        product_name: product.name,
+        product_sku: product.sku,
+        unit_name: item.unit_name || product.unit || null,
+        warehouse_id: item.warehouse_id || null,
+        conversion_factor: factor,
+        quoted_qty: Number(item.quantity),
+        stock,
+        min_stock: minStock,
+        shortfall,
+        belowReorder,
+        purchaseQty: Math.max(1, factor > 1 ? Math.ceil(suggestedBase / factor) : suggestedBase),
+        selected: shortfall,
+      } as Row;
+    }).filter(Boolean) as Row[];
+    setRows(computed);
+  }, [items, products]);
+
+  const visible = rows.filter(r => r.shortfall || (includeLowStock && r.belowReorder));
+  const selectedCount = visible.filter(r => r.selected).length;
+
+  function confirm() {
+    const selected = visible.filter(r => r.selected);
+    if (!selected.length) return;
+    onConfirm({
+      items: selected.map(r => ({
+        product_id: r.product_id,
+        quantity: r.purchaseQty,
+        unit_name: r.unit_name,
+        warehouse_id: r.warehouse_id,
+      })),
+      supplier_id: supplierId || null,
+      source: quotation.quote_number,
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
+          <div>
+            <h2 className="text-base font-bold">Quick Purchase</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Suggested from quotation {quotation.quote_number} — review and confirm to create a purchase order</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-6 space-y-4">
+          {visible.length === 0 ? (
+            <div className="text-center py-10">
+              <CheckCircle className="w-10 h-10 text-green-600 mx-auto mb-2" />
+              <p className="text-sm font-medium">Nothing to purchase</p>
+              <p className="text-xs text-muted-foreground mt-1">All products on this quotation are sufficiently stocked.</p>
+            </div>
+          ) : (
+            <>
+              <div className="overflow-x-auto border border-border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="w-10 px-3 py-2"></th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Quoted</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">In Stock</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Purchase Qty</th>
+                      <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visible.map(row => {
+                      const rowIndex = rows.indexOf(row);
+                      return (
+                        <tr key={row.product_id} className={`border-t border-border ${row.selected ? 'bg-blue-50/40' : ''}`}>
+                          <td className="px-3 py-2">
+                            <input
+                              type="checkbox"
+                              checked={row.selected}
+                              onChange={() => {
+                                const updated = [...rows];
+                                updated[rowIndex] = { ...row, selected: !row.selected };
+                                setRows(updated);
+                              }}
+                              className="accent-blue-600"
+                            />
+                          </td>
+                          <td className="px-3 py-2">
+                            <p className="font-medium">{row.product_name}</p>
+                            {row.product_sku && <p className="text-[10px] text-muted-foreground">{row.product_sku}</p>}
+                          </td>
+                          <td className="text-right px-3 py-2">{row.quoted_qty} {row.unit_name || ''}</td>
+                          <td className={`text-right px-3 py-2 ${row.shortfall ? 'text-red-600 font-semibold' : ''}`}>{row.stock}</td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1 justify-end">
+                              <input
+                                type="number"
+                                min={1}
+                                value={row.purchaseQty}
+                                onChange={(e) => {
+                                  const updated = [...rows];
+                                  updated[rowIndex] = { ...row, purchaseQty: Math.max(1, parseInt(e.target.value) || 1) };
+                                  setRows(updated);
+                                }}
+                                className="w-20 border border-border rounded-md px-2 py-1 text-right text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                              />
+                              {row.unit_name && <span className="text-xs text-muted-foreground">{row.unit_name}</span>}
+                            </div>
+                          </td>
+                          <td className="text-center px-3 py-2">
+                            {row.shortfall ? (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">Shortfall</span>
+                            ) : (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">Low stock</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={includeLowStock}
+                  onChange={e => setIncludeLowStock(e.target.checked)}
+                  className="accent-blue-600"
+                />
+                Also include quotation items below their reorder level
+              </label>
+
+              <div>
+                <label className="block text-xs font-medium mb-1">Supplier (optional — can be chosen on the purchase order)</label>
+                <select
+                  value={supplierId}
+                  onChange={e => setSupplierId(e.target.value)}
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                >
+                  <option value="">— Choose later on the purchase order —</option>
+                  {suppliersList.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+            </>
+          )}
+        </div>
+
+        {visible.length > 0 && (
+          <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border sticky bottom-0 bg-white">
+            <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+            <button
+              type="button"
+              onClick={confirm}
+              disabled={selectedCount === 0}
+              className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60"
+            >
+              <ShoppingCart className="w-4 h-4" />
+              Create Purchase Order ({selectedCount} item{selectedCount === 1 ? '' : 's'})
             </button>
           </div>
         )}
