@@ -2236,6 +2236,7 @@ export default function POSPage() {
           taxAmount={lastReceipt.taxAmount}
           taxLabel={vatSettings.enabled ? `VAT (${vatSettings.rate}%)` : 'VAT'}
           shippingAmount={lastReceipt.shipping}
+          recalculatedSubtotal={lastReceipt.items.reduce((s, i) => s + (Number(i.subtotal) || 0), 0)}
           totalAmount={lastReceipt.total}
           amountPaid={lastReceipt.cashPaid}
           balanceDue={Math.max(0, lastReceipt.total - lastReceipt.cashPaid)}
@@ -2249,6 +2250,7 @@ export default function POSPage() {
           onClose={() => setShowReceipt(false)}
           printRef={receiptPrintRef}
           showProductLinks={false}
+          showPrintOptions={true}
         />
       )}
 
