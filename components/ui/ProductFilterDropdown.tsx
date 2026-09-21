@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
+import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
 import { Search, Package, X, Check } from 'lucide-react';
 
 interface ProductFilterDropdownProps {
@@ -32,14 +33,23 @@ export default function ProductFilterDropdown({ value, onChange, placeholder = '
   useEffect(() => {
     if (!open) return;
     setLoading(true);
-    supabase
-      .from('products')
-      .select('id, name, sku')
-      .eq('is_active', true)
-      .or(`name.ilike.%${search}%,sku.ilike.%${search}%`)
-      .order('name')
-      .limit(50)
-      .then(({ data }) => {
+    // Tokenised, grammar-safe search across name/SKU/barcode (see
+    // .agents/skills/search-feature-robustness).
+    const tokens = tokenizeSearch(search);
+    if (tokens.length === 0) {
+      supabase.from('products').select('id, name, sku').eq('is_active', true).order('name').limit(50)
+        .then(({ data }) => { setProducts(data || []); setLoading(false); });
+      return;
+    }
+    applyIlikeTokens(
+      supabase
+        .from('products')
+        .select('id, name, sku')
+        .eq('is_active', true)
+        .order('name'),
+      ['name', 'sku', 'barcode'],
+      tokens,
+    ).limit(50).then(({ data }) => {
         setProducts(data || []);
         setLoading(false);
       });

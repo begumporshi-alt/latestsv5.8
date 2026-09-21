@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { tokenizeSearch } from '@/lib/search';
 import { formatRelativeTime } from '@/lib/format';
 import { ArrowUpDown, TrendingUp, TrendingDown, Package, Search, X, Filter, ChevronLeft, ChevronRight, Calendar, Download, FileText } from 'lucide-react';
 import Link from 'next/link';
@@ -75,10 +76,13 @@ export default function StockMovementsPage() {
     if (filters.search) {
       const s = filters.search.trim();
       if (s) {
-        const { data: matchingProducts } = await supabase
-          .from('products')
-          .select('id')
-          .or(`name.ilike.%${s}%,sku.ilike.%${s}%`);
+        // Tokenised, grammar-safe, barcode-aware product search (see
+        // .agents/skills/search-feature-robustness).
+        let productQuery = supabase.from('products').select('id');
+        tokenizeSearch(s).forEach((t) => {
+          productQuery = productQuery.or(`name.ilike.%${t}%,sku.ilike.%${t}%,barcode.ilike.%${t}%`);
+        });
+        const { data: matchingProducts } = await productQuery;
         productIds = (matchingProducts || []).map((p: any) => p.id);
       }
     }
@@ -92,11 +96,12 @@ export default function StockMovementsPage() {
       if (filters.search) {
         const s = filters.search.trim();
         if (s) {
-          if (productIds && productIds.length > 0) {
-            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%,product_id.in.(${productIds.join(',')})`);
-          } else {
-            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
-          }
+          const tokens = tokenizeSearch(s);
+          tokens.forEach((t) => {
+            const parts = [`reference_number.ilike.%${t}%`, `notes.ilike.%${t}%`];
+            if (productIds && productIds.length > 0) parts.push(`product_id.in.(${productIds.join(',')})`);
+            q = q.or(parts.join(','));
+          });
         }
       }
       return q;
@@ -155,16 +160,20 @@ export default function StockMovementsPage() {
       if (filters.search) {
         const s = filters.search.trim();
         if (s) {
-          const { data: matchingProducts } = await supabase
-            .from('products')
-            .select('id')
-            .or(`name.ilike.%${s}%,sku.ilike.%${s}%`);
+          const tokens = tokenizeSearch(s);
+          // Tokenised, grammar-safe, barcode-aware product search (see
+          // .agents/skills/search-feature-robustness).
+          let productQuery = supabase.from('products').select('id');
+          tokens.forEach((t) => {
+            productQuery = productQuery.or(`name.ilike.%${t}%,sku.ilike.%${t}%,barcode.ilike.%${t}%`);
+          });
+          const { data: matchingProducts } = await productQuery;
           const pIds = (matchingProducts || []).map((p: any) => p.id);
-          if (pIds.length > 0) {
-            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%,product_id.in.(${pIds.join(',')})`);
-          } else {
-            q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
-          }
+          tokens.forEach((t) => {
+            const parts = [`reference_number.ilike.%${t}%`, `notes.ilike.%${t}%`];
+            if (pIds.length > 0) parts.push(`product_id.in.(${pIds.join(',')})`);
+            q = q.or(parts.join(','));
+          });
         }
       }
       const { data } = await q;
@@ -269,16 +278,19 @@ export default function StockMovementsPage() {
     if (filters.search) {
       const s = filters.search.trim();
       if (s) {
-        const { data: matchingProducts } = await supabase
-          .from('products')
-          .select('id')
-          .or(`name.ilike.%${s}%,sku.ilike.%${s}%`);
+        // Tokenised, grammar-safe, barcode-aware product search (see
+        // .agents/skills/search-feature-robustness).
+        let productQuery = supabase.from('products').select('id');
+        tokenizeSearch(s).forEach((t) => {
+          productQuery = productQuery.or(`name.ilike.%${t}%,sku.ilike.%${t}%,barcode.ilike.%${t}%`);
+        });
+        const { data: matchingProducts } = await productQuery;
         const pIds = (matchingProducts || []).map((p: any) => p.id);
-        if (pIds.length > 0) {
-          q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%,product_id.in.(${pIds.join(',')})`);
-        } else {
-          q = q.or(`reference_number.ilike.%${s}%,notes.ilike.%${s}%`);
-        }
+        tokenizeSearch(s).forEach((t) => {
+          const parts = [`reference_number.ilike.%${t}%`, `notes.ilike.%${t}%`];
+          if (pIds.length > 0) parts.push(`product_id.in.(${pIds.join(',')})`);
+          q = q.or(parts.join(','));
+        });
       }
     }
     q = q.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(10000);

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
 import { useToast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
@@ -471,14 +472,17 @@ function RecordAdvanceModal({ paymentMethods, onClose, onSaved }: {
   });
 
   useEffect(() => {
-    if (!customerSearch.trim()) { setCustomers([]); return; }
+    const tokens = tokenizeSearch(customerSearch);
+    if (tokens.length === 0) { setCustomers([]); return; }
     const t = setTimeout(async () => {
-      const { data } = await supabase
-        .from('customers')
-        .select('id, name, code')
-        .or(`name.ilike.%${customerSearch.trim()}%,code.ilike.%${customerSearch.trim()}%,phone.ilike.%${customerSearch.trim()}%`)
-        .order('name')
-        .limit(10);
+      const { data } = await applyIlikeTokens(
+        supabase
+          .from('customers')
+          .select('id, name, code')
+          .order('name'),
+        ['name', 'code', 'phone'],
+        tokens,
+      ).limit(10);
       setCustomers(data || []);
     }, 200);
     return () => clearTimeout(t);

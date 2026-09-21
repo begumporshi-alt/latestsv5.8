@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { getInitials } from '@/lib/format';
+import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
 import { Search, Bell, MessageSquare, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart } from 'lucide-react';
 import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
@@ -103,19 +104,26 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   useEffect(() => {
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
     if (!searchQuery.trim()) { setSearchResults([]); setSearching(false); return; }
+    const tokens = tokenizeSearch(searchQuery);
+    // A term made only of filter grammar (e.g. ",,,") sanitises to nothing —
+    // show nothing rather than an unfiltered dump of every source.
+    if (tokens.length === 0) { setSearchResults([]); setSearching(false); setShowResults(false); return; }
 
     setSearching(true);
     searchTimeout.current = setTimeout(async () => {
-      const q = searchQuery.trim().toLowerCase();
       const results: SearchResult[] = [];
 
+      // One sanitised OR filter per token per source — PostgREST ANDs the
+      // tokens together, so word order no longer matters and commas/parens
+      // in the term can't break the filter.
       await Promise.all(searchSources.map(async (src) => {
-        const orFilter = src.searchCols.map(col => `${col}.ilike.%${q}%`).join(',');
-        const { data } = await supabase
-          .from(src.table)
-          .select(`${src.labelCol}${src.subCol ? ', ' + src.subCol : ''}, id`)
-          .or(orFilter)
-          .limit(3);
+        const { data } = await applyIlikeTokens(
+          supabase
+            .from(src.table)
+            .select(`${src.labelCol}${src.subCol ? ', ' + src.subCol : ''}, id`),
+          src.searchCols,
+          tokens,
+        ).limit(3);
 
         (data || []).forEach((row: any) => {
           results.push({

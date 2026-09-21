@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Search, X, User } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
+
+/** Columns the customer search matches: name, code and phone. */
+const CUSTOMER_SEARCH_COLUMNS = ['name', 'code', 'phone'];
 
 export interface CustomerResult {
   id: string;
@@ -28,6 +32,9 @@ export default function CustomerSearchInput({ onSelect, selectedName, placeholde
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic sequence — drops out-of-order responses (see the
+  // search-feature-robustness skill).
+  const searchSeqRef = useRef(0);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -42,16 +49,23 @@ export default function CustomerSearchInput({ onSelect, selectedName, placeholde
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!query.trim()) { setResults([]); setOpen(false); return; }
+    // A term made only of filter grammar (e.g. ",,,") would sanitise to zero
+    // tokens — show nothing rather than an unfiltered 20-row dump.
+    if (tokenizeSearch(query).length === 0) { setResults([]); setOpen(false); return; }
 
     debounceRef.current = setTimeout(async () => {
+      const seq = ++searchSeqRef.current;
       setLoading(true);
-      const { data } = await supabase
-        .from('customers')
-        .select('id, name, code, phone, address, outstanding_balance')
-        .or(`name.ilike.%${query.trim()}%,code.ilike.%${query.trim()}%,phone.ilike.%${query.trim()}%`)
-        .order('name')
-        .limit(20);
+      const { data } = await applyIlikeTokens(
+        supabase
+          .from('customers')
+          .select('id, name, code, phone, address, outstanding_balance')
+          .order('name'),
+        CUSTOMER_SEARCH_COLUMNS,
+        tokenizeSearch(query),
+      ).limit(20);
 
+      if (seq !== searchSeqRef.current) return;   // superseded by a newer keystroke
       setResults((data as CustomerResult[]) || []);
       setOpen(true);
       setLoading(false);

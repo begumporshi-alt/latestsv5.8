@@ -35,6 +35,7 @@ import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
 import { QuickSellModal } from '@/components/quick-sell-modal';
+import { tokenizeSearch, applyIlikeTokens, matchesTokens } from '@/lib/search';
 
 // Snapshot of a completed charge, taken before the cart resets, so the
 // receipt can be printed afterwards — online with the real number, offline
@@ -117,34 +118,12 @@ interface ProductData {
 }
 
 /**
- * POS search robustness helpers.
- *
- * Two long-standing problems they fix:
- *  1. PostgREST's `.or()` grammar treats `,` `(` `)` `%` `_` `\` as syntax, so
- *     a term like "cable, 3mm" or "board (12mm)" produced a malformed filter
- *     and the whole search silently returned nothing.
- *  2. Search only matched name and SKU — barcodes were never searched, and
- *     multi-word queries failed when the words weren't adjacent or in order.
- *
- * Tokens are stripped of grammar characters and AND-ed together, so
- * "gypsum 12mm" finds "12mm Gypsum Board" regardless of word order; each
- * token matches name, SKU or barcode.
+ * POS search: sanitised, order-independent, barcode-aware. The shared helpers
+ * live in lib/search.ts — see .agents/skills/search-feature-robustness for
+ * why each rule exists (the grammar injection that used to void the whole
+ * search, missing barcode matching, and the response race).
  */
-function tokenizePosSearch(q: string): string[] {
-  return q
-    .trim()
-    .split(/\s+/)
-    .map((t) => t.replace(/[,()%_\\'"]/g, ''))
-    .filter(Boolean)
-    .slice(0, 5)
-    .map((t) => t.toLowerCase());
-}
-
-function matchesPosSearch(p: ProductData, tokens: string[]): boolean {
-  if (tokens.length === 0) return true;
-  const hay = [p.name, p.sku, p.barcode].map((v) => String(v || '').toLowerCase());
-  return tokens.every((t) => hay.some((h) => h.includes(t)));
-}
+const POS_SEARCH_COLUMNS = ['name', 'sku', 'barcode'];
 
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -466,7 +445,7 @@ export default function POSPage() {
     // Out-of-order guard: a slow response for an older query must not
     // overwrite the results of a newer one while the user keeps typing.
     const seq = ++searchSeqRef.current;
-    const tokens = tokenizePosSearch(q);
+    const tokens = tokenizeSearch(q);
 
     // Offline: serve the encrypted local snapshot, applying the same
     // search/brand/category filters client-side.
@@ -484,7 +463,7 @@ export default function POSPage() {
       if (cached && cached.length > 0) {
         // Same search semantics as the online path: sanitized tokens AND-ed
         // across name, SKU and barcode.
-        let list = cached.filter(p => matchesPosSearch(p, tokens));
+        let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
         if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
         if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
         // Quick-sell (non-stock) items never enter the POS grid; snapshots
@@ -515,9 +494,7 @@ export default function POSPage() {
     // One sanitized `.or()` per token (AND-ed by PostgREST across calls), each
     // matching name, SKU or barcode — so terms with commas/parentheses can't
     // break the filter and word order doesn't matter.
-    tokenizePosSearch(q).forEach((token) => {
-      query = query.or(`name.ilike.%${token}%,sku.ilike.%${token}%,barcode.ilike.%${token}%`);
-    });
+    query = applyIlikeTokens(query, POS_SEARCH_COLUMNS, tokens);
     if (selectedBrand) {
       query = query.eq('brand_id', selectedBrand);
     }
@@ -542,7 +519,7 @@ export default function POSPage() {
       if (cached && cached.length > 0) {
         // Same search semantics as the online path: sanitized tokens AND-ed
         // across name, SKU and barcode.
-        let list = cached.filter(p => matchesPosSearch(p, tokens));
+        let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
         if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
         if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
         // Quick-sell (non-stock) items never enter the POS grid; snapshots

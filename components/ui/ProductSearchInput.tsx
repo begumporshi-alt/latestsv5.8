@@ -4,12 +4,17 @@ import { useEffect, useRef, useState } from 'react';
 import { Search, X, Filter } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
 import type { ProductUnit } from '@/lib/types';
+
+/** Columns the product search matches: name, SKU and barcode. */
+const PRODUCT_SEARCH_COLUMNS = ['name', 'sku', 'barcode'];
 
 interface ProductResult {
   id: string;
   name: string;
   sku: string;
+  barcode?: string;
   sale_price: number;
   cost_price: number;
   unit?: string;
@@ -54,6 +59,9 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic sequence — drops out-of-order responses (see the
+  // search-feature-robustness skill).
+  const searchSeqRef = useRef(0);
 
   useEffect(() => {
     supabase.from('brands').select('id, name').eq('is_active', true).order('name')
@@ -76,25 +84,32 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (!query.trim()) { setResults([]); setOpen(false); return; }
+    const tokens = tokenizeSearch(query);
+    // No usable tokens (empty query, or a term made only of filter grammar)
+    // → show nothing rather than an unfiltered 20-row dump.
+    if (tokens.length === 0) { setResults([]); setOpen(false); setLoading(false); return; }
 
     debounceRef.current = setTimeout(async () => {
+      const seq = ++searchSeqRef.current;
       setLoading(true);
-    let dbQuery = supabase
-      .from('products')
-      .select(`id, name, sku, sale_price, cost_price, unit, base_unit, enable_multi_unit, image_url, warranty_months,
+      const dbQuery = applyIlikeTokens(
+        supabase
+          .from('products')
+          .select(`id, name, sku, barcode, sale_price, cost_price, unit, base_unit, enable_multi_unit, image_url, warranty_months,
           inventory_items(quantity_on_hand),
           units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
-        .eq('is_active', true)
-        .or(`name.ilike.%${query.trim()}%,sku.ilike.%${query.trim()}%`)
-        .order('name')
-        .limit(20);
+          .eq('is_active', true)
+          .order('name'),
+        PRODUCT_SEARCH_COLUMNS,
+        tokens,
+      );
+      let q = dbQuery;
+      if (selectedBrand) q = q.eq('brand_id', selectedBrand);
+      if (selectedCategory) q = q.eq('category_id', selectedCategory);
 
-      if (selectedBrand) dbQuery = dbQuery.eq('brand_id', selectedBrand);
-      if (selectedCategory) dbQuery = dbQuery.eq('category_id', selectedCategory);
-
-      const { data } = await dbQuery;
-      setResults((data as ProductResult[]) || []);
+      const { data } = await q.limit(20);
+      if (seq !== searchSeqRef.current) return;   // superseded by a newer keystroke
+      setResults((data as unknown as ProductResult[]) || []);
       setOpen(true);
       setLoading(false);
     }, 250);

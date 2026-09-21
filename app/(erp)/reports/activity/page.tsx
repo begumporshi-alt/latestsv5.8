@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
+import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
 import { Activity, Search, Filter, ChevronLeft, ChevronRight, FileText, ShoppingCart, Package, User, DollarSign, Truck, Settings, ClipboardList, Database, CircleAlert as AlertCircle } from 'lucide-react';
 
 interface ActivityLog {
@@ -148,8 +149,10 @@ export default function ActivityPage() {
 
     // Server-side search — searching only the loaded page silently hid older
     // matches (a user searching for an old event wrongly concluded it didn't exist).
-    if (search.trim()) {
-      query = query.or(`entity_label.ilike.%${search.trim()}%,entity_type.ilike.%${search.trim()}%`);
+    // Tokenised + grammar-safe: see .agents/skills/search-feature-robustness.
+    const tokens = tokenizeSearch(search);
+    if (tokens.length > 0) {
+      query = applyIlikeTokens(query, ['entity_label', 'entity_type'], tokens);
     }
 
     query = query.order('created_at', { ascending: false }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);

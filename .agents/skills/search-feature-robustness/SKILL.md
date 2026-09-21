@@ -184,24 +184,28 @@ and `ILIKE` on tokenised terms can stay in SQL. See
 
 ## This project's known patterns
 
-Shared predicate helper does not exist yet — each site implements the pattern
-above. Status as of the POS fix (commit `6ae008e`):
+The canonical helpers live in **`lib/search.ts`** (`tokenizeSearch`,
+`buildIlikeOrFilters`, `applyIlikeTokens`, `matchesTokens`) with unit tests in
+`lib/__tests__/search.test.ts`. New searches should import from there, not
+re-implement.
+
+Status after the migration (commit with `feat(search): shared sanitised
+tokenised search helpers`):
 
 | Search site | Notes | Status |
 |---|---|---|
-| POS product grid | name + SKU + barcode, tokenised, race-guarded, offline parity | **Fixed** `6ae008e` |
+| POS product grid | name + SKU + barcode, tokenised, race-guarded, offline parity | **Fixed** `6ae008e`, migrated to `lib/search.ts` |
 | Quotation product gallery | client-side over the full catalog; matches name/SKU/barcode, but single-substring (no tokenising) | Tokenising advisable |
-| Product list filters (`ProductFilterDropdown`, quotations/sales page search) | client-side `includes()` over loaded rows | OK (no `.or()` exposure) |
-| `components/ui/ProductSearchInput.tsx` | server-side `.or(name,sku)` — **no barcode, no sanitising** | Needs fix |
-| `components/ui/CustomerSearchInput.tsx` | `.or(name, code, phone)` — no sanitising | Needs fix |
-| `components/ui/SupplierSearchInput.tsx` | `.or(name, code, phone)` — no sanitising | Needs fix |
-| `components/layout/Header.tsx` global search | `searchCols[]` + `.or()` — no sanitising | Needs fix |
-| `app/(erp)/sales/advances/page.tsx` | `.or(name, code, phone)` — no sanitising | Needs fix |
-| `app/(erp)/inventory/movements/page.tsx` | several `.or(name, sku)` / `.or(reference_number, notes)` — no sanitising | Needs fix |
-| `app/(erp)/reports/activity/page.tsx` | `.or(entity_label, entity_type)` — no sanitising | Needs fix |
+| `components/ui/ProductSearchInput.tsx` | migrated: barcode added, sanitised tokens, race guard | **Fixed** |
+| `components/ui/CustomerSearchInput.tsx` | migrated: sanitised tokens, race guard | **Fixed** |
+| `components/ui/SupplierSearchInput.tsx` | migrated: sanitised tokens, race guard | **Fixed** |
+| `components/ui/ProductFilterDropdown.tsx` | migrated: barcode added, sanitised tokens | **Fixed** |
+| `components/layout/Header.tsx` global search | migrated: per-token filters across all `searchCols` | **Fixed** |
+| `app/(erp)/sales/advances/page.tsx` | migrated: sanitised tokens | **Fixed** |
+| `app/(erp)/inventory/movements/page.tsx` | migrated (product pre-search + reference/notes `.or()` chains) | **Fixed** |
+| `app/(erp)/reports/activity/page.tsx` | migrated: sanitised tokens | **Fixed** |
 
-Sanitising in the shared inputs (one change each) fixes four call sites at
-once, since the pages pass their query straight through.
+Any new search site should reuse `lib/search.ts` and add itself here.
 
 ## Tests to add
 
