@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart } from 'lucide-react';
+import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart, LayoutGrid, Package } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
@@ -618,6 +618,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showAddCustomer, setShowAddCustomer] = useState(false);
+  const [showProductGallery, setShowProductGallery] = useState(false);
   const [formTab, setFormTab] = useState<'items' | 'cost'>('items');
   const [markedForPurchase, setMarkedForPurchase] = useState<Set<string>>(new Set());
 
@@ -1054,6 +1055,9 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                 <button type="button" onClick={pasteProductList} className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Paste products copied from an invoice or quotation">
                   <ClipboardPaste className="w-3.5 h-3.5" />Paste Products
                 </button>
+                <button type="button" onClick={() => setShowProductGallery(true)} className="flex items-center gap-1.5 px-3 py-2 border border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Browse all products with images">
+                  <LayoutGrid className="w-3.5 h-3.5" />Browse
+                </button>
               </div>
               {markedForPurchase.size > 0 && (
                 <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
@@ -1326,6 +1330,14 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
           }}
         />
       )}
+
+      {showProductGallery && (
+        <ProductGalleryModal
+          products={products}
+          onPick={(product) => { addProductToItems(product); toast({ title: 'Added', description: `${product.name} added to the quotation` }); }}
+          onClose={() => setShowProductGallery(false)}
+        />
+      )}
     </>
   );
 }
@@ -1363,6 +1375,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [markedForPurchase, setMarkedForPurchase] = useState<Set<string>>(new Set());
+  const [showProductGallery, setShowProductGallery] = useState(false);
 
   async function toggleMarkForPurchase(productId: string, productName: string, productSku: string, stockQty: number | null, quantityNeeded: number, quotationId?: string) {
     const isCurrentlyMarked = markedForPurchase.has(productId);
@@ -1773,6 +1786,9 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               <button type="button" onClick={pasteProductList} className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Paste products copied from an invoice or quotation">
                 <ClipboardPaste className="w-3.5 h-3.5" />Paste Products
               </button>
+              <button type="button" onClick={() => setShowProductGallery(true)} className="flex items-center gap-1.5 px-3 py-2 border border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Browse all products with images">
+                <LayoutGrid className="w-3.5 h-3.5" />Browse
+              </button>
             </div>
             {markedForPurchase.size > 0 && (
               <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
@@ -1879,6 +1895,14 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
           </div>
         </form>
       </div>
+
+      {showProductGallery && (
+        <ProductGalleryModal
+          products={products}
+          onPick={(product) => { addProductToItems(product); toast({ title: 'Added', description: `${product.name} added to the quotation` }); }}
+          onClose={() => setShowProductGallery(false)}
+        />
+      )}
     </div>
   );
 }
@@ -2695,6 +2719,115 @@ function QuickPurchaseModal({ quotation, items, products, onClose, onConfirm }: 
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ProductGalleryModal({ products, onPick, onClose }: {
+  products: Product[];
+  onPick: (product: Product) => void;
+  onClose: () => void;
+}) {
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('');
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    supabase.from('categories').select('id, name').eq('is_active', true).order('name')
+      .then(({ data }) => setCategories((data || []) as { id: string; name: string }[]));
+  }, []);
+
+  // Same price rule as addProductToItems so the card shows what will land
+  // on the quotation line.
+  function displayPrice(p: Product) {
+    const units = (p.units || []).filter((u: any) => u.is_active);
+    if (p.enable_multi_unit && units.length > 0) {
+      const def = getDefaultSaleUnit(p);
+      return def ? def.price : p.sale_price;
+    }
+    return p.sale_price;
+  }
+
+  function totalStock(p: Product) {
+    return (p.inventory_items || []).reduce((s, i) => s + Number(i.quantity_on_hand || 0), 0);
+  }
+
+  const filtered = products.filter(p => {
+    if (category && p.category_id !== category) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      if (!p.name.toLowerCase().includes(q) && !(p.sku || '').toLowerCase().includes(q) && !(p.barcode || '').toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4">
+      <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div>
+            <h2 className="text-base font-bold">Product Gallery</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">{filtered.length} product{filtered.length !== 1 ? 's' : ''} — click a product to add it to the quotation</p>
+          </div>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="flex items-center gap-2 px-6 py-3 border-b border-border">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by name, SKU or barcode..."
+              className="w-full border border-border rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            />
+          </div>
+          <select
+            value={category}
+            onChange={e => setCategory(e.target.value)}
+            className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none max-w-44"
+          >
+            <option value="">All categories</option>
+            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6">
+          {filtered.length === 0 ? (
+            <p className="text-center text-sm text-muted-foreground py-10">No products match your search.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+              {filtered.map((p) => {
+                const stock = totalStock(p);
+                const low = Number(p.min_stock_level) > 0 && stock <= Number(p.min_stock_level);
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => onPick(p)}
+                    className="text-left border border-border rounded-xl p-2.5 hover:border-blue-300 hover:shadow-md transition"
+                  >
+                    <div className="flex items-start gap-2">
+                      <Package className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate" title={p.name}>{p.name}</p>
+                        <p className="text-[10px] text-muted-foreground truncate">{p.sku || ''}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between mt-1.5 gap-1">
+                      <span className="text-sm font-semibold text-blue-600">{formatCurrency(displayPrice(p))}</span>
+                      <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full whitespace-nowrap ${stock === 0 ? 'bg-red-100 text-red-700' : low ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                        {stock === 0 ? 'Out of stock' : low ? `Low: ${stock}` : `Stock: ${stock}`}
+                      </span>
+                    </div>
+                    {p.warranty_months > 0 && <p className="text-[10px] text-muted-foreground mt-1">Warranty: {p.warranty_months} mo</p>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
