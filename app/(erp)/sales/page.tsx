@@ -47,6 +47,17 @@ interface SalesPageData {
   };
 }
 
+/** Slow-changing reference data, cached separately with a longer TTL so the
+ *  period-scoped aggregate (invoices/payments/returns) doesn't re-download
+ *  the full product catalog and customer list on every 60s refresh. */
+interface SalesRefs {
+  customers: Customer[];
+  products: Product[];
+  warehouses: any[];
+  paymentMethods: { code: string; name: string }[];
+  companySettings: any;
+}
+
 const statusConfig: Record<InvoiceStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
   sent: { label: 'On Credit', color: 'text-blue-600', bg: 'bg-blue-100' },
@@ -167,9 +178,12 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     const { from, to } = getPeriodRange();
     const key = `sales:page-data:${period}:${from}:${to}`;
     try {
-      const res = await cachedQuery<SalesPageData>(key, 60_000, () => fetchSalesData(from, to));
-      applySalesData(res.data);
-      setDataStale(!res.fresh);
+      const [res, refs] = await Promise.all([
+        cachedQuery<SalesPageData>(key, 60_000, () => fetchSalesData(from, to)),
+        cachedQuery<SalesRefs>('sales:refs', 300_000, fetchSalesRefs),
+      ]);
+      applySalesData({ ...res.data, ...refs.data });
+      setDataStale(!res.fresh || !refs.fresh);
     } catch {
       setInvoices([]);
       toast({
@@ -182,26 +196,41 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     }
   }
 
+  // Products (2.5k rows with units + inventory), customers, warehouses,
+  // payment methods and company settings change rarely. They get their own
+  // 5-minute cache so the 60s period aggregate stays small and fast.
+  async function fetchSalesRefs(): Promise<SalesRefs> {
+    const [custRes, productsData, paymentMethodsRes, warehousesRes, settingsRes] = await Promise.all([
+      fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name').order('id')),
+      fetchAll(() => supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name').order('id')),
+      supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order'),
+      supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
+      supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle(),
+    ]);
+    return {
+      customers: custRes || [],
+      products: productsData || [],
+      paymentMethods: paymentMethodsRes.data || [],
+      warehouses: warehousesRes.data || [],
+      companySettings: settingsRes.data?.setting_value || null,
+    };
+  }
+
   async function fetchSalesData(from: string, to: string): Promise<SalesPageData> {
     // All completeness-dependent queries go through fetchAll so stats and
     // pickers are never silently truncated by Supabase's row caps (the
     // invoices query previously had .limit(500), which hid the oldest 80
     // invoices and understated Total Sales by ~6.3L).
-    const [invoicesData, custRes, productsData, settingsRes, returnsData, paymentMethodsRes, paymentsData, deliveriesData, warehousesRes, receivablePaymentsData, returnsForStatsData, accountsRes, cphData] = await Promise.all([
+    const [invoicesData, returnsData, paymentsData, deliveriesData, receivablePaymentsData, returnsForStatsData, accountsRes, cphData, creditRes, gapRes] = await Promise.all([
       fetchAll(() => {
         let q = supabase.from('invoices').select('*, customer:customers(name, code, phone, address)').order('created_at', { ascending: false });
         if (from) q = q.gte('invoice_date', from);
         if (to) q = q.lte('invoice_date', to);
         return q;
       }),
-      fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name')),
-      fetchAll(() => supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name')),
-      supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle(),
       fetchAll(() => supabase.from('sales_returns').select('id, invoice_id, return_number, total_refund_amount, items:sales_return_items(quantity_returned)')),
-      supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order'),
       fetchAll(() => supabase.from('payments').select('id, reference_id, payment_method, amount, payment_date').eq('reference_type', 'invoice')),
       fetchAll(() => supabase.from('deliveries').select('id, invoice_id, delivery_number, status')),
-      supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
       fetchAll(() => {
         let q = supabase.from('payments')
           .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
@@ -223,6 +252,13 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
       }),
       supabase.from('accounts').select('id, code, name, account_type'),
       fetchAll(() => supabase.from('cost_price_history').select('invoice_id, cost_price_for_added_qty')),
+      // Formerly sequential after the batch — fetched in parallel to cut
+      // two serial round trips from the first load.
+      supabase.from('customer_store_credits').select('balance').eq('status', 'active'),
+      supabase.rpc('get_cogs_history_gap_breakdown', {
+        p_start_date: from || null,
+        p_end_date: to || null,
+      }),
     ]);
 
     // Refunds for the stats cards — filtered by return_date to match the payment period window.
@@ -283,12 +319,9 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
       .reduce((s: number, p: any) => s + Number(p.amount), 0);
     const totalCollected = invoiceCollected + receivableCollected;
 
-    // Fetch store credit balance (not period-dependent)
-    const { data: creditData } = await supabase
-      .from('customer_store_credits')
-      .select('balance')
-      .eq('status', 'active');
-    const storeCreditBalance = (creditData || []).reduce((s: number, c: any) => s + Number(c.balance), 0);
+    // Fetch store credit balance (not period-dependent) — fetched in the
+    // parallel batch above.
+    const storeCreditBalance = (creditRes.data || []).reduce((s: number, c: any) => s + Number(c.balance), 0);
 
     // COGS: net debit balance on account code 5000 within the period
     const cogsAccount = (accountsRes.data || []).find((a: any) => a.code === '5000');
@@ -303,11 +336,9 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     }
 
     // Why Total COGS (journal) differs from Total Cost (History): per-cause
-    // decomposition on the same period basis as the two cards
-    const { data: gapRows } = await supabase.rpc('get_cogs_history_gap_breakdown', {
-      p_start_date: from || null,
-      p_end_date: to || null,
-    });
+    // decomposition on the same period basis as the two cards — fetched in
+    // the parallel batch above.
+    const gapRows = gapRes.data;
 
     // Payment collected at sale: total amount paid on invoices that were fully or partially paid at time of sale
     const paymentCollectedAtSale = activeInv
@@ -316,11 +347,13 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
 
     return {
       invoicesWithReturns,
-      paymentMethods: paymentMethodsRes.data || [],
-      warehouses: warehousesRes.data || [],
-      customers: custRes || [],
-      products: productsData || [],
-      companySettings: settingsRes.data?.setting_value || null,
+      // Reference data is merged in by loadData from the longer-lived
+      // 'sales:refs' cache (see fetchSalesRefs).
+      paymentMethods: [],
+      warehouses: [],
+      customers: [],
+      products: [],
+      companySettings: null,
       cogsGap: (gapRows && gapRows.length > 0) ? gapRows[0] : null,
       stats: {
         total: activeInv.reduce((s: number, i: any) => s + Number(i.total_amount), 0),
