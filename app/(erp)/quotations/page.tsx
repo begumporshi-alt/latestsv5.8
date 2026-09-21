@@ -56,6 +56,7 @@ export default function QuotationsPage() {
   const [convertingQuotation, setConvertingQuotation] = useState<QuotationWithCustomer | null>(null);
   const [editingQuotation, setEditingQuotation] = useState<QuotationWithCustomer | null>(null);
   const [deletingQuotation, setDeletingQuotation] = useState<QuotationWithCustomer | null>(null);
+  const [confirmingStatus, setConfirmingStatus] = useState<{ quotation: QuotationWithCustomer; action: 'sent' | 'accepted' | 'rejected' | 'expired' } | null>(null);
   const [companySettings, setCompanySettings] = useState<any>({});
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
 
@@ -184,7 +185,7 @@ export default function QuotationsPage() {
   }
 
   const filtered = quotations.filter(q => {
-    if (search && !q.quote_number.toLowerCase().includes(search.toLowerCase()) && !q.customer?.name?.toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !q.quote_number.toLowerCase().includes(search.toLowerCase()) && !q.customer?.name?.toLowerCase().includes(search.toLowerCase()) && !((q as any).reference || '').toLowerCase().includes(search.toLowerCase())) return false;
     if (filterStatus && q.status !== filterStatus) return false;
     if (filterCustomer && q.customer_id !== filterCustomer) return false;
     if (filterDateFrom && q.issue_date < filterDateFrom) return false;
@@ -370,16 +371,16 @@ export default function QuotationsPage() {
                           <button onClick={() => openEditModal(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="Edit Quotation"><Pencil className="w-3.5 h-3.5" /></button>
                         )}
                         {q.status === 'draft' && (
-                          <button onClick={() => sendQuotation(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition"><Send className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setConfirmingStatus({ quotation: q, action: 'sent' })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition" title="Mark as Sent"><Send className="w-3.5 h-3.5" /></button>
                         )}
                         {(q.status === 'draft' || q.status === 'sent' || q.status === 'viewed') && (
-                          <button onClick={() => setQuotationStatus(q, 'accepted')} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition" title="Mark Accepted"><CheckCircle className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setConfirmingStatus({ quotation: q, action: 'accepted' })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition" title="Mark Accepted"><CheckCircle className="w-3.5 h-3.5" /></button>
                         )}
                         {(q.status === 'draft' || q.status === 'sent' || q.status === 'viewed') && (
-                          <button onClick={() => setQuotationStatus(q, 'rejected')} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Mark Rejected"><Ban className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setConfirmingStatus({ quotation: q, action: 'rejected' })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Mark Rejected"><Ban className="w-3.5 h-3.5" /></button>
                         )}
                         {(q.status === 'draft' || q.status === 'sent' || q.status === 'viewed' || q.status === 'accepted') && (
-                          <button onClick={() => setQuotationStatus(q, 'expired')} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-orange-50 text-muted-foreground hover:text-orange-600 transition" title="Mark Expired"><Clock className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setConfirmingStatus({ quotation: q, action: 'expired' })} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-orange-50 text-muted-foreground hover:text-orange-600 transition" title="Mark Expired"><Clock className="w-3.5 h-3.5" /></button>
                         )}
                         {(q.status === 'draft' || q.status === 'sent') && (
                           <button onClick={() => setDeletingQuotation(q)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Delete Quotation"><Trash2 className="w-3.5 h-3.5" /></button>
@@ -456,6 +457,20 @@ export default function QuotationsPage() {
           quotation={deletingQuotation}
           onClose={() => setDeletingQuotation(null)}
           onConfirm={() => deleteQuotation(deletingQuotation)}
+        />
+      )}
+
+      {confirmingStatus && (
+        <StatusConfirmModal
+          quotation={confirmingStatus.quotation}
+          action={confirmingStatus.action}
+          onClose={() => setConfirmingStatus(null)}
+          onConfirm={() => {
+            const { quotation, action } = confirmingStatus;
+            setConfirmingStatus(null);
+            if (action === 'sent') sendQuotation(quotation);
+            else setQuotationStatus(quotation, action);
+          }}
         />
       )}
     </div>
@@ -1055,6 +1070,10 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
             <div>
               <label className="block text-xs font-medium mb-1">Reference</label>
               <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name (e.g. who referred this quotation)" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Notes</label>
+              <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y" placeholder="Optional notes — shown on the printed quotation" />
             </div>
 
             <div>
@@ -1817,6 +1836,10 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
             <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name" />
           </div>
           <div>
+            <label className="block text-xs font-medium mb-1">Notes</label>
+            <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y" placeholder="Optional notes — shown on the printed quotation" />
+          </div>
+          <div>
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-medium">Line Items</label>
               {items.length > 0 && <span className="text-xs text-muted-foreground">{items.length} item{items.length !== 1 ? 's' : ''}</span>}
@@ -1948,6 +1971,66 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
             />
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function StatusConfirmModal({ quotation, action, onClose, onConfirm }: {
+  quotation: QuotationWithCustomer;
+  action: 'sent' | 'accepted' | 'rejected' | 'expired';
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const cfgMap: Record<'sent' | 'accepted' | 'rejected' | 'expired', { title: string; body: string; confirm: string; btn: string; icon: React.ReactNode }> = {
+    sent: {
+      title: 'Mark as Sent?',
+      body: `Quotation ${quotation.quote_number} will be marked as sent to ${quotation.customer?.name || 'the customer'}.`,
+      confirm: 'Mark as Sent',
+      btn: 'bg-green-600 hover:bg-green-700',
+      icon: <Send className="w-6 h-6 text-green-600" />,
+    },
+    accepted: {
+      title: 'Mark as Accepted?',
+      body: `Quotation ${quotation.quote_number} will be marked as accepted by the customer.`,
+      confirm: 'Mark as Accepted',
+      btn: 'bg-green-600 hover:bg-green-700',
+      icon: <CheckCircle className="w-6 h-6 text-green-600" />,
+    },
+    rejected: {
+      title: 'Mark as Rejected?',
+      body: `Quotation ${quotation.quote_number} will be marked as rejected and can no longer be converted to an invoice.`,
+      confirm: 'Mark as Rejected',
+      btn: 'bg-red-600 hover:bg-red-700',
+      icon: <Ban className="w-6 h-6 text-red-600" />,
+    },
+    expired: {
+      title: 'Mark as Expired?',
+      body: `Quotation ${quotation.quote_number} will be marked as expired and can no longer be converted to an invoice.`,
+      confirm: 'Mark as Expired',
+      btn: 'bg-orange-600 hover:bg-orange-700',
+      icon: <Clock className="w-6 h-6 text-orange-600" />,
+    },
+  };
+  const cfg = cfgMap[action];
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" style={{ zIndex: 60 }}>
+      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold">{cfg.title}</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6">
+          <div className="flex items-start gap-3">
+            <div className="shrink-0">{cfg.icon}</div>
+            <p className="text-sm text-muted-foreground">{cfg.body}</p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-border">
+          <button onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
+          <button onClick={onConfirm} className={`px-4 py-2 text-white rounded-lg text-sm font-semibold transition ${cfg.btn}`}>{cfg.confirm}</button>
+        </div>
       </div>
     </div>
   );
