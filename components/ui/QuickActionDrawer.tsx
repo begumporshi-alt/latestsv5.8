@@ -3,6 +3,11 @@
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { toast } from '@/hooks/use-toast';
+import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetch-all';
+import { ProductGalleryBody } from '@/components/ProductGallery';
+import type { Product } from '@/lib/types';
 import {
   ShoppingCart,
   ShoppingBag,
@@ -25,6 +30,7 @@ import {
   ClipboardList,
   Warehouse,
   ReceiptIcon,
+  LayoutGrid,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -36,6 +42,8 @@ interface QuickAction {
   ring: string;
   description?: string;
   category?: string;
+  /** Special in-drawer panel actions (not page links) */
+  kind?: 'catalog';
 }
 
 const quickActions: QuickAction[] = [
@@ -53,6 +61,7 @@ const quickActions: QuickAction[] = [
   // Inventory
   { label: 'New Product', href: '/inventory', icon: Package, bg: 'bg-purple-500', ring: 'ring-purple-200', description: 'Add product', category: 'Inventory' },
   { label: 'Stock Adjust', href: '/inventory', icon: Warehouse, bg: 'bg-violet-500', ring: 'ring-violet-200', description: 'Adjust stock', category: 'Inventory' },
+  { label: 'Product Catalog', href: '#', icon: LayoutGrid, bg: 'bg-blue-600', ring: 'ring-blue-200', description: 'Browse products', category: 'Inventory', kind: 'catalog' },
 
   // CRM
   { label: 'New Customer', href: '/crm', icon: Users, bg: 'bg-cyan-500', ring: 'ring-cyan-200', description: 'Add customer', category: 'CRM' },
@@ -89,9 +98,35 @@ export default function QuickActionDrawer() {
   const [isOpen, setIsOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
   const drawerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const pathname = usePathname();
+
+  // Product Catalog: load the full catalog (with units + inventory) when the
+  // slide-over opens. fetchAll pages past Supabase's 1,000-row default cap;
+  // reads go through the wrapped client, so offline the last-known copy is
+  // served.
+  useEffect(() => {
+    if (!catalogOpen || catalogProducts.length > 0) return;
+    fetchAll<Product>(() => supabase.from('products')
+      .select('*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)')
+      .eq('is_active', true).order('name').order('id'))
+      .then(rows => setCatalogProducts(rows))
+      .catch(() => setCatalogProducts([]));
+  }, [catalogOpen, catalogProducts.length]);
+
+  // Add a catalog product to whichever quotation form is open (the forms
+  // listen for the global event). Without an open form, browse only.
+  function pickForQuotation(product: Product) {
+    if ((window as any).__quotationFormOpen) {
+      window.dispatchEvent(new CustomEvent('quotation:add-product', { detail: product }));
+      toast({ title: 'Added', description: `${product.name} added to the quotation` });
+    } else {
+      toast({ title: 'Browsing only', description: 'Open a quotation form to add products.' });
+    }
+  }
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 1024);
@@ -252,7 +287,25 @@ export default function QuickActionDrawer() {
                   {category}
                 </p>
                 <div className="grid grid-cols-3 gap-2">
-                  {actions.map((action) => (
+                  {actions.map((action) => action.kind === 'catalog' ? (
+                    <button
+                      key={action.label}
+                      onClick={() => setCatalogOpen(true)}
+                      className="group/action flex flex-col items-center gap-1.5 p-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-100 hover:border-slate-200 hover:shadow-sm transition-all duration-200"
+                    >
+                      <div className={`
+                        w-10 h-10 rounded-xl ${action.bg} ring-2 ${action.ring}
+                        flex items-center justify-center
+                        group-hover/action:scale-110 group-hover/action:shadow-md
+                        transition-all duration-200
+                      `}>
+                        <action.icon className="w-4.5 h-4.5 text-white" />
+                      </div>
+                      <span className="text-[10px] font-semibold text-slate-700 group-hover/action:text-slate-900 text-center leading-tight transition-colors">
+                        {action.label}
+                      </span>
+                    </button>
+                  ) : (
                     <Link
                       key={action.label}
                       href={action.href}
@@ -284,6 +337,32 @@ export default function QuickActionDrawer() {
           </p>
         </div>
       </div>
+
+      {/* Product Catalog slide-over (above the quick actions drawer) */}
+      {catalogOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-[74]" onClick={() => setCatalogOpen(false)} />
+          <div className="fixed right-0 top-0 bottom-0 w-[400px] max-w-[calc(100vw-2rem)] bg-white shadow-2xl z-[75] flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
+                  <LayoutGrid className="w-4 h-4 text-white" />
+                </div>
+                <h3 className="text-sm font-bold text-slate-900">Product Catalog</h3>
+              </div>
+              <button
+                onClick={() => setCatalogOpen(false)}
+                className="w-8 h-8 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition-colors"
+              >
+                <X className="w-4 h-4 text-slate-500" />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <ProductGalleryBody products={catalogProducts} onPick={pickForQuotation} />
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }
