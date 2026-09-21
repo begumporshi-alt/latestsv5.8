@@ -1,11 +1,84 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Search, Package } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Search, Check, ChevronDown, Package } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { getDefaultSaleUnit } from '@/lib/unit-utils';
 import type { Product } from '@/lib/types';
+
+/** Compact POS-style searchable filter dropdown (brand / category). */
+function GalleryFilter({ allLabel, searchLabel, options, value, onChange }: {
+  allLabel: string;
+  searchLabel: string;
+  options: { id: string; name: string }[];
+  value: string;
+  onChange: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selected = options.find(o => o.id === value);
+  const list = q.trim() ? options.filter(o => o.name.toLowerCase().includes(q.trim().toLowerCase())) : options;
+
+  function pick(id: string) {
+    onChange(id);
+    setOpen(false);
+    setQ('');
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between gap-1 border border-border rounded-lg px-2.5 py-1.5 text-xs hover:border-slate-300 transition"
+      >
+        <span className={`truncate ${selected ? 'font-medium text-foreground' : 'text-muted-foreground'}`}>{selected ? selected.name : allLabel}</span>
+        <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-20 p-1.5">
+          <input
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            placeholder={searchLabel}
+            className="w-full border border-border rounded-md px-2 py-1 text-xs mb-1 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          />
+          <button
+            type="button"
+            onClick={() => pick('')}
+            className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs hover:bg-muted transition"
+          >
+            <span className="text-muted-foreground">{allLabel}</span>
+            {!value && <Check className="w-3.5 h-3.5 text-blue-600" />}
+          </button>
+          {list.map(o => (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => pick(o.id)}
+              className="w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs hover:bg-muted transition"
+            >
+              <span className="truncate">{o.name}</span>
+              {value === o.id && <Check className="w-3.5 h-3.5 text-blue-600 shrink-0" />}
+            </button>
+          ))}
+          {list.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">No matches.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Shared product gallery body used by:
@@ -23,11 +96,15 @@ export function ProductGalleryBody({ products, onPick }: {
 }) {
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('');
+  const [brand, setBrand] = useState('');
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [brands, setBrands] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
     supabase.from('categories').select('id, name').eq('is_active', true).order('name')
       .then(({ data }) => setCategories((data || []) as { id: string; name: string }[]));
+    supabase.from('brands').select('id, name').eq('is_active', true).order('name')
+      .then(({ data }) => setBrands((data || []) as { id: string; name: string }[]));
   }, []);
 
   // Same price rule as the quotation forms' addProductToItems so the card
@@ -47,6 +124,7 @@ export function ProductGalleryBody({ products, onPick }: {
 
   const filtered = products.filter(p => {
     if (category && p.category_id !== category) return false;
+    if (brand && (p as any).brand_id !== brand) return false;
     if (search) {
       const q = search.toLowerCase();
       if (!p.name.toLowerCase().includes(q) && !(p.sku || '').toLowerCase().includes(q) && !(p.barcode || '').toLowerCase().includes(q)) return false;
@@ -72,14 +150,22 @@ export function ProductGalleryBody({ products, onPick }: {
               className="w-full border border-border rounded-lg pl-8 pr-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
             />
           </div>
-          <select
-            value={category}
-            onChange={e => setCategory(e.target.value)}
-            className="w-full border border-border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none"
-          >
-            <option value="">All categories</option>
-            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <div className="grid grid-cols-2 gap-2">
+            <GalleryFilter
+              allLabel="All Brands"
+              searchLabel="Search brands..."
+              options={brands}
+              value={brand}
+              onChange={setBrand}
+            />
+            <GalleryFilter
+              allLabel="All Categories"
+              searchLabel="Search categories..."
+              options={categories}
+              value={category}
+              onChange={setCategory}
+            />
+          </div>
         </div>
       </div>
 
