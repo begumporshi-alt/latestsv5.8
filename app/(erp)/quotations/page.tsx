@@ -8,6 +8,7 @@ import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, Cre
 import { useRouter } from 'next/navigation';
 import { ProductGalleryBody } from '@/components/ProductGallery';
 import { fetchAll } from '@/lib/fetch-all';
+import { cachedQuery } from '@/lib/offline/cache';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
@@ -36,6 +37,15 @@ interface QuotationWithCustomer extends Omit<Quotation, 'customer'> {
   customer?: { name: string; code: string };
 }
 
+/** Slow-changing reference data, cached separately with a longer TTL so the
+ *  quotation list refresh doesn't re-download the full product catalog. */
+interface QuoteRefs {
+  customers: Customer[];
+  products: Product[];
+  warehouses: { id: string; name: string; code: string }[];
+  companySettings: any;
+}
+
 export default function QuotationsPage() {
   const router = useRouter();
   const [quotations, setQuotations] = useState<QuotationWithCustomer[]>([]);
@@ -62,22 +72,45 @@ export default function QuotationsPage() {
 
   useEffect(() => { loadData(); }, []);
 
-  async function loadData() {
-    setLoading(true);
-    const [quoteRes, custRes, prodRes, settingsRes, whRes] = await Promise.all([
-      // fetchAll pages past Supabase's 1,000-row default cap; deterministic
-      // .order('id') tiebreakers keep rows stable across pages.
-      fetchAll(() => supabase.from('quotations').select('*, customer:customers(name, code, phone, email, address)').order('created_at', { ascending: false }).order('id')),
+  // Reference data (products with units + inventory, customers, warehouses,
+  // company settings) changes rarely — 5-minute cache so returning to the
+  // page or opening a modal doesn't re-download the whole catalog.
+  async function fetchQuoteRefs(): Promise<QuoteRefs> {
+    const [custRes, prodRes, settingsRes, whRes] = await Promise.all([
       fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name').order('id')),
       fetchAll(() => supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name').order('id')),
       supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle(),
       supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
     ]);
-    setQuotations(quoteRes || []);
-    setCustomers(custRes || []);
-    setProducts(prodRes || []);
-    setCompanySettings(settingsRes.data?.setting_value || {});
-    setWarehouses(whRes.data || []);
+    return {
+      customers: custRes || [],
+      products: prodRes || [],
+      warehouses: (whRes.data || []) as { id: string; name: string; code: string }[],
+      companySettings: settingsRes.data?.setting_value || null,
+    };
+  }
+
+  async function loadData() {
+    setLoading(true);
+    const [quotesRes, refsRes] = await Promise.all([
+      // fetchAll pages past Supabase's 1,000-row default cap; deterministic
+      // .order('id') tiebreakers keep rows stable across pages. 60s cache:
+      // this is the transactional, frequently-changing part.
+      cachedQuery<QuotationWithCustomer[]>('quotations:list', 60_000, () =>
+        fetchAll(() => supabase.from('quotations').select('*, customer:customers(name, code, phone, email, address)').order('created_at', { ascending: false }).order('id'))
+      ).catch(() => null),
+      // Non-fatal: a device opening the page offline before the refs snapshot
+      // exists still gets the quotation list — pickers are empty until the
+      // next online load.
+      cachedQuery<QuoteRefs>('quotations:refs', 300_000, fetchQuoteRefs).catch(() => null),
+    ]);
+    if (quotesRes) setQuotations(quotesRes.data);
+    if (refsRes) {
+      setCustomers(refsRes.data.customers);
+      setProducts(refsRes.data.products);
+      setWarehouses(refsRes.data.warehouses);
+      if (refsRes.data.companySettings) setCompanySettings(refsRes.data.companySettings);
+    }
     setLoading(false);
   }
 

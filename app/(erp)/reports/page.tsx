@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { fetchAll } from '@/lib/fetch-all';
 import { getInventoryValue } from '@/lib/inventory-value';
 import { ChartBar as BarChart3, TrendingUp, Package, Users, Download, FileSpreadsheet, Calendar, ArrowRight, RefreshCw, Printer, Info } from 'lucide-react';
 import {
@@ -59,30 +60,31 @@ export default function ReportsPage() {
       return q;
     };
 
-    // Supabase caps queries at 1000 rows by default. Paginate inventory_items to fetch all.
+    // Supabase caps queries at 1000 rows by default — fetchAll pages past
+    // the cap so totals and unit math stay correct on growing tables.
     const [
       invoicesRes, purchasesRes, customersRes, productsRes,
       topProductsRes, topCustomersRes, paymentsRes, accountsRes, invResult
     ] = await Promise.all([
-      applyDateRange(supabase.from('invoices').select('total_amount, tax_amount, shipping_cost, subtotal, invoice_date, status').neq('status', 'cancelled').neq('status', 'draft'), 'invoice_date'),
-      applyDateRange(supabase.from('purchase_orders').select('total_amount'), 'order_date'),
-      supabase.from('customers').select('total_purchases'),
-      supabase.from('products').select('id, unit'),
+      fetchAll(() => applyDateRange(supabase.from('invoices').select('total_amount, tax_amount, shipping_cost, subtotal, invoice_date, status').neq('status', 'cancelled').neq('status', 'draft').order('invoice_date').order('id'), 'invoice_date')),
+      fetchAll(() => applyDateRange(supabase.from('purchase_orders').select('total_amount').order('order_date').order('id'), 'order_date')),
+      fetchAll(() => supabase.from('customers').select('total_purchases').order('id')),
+      fetchAll(() => supabase.from('products').select('id, unit').order('id')),
       // invoice_items has no created_at column — filter through the parent
       // invoice's invoice_date (embed with !inner so the filter constrains
       // rows), and exclude cancelled/draft so top products match the revenue
       // basis used everywhere else on this page.
       applyDateRange(supabase.from('invoice_items').select('product_id, quantity, subtotal, unit_name, cost_price, product:products(name), invoices!inner(invoice_date, status)').neq('invoices.status', 'cancelled').neq('invoices.status', 'draft').order('quantity', { ascending: false }).limit(50), 'invoices.invoice_date'),
       supabase.from('customers').select('name, total_purchases').order('total_purchases', { ascending: false }).limit(10),
-      applyDateRange(supabase.from('payments').select('amount').eq('payment_type', 'received'), 'payment_date'),
+      fetchAll(() => applyDateRange(supabase.from('payments').select('amount').eq('payment_type', 'received').order('payment_date').order('id'), 'payment_date')),
       supabase.from('accounts').select('id, code, name, account_type').eq('is_active', true),
       getInventoryValue(supabase),
     ]);
 
     // Revenue net of VAT and shipping: the GL posts goods sales to 4000, VAT to
     // 2100 and shipping to 4020, so the dashboard figure here must match that basis.
-    const totalRevenue = (invoicesRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount) - Number(i.tax_amount || 0) - Number(i.shipping_cost || 0), 0);
-    const totalPurchases = (purchasesRes.data || []).reduce((s: number, p: any) => s + Number(p.total_amount), 0);
+    const totalRevenue = (invoicesRes || []).reduce((s: number, i: any) => s + Number(i.total_amount) - Number(i.tax_amount || 0) - Number(i.shipping_cost || 0), 0);
+    const totalPurchases = (purchasesRes || []).reduce((s: number, p: any) => s + Number(p.total_amount), 0);
 
     // COGS from Chart of Accounts — use RPC for reliable DB-side date filtering
     const cogsAccount = (accountsRes.data || []).find((a: any) => a.code === '5000');
@@ -136,9 +138,9 @@ export default function ReportsPage() {
       totalPurchases,
       grossProfit,
       netProfit,
-      totalOrders: invoicesRes.data?.length || 0,
-      totalCustomers: customersRes.data?.length || 0,
-      totalProducts: productsRes.data?.length || 0,
+      totalOrders: invoicesRes?.length || 0,
+      totalCustomers: customersRes?.length || 0,
+      totalProducts: productsRes?.length || 0,
       inventoryValue,
       cogsActual,
       salesReturnsTotal,

@@ -11,6 +11,8 @@ import DeliveryChallan from '@/components/DeliveryChallan';
 import type { Delivery, DeliveryStatus, Customer } from '@/lib/types';
 import Pagination from '@/components/ui/AppPagination';
 import { printNode } from '@/lib/print';
+import { fetchAll } from '@/lib/fetch-all';
+import { cachedQuery } from '@/lib/offline/cache';
 
 const statusConfig: Record<DeliveryStatus, { label: string; color: string; bg: string; icon: React.ElementType }> = {
   pending: { label: 'Pending', color: 'text-gray-600', bg: 'bg-gray-100', icon: Clock },
@@ -49,16 +51,33 @@ export default function DeliveryPage() {
 
   async function loadData() {
     setLoading(true);
-    const [delRes, custRes, invRes, settingsRes] = await Promise.all([
-      supabase.from('deliveries').select('*, customer:customers(name, phone, address), invoice:invoices(invoice_number)').order('created_at', { ascending: false }),
-      supabase.from('customers').select('*').eq('is_active', true).order('name'),
-      supabase.from('invoices').select('id, invoice_number, customer_id, status').order('created_at', { ascending: false }).limit(500),
-      supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle(),
+    const [listRes, refsRes] = await Promise.all([
+      // Transactional list (deliveries + deliverable invoices) at 60s.
+      // fetchAll pages past Supabase's 1,000-row default cap; the invoices
+      // query previously had .limit(500), which hid undelivered invoices
+      // from the picker once the table grew past 500 rows.
+      cachedQuery<{ deliveries: any[]; invoices: any[] }>('delivery:list', 60_000, async () => {
+        const [delRes, invRes] = await Promise.all([
+          fetchAll(() => supabase.from('deliveries').select('*, customer:customers(name, phone, address), invoice:invoices(invoice_number)').order('created_at', { ascending: false }).order('id')),
+          fetchAll(() => supabase.from('invoices').select('id, invoice_number, customer_id, status').order('created_at', { ascending: false }).order('id')),
+        ]);
+        return { deliveries: delRes, invoices: invRes };
+      }).catch(() => null),
+      // Reference data at 5 minutes.
+      cachedQuery<{ customers: Customer[]; companySettings: any }>('delivery:refs', 300_000, async () => {
+        const [custRes, settingsRes] = await Promise.all([
+          fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name').order('id')),
+          supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle(),
+        ]);
+        return { customers: (custRes || []) as Customer[], companySettings: settingsRes.data?.setting_value || null };
+      }).catch(() => null),
     ]);
-    setDeliveries(delRes.data || []);
-    setCustomers(custRes.data || []);
-    setInvoices(invRes.data || []);
-    setCompanySettings(settingsRes.data?.setting_value || {});
+    setDeliveries(listRes?.data.deliveries ?? []);
+    setInvoices(listRes?.data.invoices ?? []);
+    if (refsRes) {
+      setCustomers(refsRes.data.customers);
+      if (refsRes.data.companySettings) setCompanySettings(refsRes.data.companySettings);
+    }
     setLoading(false);
   }
 

@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { fetchAll } from '@/lib/fetch-all';
+import { cachedQuery } from '@/lib/offline/cache';
 import { toast } from '@/hooks/use-toast';
 import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban, Undo2, ChevronLeft, ChevronRight, Calendar, Bell, Package, ShoppingBag } from 'lucide-react';
 import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit, PurchaseReminder } from '@/lib/types';
@@ -101,29 +103,50 @@ export default function PurchasesPage() {
     setShowCreateModal(true);
   }, [suppliers]);
 
+  // Reference data (suppliers + the product catalog) changes rarely — 5-min
+  // cache so returning to the page doesn't re-download every product row.
+  async function fetchPurchaseRefs(): Promise<{ suppliers: Supplier[]; products: Product[] }> {
+    const [supRes, prodRes] = await Promise.all([
+      fetchAll(() => supabase.from('suppliers').select('*').eq('is_active', true).order('name').order('id')),
+      fetchAll(() => supabase.from('products').select('*').eq('is_active', true).order('name').order('id')),
+    ]);
+    return { suppliers: (supRes || []) as Supplier[], products: (prodRes || []) as Product[] };
+  }
+
   async function loadData() {
     setLoading(true);
-    const [poRes, supRes, prodRes, returnsRes] = await Promise.all([
-      supabase.from('purchase_orders').select('*, supplier:suppliers(name, code, phone)').order('created_at', { ascending: false }),
-      supabase.from('suppliers').select('*').eq('is_active', true).order('name'),
-      supabase.from('products').select('*').eq('is_active', true).order('name'),
-      supabase.from('purchase_returns').select('id, return_number, total_amount, status, purchase_order_id').order('created_at', { ascending: false }),
+    const [listRes, refsRes] = await Promise.all([
+      // Transactional list (POs + returns) at 60s; fetchAll pages past
+      // Supabase's 1,000-row default cap — the product picker was blind to
+      // every product past row 1,000, and POs/returns would silently truncate.
+      cachedQuery<{ orders: any[]; returns: any[] }>('purchases:list', 60_000, async () => {
+        const [poRes, returnsData] = await Promise.all([
+          fetchAll(() => supabase.from('purchase_orders').select('*, supplier:suppliers(name, code, phone)').order('created_at', { ascending: false }).order('id')),
+          fetchAll(() => supabase.from('purchase_returns').select('id, return_number, total_amount, status, purchase_order_id').order('created_at', { ascending: false }).order('id')),
+        ]);
+        return { orders: poRes, returns: returnsData };
+      }).catch(() => null),
+      cachedQuery<{ suppliers: Supplier[]; products: Product[] }>('purchases:refs', 300_000, fetchPurchaseRefs).catch(() => null),
     ]);
-    setOrders(poRes.data || []);
-    setSuppliers(supRes.data || []);
-    setProducts(prodRes.data || []);
+    const poRes = listRes?.data.orders ?? [];
+    const returnsRes = listRes?.data.returns ?? [];
+    if (refsRes) {
+      setSuppliers(refsRes.data.suppliers);
+      setProducts(refsRes.data.products);
+    }
+    setOrders(poRes);
 
     // Deep-link from the supplier profile: /purchases?view=<poId>
     const viewId = new URLSearchParams(window.location.search).get('view');
     if (viewId) {
-      const target = (poRes.data || []).find((o: any) => o.id === viewId);
+      const target = (poRes || []).find((o: any) => o.id === viewId);
       if (target) viewOrderDetails(target as PurchaseOrderWithSupplier);
       window.history.replaceState({}, '', '/purchases');
     }
 
     // Build a map of PO ID -> returns for quick lookup
     const returnsMap: Record<string, { return_number: string; total_amount: number }[]> = {};
-    (returnsRes.data || []).forEach((r: any) => {
+    (returnsRes || []).forEach((r: any) => {
       if (r.status === 'completed' && r.purchase_order_id) {
         if (!returnsMap[r.purchase_order_id]) returnsMap[r.purchase_order_id] = [];
         returnsMap[r.purchase_order_id].push({ return_number: r.return_number, total_amount: Number(r.total_amount) });
@@ -131,14 +154,14 @@ export default function PurchasesPage() {
     });
     setPoReturns(returnsMap);
 
-    const all = poRes.data || [];
+    const all = poRes || [];
     setStats({
       total: all.length,
       pending: all.filter((o: any) => ['draft', 'pending_approval', 'approved'].includes(o.status)).length,
       received: all.filter((o: any) => o.status === 'received').length,
       outstanding: all.filter((o: any) => o.status !== 'cancelled').reduce((s: number, o: any) => s + Math.max(0, Number(o.total_amount) - Number(o.amount_paid)), 0),
-      returns: (returnsRes.data || []).filter((r: any) => r.status === 'completed').length,
-      returnAmount: (returnsRes.data || []).filter((r: any) => r.status === 'completed').reduce((s: number, r: any) => s + Number(r.total_amount), 0),
+      returns: (returnsRes || []).filter((r: any) => r.status === 'completed').length,
+      returnAmount: (returnsRes || []).filter((r: any) => r.status === 'completed').reduce((s: number, r: any) => s + Number(r.total_amount), 0),
       totalValue: all.filter((o: any) => o.status !== 'cancelled').reduce((s: number, o: any) => s + Number(o.total_amount), 0),
     });
 

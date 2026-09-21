@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { fetchAll } from '@/lib/fetch-all';
 import { toast } from '@/hooks/use-toast';
 import { ArrowLeft, Search, RefreshCw, Plus, X, Package, FileText, Receipt, CreditCard, CircleCheck as CheckCircle, Clock, Eye, ArrowRightLeft, Building2, Banknote, Wallet, ExternalLink, CircleAlert as AlertCircle } from 'lucide-react';
 import Link from 'next/link';
@@ -103,12 +104,12 @@ export default function SalesReturnsPage() {
   async function loadData() {
     setLoading(true);
     const [invRes, returnsRes] = await Promise.all([
-      supabase.from('invoices').select('*, customer:customers(name, code)').in('status', ['paid', 'partially_paid', 'sent']).order('invoice_date', { ascending: false }),
-      supabase.from('sales_returns').select('*, invoice:invoices(invoice_number), customer:customers(name)').order('created_at', { ascending: false }),
+      fetchAll(() => supabase.from('invoices').select('*, customer:customers(name, code)').in('status', ['paid', 'partially_paid', 'sent']).order('invoice_date', { ascending: false }).order('id')),
+      fetchAll(() => supabase.from('sales_returns').select('*, invoice:invoices(invoice_number), customer:customers(name)').order('created_at', { ascending: false }).order('id')),
     ]);
 
-    setInvoices(invRes.data || []);
-    setReturns(returnsRes.data || []);
+    setInvoices(invRes);
+    setReturns(returnsRes);
     setLoading(false);
   }
 

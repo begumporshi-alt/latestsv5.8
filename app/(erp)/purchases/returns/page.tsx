@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { fetchAll } from '@/lib/fetch-all';
 import { toast } from '@/hooks/use-toast';
 import { ArrowLeft, Search, RefreshCw, Plus, X, Package, FileText, Truck, CircleCheck as CheckCircle, Eye, Printer, ArrowRightLeft, TrendingUp } from 'lucide-react';
 import Link from 'next/link';
@@ -74,14 +75,14 @@ export default function PurchaseReturnsPage() {
   async function loadData() {
     setLoading(true);
     const [poRes, retRes] = await Promise.all([
-      supabase.from('purchase_orders').select('*, supplier:suppliers(name, code)').in('status', ['received', 'partially_received']).order('order_date', { ascending: false }),
-      supabase.from('purchase_returns')
+      fetchAll(() => supabase.from('purchase_orders').select('*, supplier:suppliers(name, code)').in('status', ['received', 'partially_received']).order('order_date', { ascending: false }).order('id')),
+      fetchAll(() => supabase.from('purchase_returns')
         .select('*, purchase_order:purchase_orders(po_number), supplier:suppliers(name), warehouse:warehouses(name)')
-        .order('created_at', { ascending: false }),
+        .order('created_at', { ascending: false }).order('id')),
     ]);
 
-    setPurchaseOrders(poRes.data || []);
-    const retData = (retRes.data || []).map((r: any) => ({
+    setPurchaseOrders(poRes);
+    const retData = (retRes || []).map((r: any) => ({
       ...r,
       purchase_order: Array.isArray(r.purchase_order) ? r.purchase_order[0] : r.purchase_order,
       supplier: Array.isArray(r.supplier) ? r.supplier[0] : r.supplier,

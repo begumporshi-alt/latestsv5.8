@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { cachedQuery } from '@/lib/offline/cache';
 import { formatCurrency, formatRelativeTime, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { getInventoryValue } from '@/lib/inventory-value';
@@ -13,6 +14,24 @@ import {
 import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown, TriangleAlert as AlertTriangle } from 'lucide-react';
 import AppPagination from '@/components/ui/AppPagination';
 import type { Customer } from '@/lib/types';
+
+/** Shape of the cached dashboard aggregate (see loadDashboardData). */
+interface DashboardData {
+  reconciliation: any[];
+  stats: {
+    todaySales: number; monthlySales: number; inventoryValue: number; inventoryItems: number;
+    receivables: number; payables: number; totalExpenses: number; todayCollection: number;
+    deliveryPending: number; deliveryInTransit: number; deliveryDelivered: number; deliveryFailed: number;
+    onlineOrders: number; onlineRevenue: number;
+  };
+  lowStockItems: any[];
+  topCustomers: Customer[];
+  invoiceDues: { id: string; name: string; due: number }[];
+  manualDues: { id: string; name: string; due: number }[];
+  recentActivities: any[];
+  salesChartData: { month: string; sales: number; profit: number }[];
+  categoryData: { name: string; value: number; color: string }[];
+}
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280'];
 
@@ -70,7 +89,12 @@ export default function DashboardPage() {
   async function loadDashboardData() {
     setLoading(true);
     try {
-      await loadDashboardDataInner();
+      // The whole dashboard aggregate is cached for 60s — this page is the
+      // installed app's start screen and re-mounting it (tab switches, back
+      // navigation) shouldn't re-run ~20 queries, the inventory scan and the
+      // chart RPCs. Offline, the last snapshot is served.
+      const res = await cachedQuery<DashboardData>('dashboard:page-data', 60_000, fetchDashboardData);
+      applyDashboardData(res.data);
     } catch (err) {
       // A partial dashboard (or the offline notice) beats a stuck skeleton —
       // this page is the installed app's start screen.
@@ -80,7 +104,19 @@ export default function DashboardPage() {
     }
   }
 
-  async function loadDashboardDataInner() {
+  function applyDashboardData(d: DashboardData) {
+    setReconChecks(d.reconciliation);
+    setStats(d.stats);
+    setLowStockItems(d.lowStockItems);
+    setTopCustomers(d.topCustomers);
+    setInvoiceDues(d.invoiceDues);
+    setManualDues(d.manualDues);
+    setRecentActivities(d.recentActivities);
+    setSalesChartData(d.salesChartData);
+    setCategoryData(d.categoryData);
+  }
+
+  async function fetchDashboardData(): Promise<DashboardData> {
     const today = new Date().toISOString().split('T')[0];
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
 
@@ -131,7 +167,7 @@ export default function DashboardPage() {
     const invValue = invResult.total;
 
     const { data: reconData } = await supabase.rpc('get_inventory_reconciliation');
-    setReconChecks(((reconData || []) as any[]).sort((a: any, b: any) => a.sort_key - b.sort_key));
+    const reconciliation = ((reconData || []) as any[]).sort((a: any, b: any) => a.sort_key - b.sort_key);
 
     const deliveries = dlvRes.data || [];
     const onlineOrders = onlineOrdersRes.data || [];
@@ -141,7 +177,7 @@ export default function DashboardPage() {
     const deliveryStats: Record<string, number> = { pending: 0, in_transit: 0, delivered: 0, failed: 0 };
     deliveries.forEach((d: any) => { if (deliveryStats[d.status] !== undefined) deliveryStats[d.status]++; });
 
-    setStats({
+    const stats = {
       todaySales,
       monthlySales,
       inventoryValue: invValue,
@@ -156,11 +192,11 @@ export default function DashboardPage() {
       deliveryFailed: deliveryStats.failed,
       onlineOrders: onlineOrders.filter((o: any) => o.status !== 'cancelled').length,
       onlineRevenue: onlineOrders.filter((o: any) => o.status !== 'cancelled').reduce((s: number, o: any) => s + Number(o.total_amount), 0),
-    });
+    };
 
     const lowStock = (lowStockRes.data || []).filter((i: any) => i.product && i.quantity_on_hand < (i.product.min_stock_level || 20));
-    setLowStockItems(lowStock.slice(0, 3));
-    setTopCustomers(topCustRes.data || []);
+    const lowStockItems = lowStock.slice(0, 3);
+    const topCustomers = topCustRes.data || [];
 
     // Invoice dues per customer: unpaid invoice balances (same rule as the sales page)
     const invDueMap = new Map<string, { id: string; name: string; due: number }>();
@@ -170,9 +206,7 @@ export default function DashboardPage() {
       entry.due += Number(i.balance_due || 0);
       invDueMap.set(i.customer_id, entry);
     });
-    setInvoiceDues(
-      [...invDueMap.values()].filter((d) => d.due > 0).sort((a, b) => b.due - a.due).slice(0, 5)
-    );
+    const invoiceDues = [...invDueMap.values()].filter((d) => d.due > 0).sort((a, b) => b.due - a.due).slice(0, 5);
 
     // Manual dues per customer: receivable journal entries minus payments against them
     const paidByEntry = new Map<string, number>();
@@ -188,39 +222,52 @@ export default function DashboardPage() {
       entry.due += outstanding;
       manualDueMap.set(e.customer_id, entry);
     });
-    setManualDues(
-      [...manualDueMap.values()].sort((a, b) => b.due - a.due).slice(0, 5)
-    );
+    const manualDues = [...manualDueMap.values()].sort((a, b) => b.due - a.due).slice(0, 5);
 
-    setRecentActivities(actRes.data || []);
+    const recentActivities = actRes.data || [];
 
-    const chartData = await getSalesChartData();
-    setSalesChartData(chartData);
+    const salesChartData = await getSalesChartData();
+    const categoryData = await getCategoryData();
 
-    const catData = await getCategoryData();
-    setCategoryData(catData);
+    return {
+      reconciliation,
+      stats,
+      lowStockItems,
+      topCustomers,
+      invoiceDues,
+      manualDues,
+      recentActivities,
+      salesChartData,
+      categoryData,
+    };
   }
 
   async function getSalesChartData() {
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
     const result: { month: string; sales: number; profit: number }[] = [];
 
-    for (let i = 0; i < 6; i++) {
-      const startDate = new Date(new Date().getFullYear(), i, 1).toISOString().split('T')[0];
-      const endDate = new Date(new Date().getFullYear(), i + 1, 0).toISOString().split('T')[0];
+    // Six month windows fetched in parallel — this used to be a sequential
+    // loop, adding six round trips to every dashboard load.
+    const ranges = months.map((_, i) => ({
+      start: new Date(new Date().getFullYear(), i, 1).toISOString().split('T')[0],
+      end: new Date(new Date().getFullYear(), i + 1, 0).toISOString().split('T')[0],
+    }));
+    const invoicesByMonth = await Promise.all(
+      ranges.map(({ start, end }) =>
+        supabase
+          .from('invoices')
+          .select('total_amount, subtotal')
+          .gte('invoice_date', start)
+          .lt('invoice_date', end)
+          .neq('status', 'cancelled')
+      )
+    );
 
-      const { data: invoices } = await supabase
-        .from('invoices')
-        .select('total_amount, subtotal')
-        .gte('invoice_date', startDate)
-        .lt('invoice_date', endDate)
-        .neq('status', 'cancelled');
-
+    invoicesByMonth.forEach(({ data: invoices }, i) => {
       const totalSales = (invoices || []).reduce((s: number, inv: any) => s + Number(inv.total_amount), 0);
       const estimatedProfit = totalSales * 0.35;
-
       result.push({ month: months[i], sales: totalSales, profit: estimatedProfit });
-    }
+    });
 
     return result;
   }
