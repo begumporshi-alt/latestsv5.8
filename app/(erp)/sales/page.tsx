@@ -180,10 +180,13 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     try {
       const [res, refs] = await Promise.all([
         cachedQuery<SalesPageData>(key, 60_000, () => fetchSalesData(from, to)),
-        cachedQuery<SalesRefs>('sales:refs', 300_000, fetchSalesRefs),
+        // Non-fatal: a device that opens the page offline before the refs
+        // snapshot exists (e.g. right after this change ships) still gets the
+        // invoice list — pickers are just empty until the next online load.
+        cachedQuery<SalesRefs>('sales:refs', 300_000, fetchSalesRefs).catch(() => null),
       ]);
-      applySalesData({ ...res.data, ...refs.data });
-      setDataStale(!res.fresh || !refs.fresh);
+      applySalesData(refs ? { ...res.data, ...refs.data } : res.data);
+      setDataStale(!res.fresh || !(refs && refs.fresh));
     } catch {
       setInvoices([]);
       toast({
