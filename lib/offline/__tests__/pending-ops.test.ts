@@ -29,6 +29,23 @@ describe('pending overlay op maps (lib/offline/pending)', () => {
     expect(OP_TABLES['employee.create']).toContain('employees');
   });
 
+  // Every page-level cachedQuery aggregate must be dropped by the ops that
+  // touch its data — otherwise a queued offline record keeps being hidden by
+  // the stale snapshot instead of surfacing via the replica's pending overlay.
+  test('page-level cachedQuery aggregates are dropped by their ops', () => {
+    expect(OP_CACHE_KEYS['quotation.create']).toContain('quotations:list');
+    expect(OP_CACHE_KEYS['quotation.update']).toContain('quotations:list');
+    expect(OP_CACHE_KEYS['po.create']).toContain('purchases:list');
+    expect(OP_CACHE_KEYS['delivery.create']).toContain('delivery:list');
+    expect(OP_CACHE_KEYS['invoice.create']).toContain('dashboard:page-data');
+    expect(OP_CACHE_KEYS['product.update']).toEqual(
+      expect.arrayContaining(['sales:refs', 'quotations:refs', 'purchases:refs'])
+    );
+    expect(OP_CACHE_KEYS['customer.update']).toEqual(
+      expect.arrayContaining(['sales:refs', 'quotations:refs', 'delivery:refs'])
+    );
+  });
+
   test('product.create derives rows for the products table and its embed children', () => {
     // units:product_units and inventory_items are read through relation
     // embeds by the POS snapshot / sales page — without child rows the new
