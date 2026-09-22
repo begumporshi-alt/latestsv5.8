@@ -129,9 +129,13 @@ export default function InvoicePreviewModal({
   taxAmount = 0,
   taxLabel = 'VAT',
   shippingAmount = 0,
-  hideDiscountPercent: propHideDiscountPercent = false,
-  hideRate: propHideRate = false,
-  hideItemDiscount: propHideItemDiscount = false,
+  // Print Options default to Hidden (matching the quotation): the Rate and
+  // Discount % columns and the Item Discount row stay off the printed sheet
+  // until switched back on from the Print Options menu. A caller can override
+  // per-document by passing the prop explicitly.
+  hideDiscountPercent: propHideDiscountPercent = true,
+  hideRate: propHideRate = true,
+  hideItemDiscount: propHideItemDiscount = true,
   recalculatedSubtotal,
   totalAmount,
   amountPaid = 0,
