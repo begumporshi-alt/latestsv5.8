@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { networkMonitor } from '@/lib/offline/network';
+import { enqueueOp } from '@/lib/offline/outbox';
 import { X, HandCoins, CircleCheck as CheckCircle2, TriangleAlert as AlertTriangle } from 'lucide-react';
 import type { PaymentMethod } from '@/lib/types';
 
@@ -36,10 +38,17 @@ export default function CollectPaymentModal({
 }: CollectPaymentModalProps) {
   const [activeTab, setActiveTab] = useState<'invoice' | 'manual'>(invoiceOutstanding > 0 ? 'invoice' : 'manual');
   const [invoices, setInvoices] = useState<InvoiceOutstanding[]>([]);
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>('');
   const [loadingInvoices, setLoadingInvoices] = useState(false);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [cashBankAccounts, setCashBankAccounts] = useState<{ id: string; code: string; name: string }[]>([]);
+
+  // ── Multi-invoice allocation (invoice tab) ──────────────────────────────
+  // One "Amount Received" is split across all due invoices, oldest first by
+  // default; each row stays editable. Overpayment is either blocked or routed
+  // to the customer's advance balance — the collector's choice.
+  const [totalReceived, setTotalReceived] = useState(0);
+  const [allocations, setAllocations] = useState<Record<string, number>>({});
+  const [overpaymentMode, setOverpaymentMode] = useState<'block' | 'advance'>('block');
 
   const [form, setForm] = useState({
     amount: 0,
@@ -72,10 +81,8 @@ export default function CollectPaymentModal({
         .then(({ data }) => {
           const invs = (data || []) as InvoiceOutstanding[];
           setInvoices(invs);
-          if (invs.length > 0) {
-            setSelectedInvoiceId(invs[0].id);
-            setForm(f => ({ ...f, amount: Number(invs[0].balance_due) || 0 }));
-          }
+          setAllocations({});
+          setTotalReceived(0);
           setLoadingInvoices(false);
         });
     } else if (activeTab === 'manual') {
@@ -83,23 +90,60 @@ export default function CollectPaymentModal({
     }
   }, [activeTab, customerId, invoiceOutstanding, manualOutstanding]);
 
-  const selectedInvoice = invoices.find(i => i.id === selectedInvoiceId);
-  const currentBalance = activeTab === 'invoice' ? (selectedInvoice?.balance_due || 0) : manualOutstanding;
-  const remainingAfter = currentBalance - form.amount - form.bad_debt_amount;
+  // FIFO auto-allocation: oldest due invoice is cleared first.
+  function autoAllocate(total: number) {
+    const next: Record<string, number> = {};
+    let remaining = total;
+    for (const inv of invoices) {
+      if (remaining <= 0.005) break;
+      const due = Number(inv.balance_due) || 0;
+      const take = Math.min(due, remaining);
+      if (take > 0.005) next[inv.id] = Math.round(take * 100) / 100;
+      remaining -= take;
+    }
+    setAllocations(next);
+  }
+
+  const sumAllocated = invoices.reduce((s, i) => s + (allocations[i.id] || 0), 0);
+  const overpayment = Math.max(0, Math.round((totalReceived - sumAllocated) * 100) / 100);
+  const allocatedTooMuch = totalReceived - sumAllocated < -0.005;
+
+  // Manual-tab balance (single receivable pool).
+  const currentBalance = manualOutstanding;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
 
-    if (form.amount <= 0 && form.bad_debt_amount <= 0) {
-      setError('Payment amount or bad debt amount must be greater than 0');
-      return;
+    if (activeTab === 'invoice') {
+      if (totalReceived <= 0 && sumAllocated <= 0 && (form.bad_debt_amount || 0) <= 0) {
+        setError('Enter the amount received (or allocate per invoice)');
+        return;
+      }
+      if (allocatedTooMuch) {
+        setError('Allocations exceed the amount received — reduce an allocation or the total');
+        return;
+      }
+      const overAlloc = invoices.find(i => (allocations[i.id] || 0) > (Number(i.balance_due) || 0) + 0.01);
+      if (overAlloc) {
+        setError(`Allocation on ${overAlloc.invoice_number} exceeds its balance due`);
+        return;
+      }
+      if (overpayment > 0 && overpaymentMode === 'block') {
+        setError(`${formatCurrency(overpayment)} is not allocated — allocate it to an invoice or choose "Add to customer advance"`);
+        return;
+      }
+    } else {
+      if (form.amount <= 0 && form.bad_debt_amount <= 0) {
+        setError('Payment amount or bad debt amount must be greater than 0');
+        return;
+      }
+      if (form.amount + form.bad_debt_amount > currentBalance + 0.01) {
+        setError(`Amount + bad debt cannot exceed outstanding balance (${formatCurrency(currentBalance)})`);
+        return;
+      }
     }
-    if (form.amount + form.bad_debt_amount > currentBalance + 0.01) {
-      setError(`Amount + bad debt cannot exceed outstanding balance (${formatCurrency(currentBalance)})`);
-      return;
-    }
-    if (form.amount > 0 && !form.account_id) {
+    if ((activeTab === 'invoice' ? totalReceived : form.amount) > 0 && !form.account_id) {
       setError('Please select a cash/bank account to receive payment into');
       return;
     }
@@ -107,7 +151,7 @@ export default function CollectPaymentModal({
     setSaving(true);
     try {
       if (activeTab === 'invoice') {
-        await processInvoicePayment();
+        await processMultiInvoicePayment();
       } else {
         await processManualPayment();
       }
@@ -118,50 +162,75 @@ export default function CollectPaymentModal({
     }
   }
 
-  async function processInvoicePayment() {
-    if (!selectedInvoice) throw new Error('No invoice selected');
+  async function processMultiInvoicePayment() {
+    // Build the allocation payload. The global bad-debt figure is distributed
+    // FIFO across the invoices, capped at each invoice's remaining balance.
+    const allocRows: { invoice_id: string; amount: number; bad_debt_amount: number }[] = [];
+    let badRemaining = form.bad_debt_amount || 0;
+    for (const inv of invoices) {
+      const amount = Math.round((allocations[inv.id] || 0) * 100) / 100;
+      const freeBalance = (Number(inv.balance_due) || 0) - amount;
+      const bad = Math.max(0, Math.min(badRemaining, freeBalance));
+      if (amount <= 0 && bad <= 0) continue;
+      allocRows.push({ invoice_id: inv.id, amount, bad_debt_amount: Math.round(bad * 100) / 100 });
+      badRemaining -= bad;
+    }
+    if (allocRows.length === 0) throw new Error('Nothing to collect — allocate at least one invoice');
 
-    const { data: payNum } = await supabase.rpc('generate_payment_number');
-    const paymentNumber = payNum || `PAY-${Date.now().toString().slice(-6)}`;
+    if (!networkMonitor.getState().online) {
+      // Offline: one payment.create op per allocated invoice (the existing
+      // sync_payment_create re-validates against the live balance at replay
+      // time), plus an advance.receive op when the overpayment is routed.
+      for (const row of allocRows) {
+        const inv = invoices.find(i => i.id === row.invoice_id)!;
+        await enqueueOp('payment.create', {
+          idempotency_key: crypto.randomUUID(),
+          invoice_id: row.invoice_id,
+          customer_id: customerId,
+          amount: row.amount,
+          bad_debt_amount: row.bad_debt_amount,
+          payment_method: form.payment_method,
+          payment_date: form.payment_date,
+          reference_number: form.reference_number || null,
+          notes: form.notes || null,
+        }, `Payment ${formatCurrency(row.amount)} — ${inv.invoice_number}`);
+      }
+      if (overpayment > 0 && overpaymentMode === 'advance') {
+        await enqueueOp('advance.receive', {
+          idempotency_key: crypto.randomUUID(),
+          customer_id: customerId,
+          amount: overpayment,
+          payment_method: form.payment_method,
+          payment_date: form.payment_date,
+          reference_number: form.reference_number || null,
+          notes: `Overpayment from multi-invoice collection. ${form.notes || ''}`.trim(),
+        }, `Advance ${formatCurrency(overpayment)} — ${customerName}`);
+      }
+      toast({
+        title: 'Collection queued offline',
+        description: `${allocRows.length} invoice payment${allocRows.length === 1 ? '' : 's'}${overpayment > 0 && overpaymentMode === 'advance' ? ' + advance' : ''} will post when you reconnect.`,
+      });
+      onSaved();
+      onClose();
+      return;
+    }
 
-    const { error: payError } = await supabase.from('payments').insert({
-      payment_number: paymentNumber,
-      payment_type: 'received',
-      reference_type: 'invoice',
-      reference_id: selectedInvoice.id,
-      customer_id: customerId,
-      amount: form.amount,
-      bad_debt_amount: form.bad_debt_amount,
-      payment_method: form.payment_method,
-      payment_date: form.payment_date,
-      reference_number: form.reference_number || null,
-      notes: form.notes || null,
-      payment_for: form.payment_for,
+    const { data, error: rpcError } = await supabase.rpc('collect_customer_payment', {
+      p_customer_id: customerId,
+      p_payment_date: form.payment_date,
+      p_payment_method: form.payment_method,
+      p_reference_number: form.reference_number || null,
+      p_notes: form.notes || null,
+      p_allocations: allocRows,
+      p_overpayment: overpayment,
+      p_route_overpayment: overpaymentMode === 'advance',
     });
-    if (payError) throw payError;
+    if (rpcError) throw rpcError;
 
-    const newAmountPaid = Number(selectedInvoice.amount_paid) + form.amount;
-    const newBadDebt = form.bad_debt_amount;
-    const newBalance = Number(selectedInvoice.total_amount) - newAmountPaid - newBadDebt;
-    const newStatus = newBalance <= 0.01 ? 'paid' : 'partially_paid';
-
-    const { error: invError } = await supabase
-      .from('invoices')
-      .update({
-        amount_paid: newAmountPaid,
-        bad_debt_amount: newBadDebt,
-        status: newStatus,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', selectedInvoice.id);
-    if (invError) throw invError;
-
-    // Database triggers handle: payment JE (Cash→AR), bad debt JE (5600→AR),
-    // and customer outstanding balance recalculation automatically.
-
-    const descParts = [`Payment of ${formatCurrency(form.amount)} recorded`];
-    if (form.bad_debt_amount > 0) descParts.push(`bad debt write-off of ${formatCurrency(form.bad_debt_amount)}`);
-    toast({ title: 'Success', description: descParts.join(', ') });
+    const parts = [`${allocRows.length} invoice${allocRows.length === 1 ? '' : 's'} collected`];
+    if (overpayment > 0 && overpaymentMode === 'advance') parts.push(`${formatCurrency(overpayment)} added to advance`);
+    if ((form.bad_debt_amount || 0) > 0) parts.push(`bad debt ${formatCurrency(form.bad_debt_amount)}`);
+    toast({ title: 'Success', description: parts.join(' · ') });
     onSaved();
     onClose();
   }
@@ -297,7 +366,7 @@ export default function CollectPaymentModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white rounded-t-2xl z-10">
           <h2 className="text-base font-bold flex items-center gap-2">
             <HandCoins className="w-4 h-4 text-green-600" />
@@ -345,77 +414,166 @@ export default function CollectPaymentModal({
               </div>
             )}
 
-            {/* Invoice selector */}
-            {activeTab === 'invoice' && invoices.length > 1 && (
+            {/* Multi-invoice allocation */}
+            {activeTab === 'invoice' && (
               <div>
-                <label className="block text-xs font-medium mb-1">Select Invoice *</label>
-                {loadingInvoices ? (
-                  <div className="h-8 bg-muted rounded animate-pulse" />
-                ) : (
-                  <select
-                    value={selectedInvoiceId}
-                    onChange={e => {
-                      setSelectedInvoiceId(e.target.value);
-                      const inv = invoices.find(i => i.id === e.target.value);
-                      if (inv) setForm(f => ({ ...f, amount: Number(inv.balance_due) || 0, bad_debt_amount: 0 }));
-                    }}
-                    className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"
-                  >
-                    {invoices.map(i => (
-                      <option key={i.id} value={i.id}>{i.invoice_number} - Due: {formatCurrency(Number(i.balance_due))}</option>
-                    ))}
-                  </select>
+                <label className="block text-xs font-medium mb-1">Amount Received *</label>
+                <input
+                  type="number" min="0" step="0.01"
+                  value={totalReceived || ''}
+                  onChange={e => {
+                    const total = parseFloat(e.target.value) || 0;
+                    setTotalReceived(total);
+                    autoAllocate(total);
+                  }}
+                  className="w-full border border-border rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+                {invoices.length > 1 && (
+                  <p className="text-[10px] text-muted-foreground mt-1">Auto-allocated oldest due first — edit any row below to change the split.</p>
                 )}
-              </div>
-            )}
-
-            {/* Current balance */}
-            <div className="bg-muted/30 rounded-lg p-2.5 flex justify-between items-center">
-              <span className="text-xs text-muted-foreground">{activeTab === 'invoice' ? 'Invoice Balance' : 'Manual Outstanding'}</span>
-              <span className="text-sm font-bold text-red-600">{formatCurrency(currentBalance)}</span>
-            </div>
-
-            {/* Amount + Bad Debt */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium mb-1">Payment Amount *</label>
-                <input
-                  type="number" min="0" max={currentBalance} step="0.01"
-                  value={form.amount}
-                  onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1 flex items-center gap-1">
-                  Bad Debt
-                  <span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay)</span>
-                </label>
-                <input
-                  type="number" min="0" max={currentBalance} step="0.01"
-                  value={form.bad_debt_amount}
-                  onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })}
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20"
-                />
-              </div>
-            </div>
-
-            {form.bad_debt_amount > 0 && (
-              <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="w-4 h-4 text-orange-500 mt-0.5 shrink-0" />
-                  <p className="text-[11px] text-orange-700">
-                    {formatCurrency(form.bad_debt_amount)} will be written off as bad debt to the Bad Debt Expense account (5600). Outstanding will be reduced to {formatCurrency(Math.max(0, remainingAfter))}.
-                  </p>
+                <div className="border border-border rounded-lg overflow-hidden mt-2">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40">
+                      <tr>
+                        <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Invoice</th>
+                        <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Due</th>
+                        <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Allocate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loadingInvoices ? (
+                        <tr><td colSpan={3} className="px-3 py-4 text-center text-xs text-muted-foreground animate-pulse">Loading invoices...</td></tr>
+                      ) : invoices.map(inv => (
+                        <tr key={inv.id} className="border-t border-border">
+                          <td className="px-3 py-2 font-medium">{inv.invoice_number}</td>
+                          <td className="text-right px-3 py-2 text-red-600">{formatCurrency(Number(inv.balance_due))}</td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number" min="0" max={Number(inv.balance_due)} step="0.01"
+                              value={allocations[inv.id] ?? ''}
+                              onChange={e => {
+                                const v = Math.min(parseFloat(e.target.value) || 0, Number(inv.balance_due));
+                                setAllocations(a => ({ ...a, [inv.id]: v }));
+                              }}
+                              placeholder="0"
+                              className="w-full border border-border rounded-md px-2 py-1 text-right text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
 
-            {remainingAfter <= 0.01 && (form.amount > 0 || form.bad_debt_amount > 0) && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-2.5 flex justify-between items-center">
-                <span className="text-xs text-green-700">{activeTab === 'invoice' ? 'Invoice' : 'Receivable'} will be fully settled</span>
-                <CheckCircle2 className="w-4 h-4 text-green-600" />
-              </div>
+            {/* Bad debt (shared across tabs) */}
+            <div>
+              <label className="block text-xs font-medium mb-1 flex items-center gap-1">
+                Bad Debt
+                <span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay — written off, applied oldest first)</span>
+              </label>
+              <input
+                type="number" min="0" step="0.01"
+                value={form.bad_debt_amount || ''}
+                onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+              />
+            </div>
+
+            {/* Totals + overpayment (invoice tab) */}
+            {activeTab === 'invoice' && (
+              <>
+                <div className="bg-muted/30 rounded-lg p-3 space-y-1.5 text-xs">
+                  <div className="flex justify-between"><span className="text-muted-foreground">Amount received:</span><span className="font-semibold">{formatCurrency(totalReceived)}</span></div>
+                  <div className="flex justify-between"><span className="text-muted-foreground">Allocated to invoices:</span><span className="font-semibold">{formatCurrency(sumAllocated)}</span></div>
+                  {(form.bad_debt_amount || 0) > 0 && (
+                    <div className="flex justify-between"><span className="text-muted-foreground">Bad debt write-off:</span><span className="font-semibold text-orange-600">{formatCurrency(form.bad_debt_amount)}</span></div>
+                  )}
+                  <div className="flex justify-between border-t border-border pt-1.5">
+                    <span className="text-muted-foreground">{overpayment > 0 ? 'Overpayment:' : 'Unallocated:'}</span>
+                    <span className={`font-bold ${overpayment > 0 ? 'text-green-600' : allocatedTooMuch ? 'text-red-600' : ''}`}>{formatCurrency(overpayment)}</span>
+                  </div>
+                </div>
+
+                {allocatedTooMuch && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+                    <p className="text-[11px] text-red-700">Allocations exceed the amount received. Reduce an allocation or the total.</p>
+                  </div>
+                )}
+
+                {overpayment > 0 && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-2">
+                    <p className="text-xs font-medium text-blue-700 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      {formatCurrency(overpayment)} is more than the allocated dues — what should happen to it?
+                    </p>
+                    <div className="grid grid-cols-1 gap-1.5">
+                      <label className="flex items-start gap-2 text-xs cursor-pointer">
+                        <input type="radio" name="overpayment" checked={overpaymentMode === 'advance'} onChange={() => setOverpaymentMode('advance')} className="mt-0.5 accent-blue-600" />
+                        <span><span className="font-medium">Add to customer advance</span> — credit kept on the customer&apos;s account for future invoices.</span>
+                      </label>
+                      <label className="flex items-start gap-2 text-xs cursor-pointer">
+                        <input type="radio" name="overpayment" checked={overpaymentMode === 'block'} onChange={() => setOverpaymentMode('block')} className="mt-0.5 accent-blue-600" />
+                        <span><span className="font-medium">Block</span> — I&apos;ll allocate the full amount to invoices myself.</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Manual tab: single pool */}
+            {activeTab === 'manual' && (
+              <>
+                <div className="bg-muted/30 rounded-lg p-2.5 flex justify-between items-center">
+                  <span className="text-xs text-muted-foreground">Manual Outstanding</span>
+                  <span className="text-sm font-bold text-red-600">{formatCurrency(currentBalance)}</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium mb-1">Payment Amount *</label>
+                    <input
+                      type="number" min="0" max={currentBalance} step="0.01"
+                      value={form.amount}
+                      onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
+                      className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1 flex items-center gap-1">
+                      Bad Debt
+                      <span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay)</span>
+                    </label>
+                    <input
+                      type="number" min="0" max={currentBalance} step="0.01"
+                      value={form.bad_debt_amount}
+                      onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })}
+                      className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+                    />
+                  </div>
+                </div>
+
+                {form.bad_debt_amount > 0 && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-orange-500 mt-0.5 shrink-0" />
+                      <p className="text-[11px] text-orange-700">
+                        {formatCurrency(form.bad_debt_amount)} will be written off as bad debt to the Bad Debt Expense account (5600). Outstanding will be reduced to {formatCurrency(Math.max(0, currentBalance - form.amount - form.bad_debt_amount))}.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {currentBalance - form.amount - form.bad_debt_amount <= 0.01 && (form.amount > 0 || form.bad_debt_amount > 0) && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-2.5 flex justify-between items-center">
+                    <span className="text-xs text-green-700">Receivable will be fully settled</span>
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
+                  </div>
+                )}
+              </>
             )}
 
             {/* Payment method + account */}
