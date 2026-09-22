@@ -12,6 +12,7 @@ import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt, Printer, BookOpen, HandCoins, X } from 'lucide-react';
 import type { Supplier, PurchaseOrder } from '@/lib/types';
+import PaySupplierModal from '@/components/PaySupplierModal';
 
 interface ManualPayable {
   id: string;
@@ -52,6 +53,7 @@ export default function SupplierDetailPage() {
   const [payments, setPayments] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'purchase_orders' | 'payables' | 'returns' | 'grns' | 'payments'>('purchase_orders');
   const [payTarget, setPayTarget] = useState<{ kind: 'po' | 'payable'; id: string; label: string; balance: number } | null>(null);
+  const [showPayModal, setShowPayModal] = useState(false);
   const [statement, setStatement] = useState<any[] | null>(null);
   const [printing, setPrinting] = useState(false);
   const statementRef = useRef<HTMLDivElement>(null);
@@ -209,6 +211,14 @@ export default function SupplierDetailPage() {
           <Link href={`/purchases/grn?new=1&supplier=${supplier.id}`} className="flex items-center gap-2 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">
             <Package className="w-4 h-4" />New GRN
           </Link>
+          <button
+            onClick={() => setShowPayModal(true)}
+            disabled={stats.totalDue <= 0}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
+            title="Pay outstanding purchase orders in one go"
+          >
+            <HandCoins className="w-4 h-4" />Pay Outstanding
+          </button>
           <button
             onClick={handlePrintStatement}
             disabled={printing}
@@ -618,6 +628,16 @@ export default function SupplierDetailPage() {
           target={payTarget}
           onClose={() => setPayTarget(null)}
           onSaved={() => { setPayTarget(null); loadSupplierData(); }}
+        />
+      )}
+
+      {showPayModal && supplier && (
+        <PaySupplierModal
+          supplierId={supplierId}
+          supplierName={supplier.name}
+          totalOutstanding={stats.totalDue}
+          onClose={() => setShowPayModal(false)}
+          onSaved={() => { setShowPayModal(false); loadSupplierData(); }}
         />
       )}
 
