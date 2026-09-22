@@ -168,6 +168,14 @@ export default function PrintTemplate({
   const isQuote = docType === 'QUOTATION';
   const effectiveDueDate = dueDate || expiryDate;
 
+  // The Subtotal line is printed GROSS (before item discounts) whenever the
+  // Item Discount row renders below it, so the two rows reconcile — matching
+  // the POS cart summary, POS checkout and Edit Invoice totals, which all
+  // display `subtotal + itemDiscountTotal`. When that row is hidden the
+  // Subtotal stays net, which also equals the sum of the AMOUNT column.
+  const subtotalValue = recalculatedSubtotal ?? subtotal;
+  const displayedSubtotal = subtotalValue + (hideItemDiscount ? 0 : discountTotal);
+
   const logoSrc = company.logo_url || '/Whats-App-Image-2026-07-09-at-15-57-58.jpg';
 
   return (
@@ -667,7 +675,7 @@ export default function PrintTemplate({
               <tbody>
                 <tr>
                   <td style={{ padding: '2px 0', color: '#555' }}>Subtotal</td>
-                  <td style={{ padding: '2px 0', textAlign: 'right', fontWeight: '500' }}>{fmt(recalculatedSubtotal ?? subtotal)}</td>
+                  <td style={{ padding: '2px 0', textAlign: 'right', fontWeight: '500' }}>{fmt(displayedSubtotal)}</td>
                 </tr>
                 {discountTotal > 0 && !hideItemDiscount && (
                   <tr>

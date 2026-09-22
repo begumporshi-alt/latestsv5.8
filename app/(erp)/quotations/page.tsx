@@ -2450,9 +2450,15 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
   const cfg = statusConfig[quotation.status as QuotationStatus] || statusConfig.draft;
   const canEdit = quotation.status === 'draft' || quotation.status === 'sent';
   const printRef = useRef<HTMLDivElement>(null);
-  const [hideDiscountPercent, setHideDiscountPercent] = useState(false);
-  const [hideRate, setHideRate] = useState(false);
-  const [hideItemDiscount, setHideItemDiscount] = useState(false);
+  // Print Options default to Hidden on a quotation (customer-facing document):
+  // the Rate and Discount % columns and the Item Discount row stay off the
+  // printed sheet until switched back on from the Print Options menu. The
+  // printed Subtotal reads the stored quotations.subtotal (same source the
+  // invoice uses), so it stays reconciled with the cart/extra discounts and
+  // the Grand Total instead of being re-derived from the line items.
+  const [hideDiscountPercent, setHideDiscountPercent] = useState(true);
+  const [hideRate, setHideRate] = useState(true);
+  const [hideItemDiscount, setHideItemDiscount] = useState(true);
   const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
   const [showQuickPurchase, setShowQuickPurchase] = useState(false);
   // VAT rate for the printed quotation's tax row label.
@@ -2635,7 +2641,6 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
             hideDiscountPercent={hideDiscountPercent}
             hideRate={hideRate}
             hideItemDiscount={hideItemDiscount}
-            recalculatedSubtotal={items.reduce((sum: number, item: any) => sum + (Number(item.subtotal) || 0), 0)}
             totalAmount={Number(quotation.total_amount)}
             notes={(quotation as any).notes}
             reference={(quotation as any).reference}
