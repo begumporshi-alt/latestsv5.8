@@ -10,7 +10,7 @@
 // same payload queues as a quick_sell.create outbox op.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Zap, Plus, Trash2, X, TriangleAlert as AlertTriangle, PackageOpen } from 'lucide-react';
+import { Zap, Plus, Trash2, X, TriangleAlert as AlertTriangle, PackageOpen, UserPlus } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
@@ -71,6 +71,7 @@ const newRow = (): QuickSellRow => ({
 
 export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
   const [customer, setCustomer] = useState<CustomerResult | null>(null);
+  const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [rows, setRows] = useState<QuickSellRow[]>([newRow()]);
   const [vatSettings, setVatSettings] = useState<VatSettings | null>(null);
   const [vatApplied, setVatApplied] = useState(false);
@@ -155,6 +156,7 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
 
   const resetForm = useCallback(() => {
     setCustomer(null);
+    setShowAddCustomer(false);
     setRows([newRow()]);
     setPaymentTerm('full');
     setPaymentMethod('cash');
@@ -256,7 +258,7 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, customer, rows, paymentTerm, partialAmount, grandTotal, cashToPay, creditCheck, vat.taxAmount, reference, notes, qsSettings, paymentMethod, costMethod, isPos, resetForm, onClose, onCreated]);
+  }, [submitting, customer, rows, paymentTerm, partialAmount, grandTotal, cashToPay, vat.taxAmount, reference, notes, qsSettings, paymentMethod, costMethod, isPos, resetForm, onClose, onCreated]);
 
   if (!open) return null;
 
@@ -287,17 +289,31 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
             {/* customer */}
             <div>
               <label className="block text-xs font-semibold text-muted-foreground mb-1.5">Customer (required)</label>
-              {customer ? (
-                <div className="flex items-center justify-between border border-border rounded-lg px-3 py-2.5 bg-muted/40">
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">{customer.name}</p>
-                    {customer.phone && <p className="text-xs text-muted-foreground">{customer.phone}</p>}
-                  </div>
-                  <button onClick={() => setCustomer(null)} className="text-xs text-blue-600 hover:underline">Change</button>
+              <div className="flex gap-2">
+                <div className="flex-1 min-w-0">
+                  {customer ? (
+                    <div className="flex items-center justify-between border border-border rounded-lg px-3 py-2.5 bg-muted/40">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-foreground truncate">{customer.name}</p>
+                        {customer.phone && <p className="text-xs text-muted-foreground">{customer.phone}</p>}
+                      </div>
+                      <button type="button" onClick={() => setCustomer(null)} className="text-xs text-blue-600 hover:underline shrink-0 ml-3">Change</button>
+                    </div>
+                  ) : (
+                    <CustomerSearchInput onSelect={(c) => setCustomer(c)} placeholder="Search customer by name, code or phone..." />
+                  )}
                 </div>
-              ) : (
-                <CustomerSearchInput onSelect={(c) => setCustomer(c)} placeholder="Search customer by name, code or phone..." />
-              )}
+                <button
+                  type="button"
+                  onClick={() => setShowAddCustomer(true)}
+                  title="Add New Customer"
+                  aria-label="Add new customer"
+                  className="flex items-center justify-center gap-1.5 border border-blue-500 text-blue-600 rounded-lg px-3 py-2 text-sm hover:bg-blue-50 transition shrink-0"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  <span className="hidden sm:inline">New</span>
+                </button>
+              </div>
             </div>
 
             {/* items */}
@@ -545,6 +561,16 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
         </div>
       </div>
 
+      {showAddCustomer && (
+        <QuickSellAddCustomerModal
+          onClose={() => setShowAddCustomer(false)}
+          onSaved={(newCustomer) => {
+            setCustomer(newCustomer);
+            setShowAddCustomer(false);
+          }}
+        />
+      )}
+
       {creditCheck && (
         <CreditConfirmDialog
           check={creditCheck}
@@ -554,5 +580,169 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
         />
       )}
     </>
+  );
+}
+
+
+function QuickSellAddCustomerModal({ onClose, onSaved }: {
+  onClose: () => void;
+  onSaved: (customer: CustomerResult) => void;
+}) {
+  const [form, setForm] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    address: '',
+    type: 'retail' as 'retail' | 'contractor' | 'builder' | 'architect' | 'interior_designer' | 'corporate' | 'government',
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!form.name.trim()) {
+      setError('Customer name is required');
+      return;
+    }
+    setSaving(true);
+    setError('');
+
+    const code = `CUST-${Date.now().toString().slice(-6)}`;
+    const data = {
+      code,
+      name: form.name.trim(),
+      phone: form.phone.trim() || null,
+      email: form.email.trim() || null,
+      address: form.address.trim() || null,
+      type: form.type,
+      country: 'Bangladesh',
+      is_active: true,
+      credit_limit: 0,
+      credit_days: 0,
+      loyalty_points: 0,
+      discount_percent: 0,
+    };
+    const customerFor = (id: string): CustomerResult => ({
+      id,
+      name: data.name,
+      code: data.code,
+      phone: data.phone ?? undefined,
+      address: data.address ?? undefined,
+      outstanding_balance: 0,
+    });
+
+    // Offline: queue the customer before the quick sell. The outbox applies
+    // operations in order, so the queued invoice can safely reference this id.
+    if (!networkMonitor.getState().online) {
+      const id = crypto.randomUUID();
+      try {
+        await enqueueOp('customer.create', { id, data }, `New customer — ${data.name}`);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Offline storage error');
+        setSaving(false);
+        return;
+      }
+      toast({ title: 'Customer queued offline', description: `${data.name} will sync with your next order.` });
+      onSaved(customerFor(id));
+      onClose();
+      return;
+    }
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('customers')
+      .insert(data)
+      .select('id')
+      .single();
+
+    if (insertError) {
+      setError(insertError.message);
+      setSaving(false);
+      return;
+    }
+
+    toast({ title: 'Success', description: 'Customer added successfully' });
+    onSaved(customerFor(inserted.id));
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[120] p-4">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold flex items-center gap-2"><UserPlus className="w-4 h-4" />Add New Customer</h2>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground" aria-label="Close add customer">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <form onSubmit={handleSave} className="p-4 space-y-3">
+          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
+          <div>
+            <label className="block text-xs font-medium mb-1">Customer Name *</label>
+            <input
+              required
+              autoFocus
+              value={form.name}
+              onChange={e => setForm({ ...form, name: e.target.value })}
+              placeholder="Enter customer name..."
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium mb-1">Phone</label>
+              <input
+                value={form.phone}
+                onChange={e => setForm({ ...form, phone: e.target.value })}
+                placeholder="Phone number..."
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Type</label>
+              <select
+                value={form.type}
+                onChange={e => setForm({ ...form, type: e.target.value as typeof form.type })}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"
+              >
+                <option value="retail">Retail</option>
+                <option value="contractor">Contractor</option>
+                <option value="builder">Builder</option>
+                <option value="architect">Architect</option>
+                <option value="interior_designer">Interior Designer</option>
+                <option value="corporate">Corporate</option>
+                <option value="government">Government</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium mb-1">Email</label>
+            <input
+              type="email"
+              value={form.email}
+              onChange={e => setForm({ ...form, email: e.target.value })}
+              placeholder="Email address..."
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Address</label>
+            <textarea
+              value={form.address}
+              onChange={e => setForm({ ...form, address: e.target.value })}
+              placeholder="Full address..."
+              rows={2}
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none"
+            />
+          </div>
+          <div className="flex gap-2 pt-2">
+            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm font-medium hover:bg-muted transition">Cancel</button>
+            <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50">
+              {saving ? 'Saving...' : 'Add Customer'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
