@@ -31,6 +31,7 @@ import { CACHE_KEYS } from '@/lib/offline/keys';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { fetchAll } from '@/lib/fetch-all';
 import { REPLICA, replicaRows, buildPosSnapshotFromReplica } from '@/lib/offline/replica';
+import { runReplicaQuery } from '@/lib/offline/replica-query';
 import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
@@ -411,30 +412,47 @@ export default function POSPage() {
       setCustomerOutstanding([]);
       return;
     }
-    supabase
-      .from('invoices')
-      .select('id, invoice_number, status, invoice_date, created_at, total_amount, amount_paid, bad_debt_amount')
-      .eq('customer_id', selectedCustomer)
-      .then(({ data, error }) => {
-        if (error) {
-          setCustomerOutstanding([]);
-          return;
-        }
-        setCustomerOutstanding(
-          (data || [])
-            .filter((i: any) => !['cancelled', 'refunded', 'paid', 'draft'].includes(i.status))
-            .map((i: any) => ({
-              invoice_id: i.id,
-              invoice_number: i.invoice_number,
-              invoice_date: i.invoice_date || '',
-              created_at: i.created_at || '',
-              balance_due: Math.round((Number(i.total_amount) - Number(i.amount_paid) - Number(i.bad_debt_amount)) * 100) / 100,
-            }))
-            .filter((i) => i.balance_due > 0)
-            .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date) || a.created_at.localeCompare(b.created_at))
-            .map(({ invoice_id, invoice_number, balance_due }) => ({ invoice_id, invoice_number, balance_due }))
-        );
-      });
+    // Both the network read and the replica replay project these columns.
+    const columns = 'id, invoice_number, status, invoice_date, created_at, total_amount, amount_paid, bad_debt_amount';
+    let cancelled = false;
+    void (async () => {
+      const res: any = await supabase
+        .from('invoices')
+        .select(columns)
+        .eq('customer_id', selectedCustomer);
+      let rows: any[] = Array.isArray(res?.data) ? res.data : [];
+      if (res?.offline) {
+        // The read fallback answers from the last cached copy of this exact
+        // query, which can be far older than the 15-minute replica refresh —
+        // and this figure decides how much cash the cashier takes. When it
+        // fell back, prefer the replica (same chain, plus the queued-op
+        // overlay); it declines with null if this device never replicated
+        // invoices, leaving the cached copy in place.
+        const local = await runReplicaQuery('invoices', [
+          ['select', [columns]],
+          ['eq', ['customer_id', selectedCustomer]],
+        ]);
+        if (local && Array.isArray(local.data)) rows = local.data;
+      }
+      if (cancelled) return;
+      setCustomerOutstanding(
+        rows
+          .filter((i: any) => !['cancelled', 'refunded', 'paid', 'draft'].includes(i.status))
+          .map((i: any) => ({
+            invoice_id: i.id,
+            invoice_number: i.invoice_number,
+            invoice_date: i.invoice_date || '',
+            created_at: i.created_at || '',
+            balance_due: Math.round((Number(i.total_amount) - Number(i.amount_paid) - Number(i.bad_debt_amount)) * 100) / 100,
+          }))
+          .filter((i) => i.balance_due > 0)
+          .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date) || a.created_at.localeCompare(b.created_at))
+          .map(({ invoice_id, invoice_number, balance_due }) => ({ invoice_id, invoice_number, balance_due }))
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCustomer, walkInCustomerId]);
 
   // Any cart change invalidates a prior "Sell anyway" confirmation.
