@@ -5,6 +5,7 @@ import { X, History, DollarSign, Printer, ChevronDown, Pencil, Ban, CreditCard, 
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate, isInvoiceOverdue } from '@/lib/format';
+import { printNode } from '@/lib/print';
 import PrintTemplate from './PrintTemplate';
 import { useRouter } from 'next/navigation';
 import type { Invoice, InvoiceStatus, Customer } from '@/lib/types';
@@ -334,7 +335,11 @@ export default function InvoicePreviewModal({
               onClick={() => {
                 if (printRef.current) {
                   try {
-                    window.print();
+                    // printNode clones the invoice body into a fresh window and
+                    // strips the fixed modal overlay, so the browser prints a
+                    // single copy. window.print() on this live page repeats the
+                    // position:fixed overlay on every page (duplicate copies).
+                    printNode(printRef.current);
                   } catch (err: any) {
                     toast({
                       title: 'Print failed',
