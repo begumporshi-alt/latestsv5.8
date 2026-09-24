@@ -67,6 +67,9 @@ export interface PrintTemplateProps {
   totalAmount: number;
   amountPaid?: number;
   balanceDue?: number;
+  /** Customer dues excluding this invoice. When supplied for an invoice, the
+   *  printed totals show the full account due breakdown. */
+  previousDue?: number;
   notes?: string;
   payments?: PrintPayment[];
   reference?: string;
@@ -148,6 +151,7 @@ export default function PrintTemplate({
   totalAmount,
   amountPaid = 0,
   balanceDue = 0,
+  previousDue,
   notes,
   payments,
   metaFields,
@@ -175,6 +179,10 @@ export default function PrintTemplate({
   // Subtotal stays net, which also equals the sum of the AMOUNT column.
   const subtotalValue = recalculatedSubtotal ?? subtotal;
   const displayedSubtotal = subtotalValue + (hideItemDiscount ? 0 : discountTotal);
+  const showInvoiceDueBreakdown = docType === 'INVOICE' && previousDue !== undefined;
+  const previousDueAmount = Math.max(0, Number(previousDue || 0));
+  const totalDueAmount = Number(totalAmount) + previousDueAmount;
+  const currentDueAmount = previousDueAmount + Number(balanceDue || 0);
 
   const logoSrc = company.logo_url || '/Whats-App-Image-2026-07-09-at-15-57-58.jpg';
 
@@ -711,16 +719,39 @@ export default function PrintTemplate({
                   <td style={{ padding: '5px 0 3px', fontWeight: '800', color: PRIMARY, fontSize: '13px' }}>GRAND TOTAL</td>
                   <td style={{ padding: '5px 0 3px', textAlign: 'right', fontWeight: '800', color: PRIMARY, fontSize: '13px' }}>{fmt(totalAmount)}</td>
                 </tr>
-                {amountPaid > 0 && (
-                  <tr>
-                    <td style={{ padding: '2px 0', color: '#555' }}>Amount Paid</td>
-                    <td style={{ padding: '2px 0', textAlign: 'right', color: GREEN, fontWeight: '600' }}>-{fmt(amountPaid)}</td>
-                  </tr>
+                {showInvoiceDueBreakdown ? (
+                  <>
+                    <tr>
+                      <td style={{ padding: '2px 0', color: '#555' }}>Previous Due</td>
+                      <td style={{ padding: '2px 0', textAlign: 'right', fontWeight: '600', color: '#b45309' }}>+{fmt(previousDueAmount)}</td>
+                    </tr>
+                    <tr style={{ borderTop: '1px solid #dde3ef' }}>
+                      <td style={{ padding: '4px 0 3px', fontWeight: '800', color: '#b91c1c' }}>TOTAL DUE</td>
+                      <td style={{ padding: '4px 0 3px', textAlign: 'right', fontWeight: '800', color: '#b91c1c' }}>{fmt(totalDueAmount)}</td>
+                    </tr>
+                    <tr>
+                      <td style={{ padding: '2px 0', color: '#555' }}>Paid</td>
+                      <td style={{ padding: '2px 0', textAlign: 'right', color: GREEN, fontWeight: '600' }}>-{fmt(amountPaid)}</td>
+                    </tr>
+                    <tr style={{ borderTop: '1px solid #dde3ef' }}>
+                      <td style={{ padding: '5px 0 2px', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>CURRENT DUE</td>
+                      <td style={{ padding: '5px 0 2px', textAlign: 'right', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>{fmt(currentDueAmount)}</td>
+                    </tr>
+                  </>
+                ) : (
+                  <>
+                    {amountPaid > 0 && (
+                      <tr>
+                        <td style={{ padding: '2px 0', color: '#555' }}>Amount Paid</td>
+                        <td style={{ padding: '2px 0', textAlign: 'right', color: GREEN, fontWeight: '600' }}>-{fmt(amountPaid)}</td>
+                      </tr>
+                    )}
+                    <tr style={{ borderTop: '1px solid #dde3ef' }}>
+                      <td style={{ padding: '5px 0 2px', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>BALANCE DUE</td>
+                      <td style={{ padding: '5px 0 2px', textAlign: 'right', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>{fmt(balanceDue)}</td>
+                    </tr>
+                  </>
                 )}
-                <tr style={{ borderTop: '1px solid #dde3ef' }}>
-                  <td style={{ padding: '5px 0 2px', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>BALANCE DUE</td>
-                  <td style={{ padding: '5px 0 2px', textAlign: 'right', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>{fmt(balanceDue)}</td>
-                </tr>
               </tbody>
             </table>
           </div>

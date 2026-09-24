@@ -177,7 +177,7 @@ export default function InvoicePreviewModal({
       if (!customer_id) return;
       const { data: unpaidInvoices } = await supabase
         .from('invoices')
-        .select('balance_due')
+        .select('id, balance_due')
         .eq('customer_id', customer_id)
         .not('status', 'in', '("cancelled","refunded","paid")')
         .gt('balance_due', 0);
@@ -195,11 +195,11 @@ export default function InvoicePreviewModal({
         for (const entry of manualEntries) {
           const { data: entryPayments } = await supabase
             .from('payments')
-            .select('amount')
+            .select('amount, bad_debt_amount')
             .eq('reference_type', 'receivable')
             .eq('reference_id', entry.id)
             .eq('is_reversed', false);
-          const paid = (entryPayments || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+          const paid = (entryPayments || []).reduce((s: number, p: any) => s + Number(p.amount || 0) + Number(p.bad_debt_amount || 0), 0);
           const outstanding = Number(entry.total_debit) - paid;
           if (outstanding > 0) manualDues += outstanding;
         }
@@ -221,18 +221,25 @@ export default function InvoicePreviewModal({
         .eq('is_reversed', false);
       const advanceBalance = (advances || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
 
+      const thisInvoiceDues = invoiceId
+        ? (unpaidInvoices || [])
+            .filter((invoice: any) => invoice.id === invoiceId)
+            .reduce((sum: number, invoice: any) => sum + Number(invoice.balance_due || 0), 0)
+        : 0;
+      const previousInvoiceDues = Math.max(0, invoiceDues - thisInvoiceDues);
+
       setLocalCustomerOutstanding({
         total: invoiceDues + manualDues,
         invoiceDues,
-        previousInvoiceDues: invoiceDues,
-        thisInvoiceDues: 0,
+        previousInvoiceDues,
+        thisInvoiceDues,
         manualDues,
         storeCredit,
         advanceBalance,
       });
     }
     fetchCustomerOutstanding();
-  }, [customer_id]);
+  }, [customer_id, invoiceId]);
 
   const customerOutstanding = propCustomerOutstanding ?? localCustomerOutstanding;
   const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
@@ -251,6 +258,9 @@ export default function InvoicePreviewModal({
     : (statusConfig[status] || statusConfig.draft);
 
   const balance = Number(balanceDue ?? (Number(totalAmount) - Number(amountPaid)));
+  const previousDue = customerOutstanding
+    ? Math.max(0, customerOutstanding.previousInvoiceDues + customerOutstanding.manualDues)
+    : undefined;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -466,6 +476,7 @@ export default function InvoicePreviewModal({
               totalAmount={totalAmount}
               amountPaid={amountPaid}
               balanceDue={balance}
+              previousDue={previousDue}
               notes={notes}
               reference={reference}
               payments={payments}
