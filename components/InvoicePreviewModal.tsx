@@ -106,6 +106,8 @@ export interface InvoicePreviewModalProps {
   onViewTab?: (tab: 'details' | 'history' | 'cost-history') => void;
   currentTab?: 'details' | 'history' | 'cost-history';
   customerOutstanding?: CustomerOutstanding | null;
+  /** Amount of previous-due collected alongside this invoice (POS due collection). */
+  dueCollected?: number;
   // Optional features for invoice previews
   isOfflinePending?: boolean;
   offlineTempNumber?: string;
@@ -160,6 +162,7 @@ export default function InvoicePreviewModal({
   onViewTab,
   currentTab = 'details',
   customerOutstanding: propCustomerOutstanding,
+  dueCollected = 0,
   isOfflinePending = false,
   offlineTempNumber,
   showProductLinks = false,
@@ -477,6 +480,8 @@ export default function InvoicePreviewModal({
               amountPaid={amountPaid}
               balanceDue={balance}
               previousDue={previousDue}
+              dueCollected={dueCollected}
+              isOfflinePending={isOfflinePending}
               notes={notes}
               reference={reference}
               payments={payments}

@@ -70,6 +70,10 @@ export interface PrintTemplateProps {
   /** Customer dues excluding this invoice. When supplied for an invoice, the
    *  printed totals show the full account due breakdown. */
   previousDue?: number;
+  /** Previous-due amount collected together with this invoice (POS due collection). */
+  dueCollected?: number;
+  /** Queued-offline document: print a provisional-number note next to the doc number. */
+  isOfflinePending?: boolean;
   notes?: string;
   payments?: PrintPayment[];
   reference?: string;
@@ -152,6 +156,8 @@ export default function PrintTemplate({
   amountPaid = 0,
   balanceDue = 0,
   previousDue,
+  dueCollected = 0,
+  isOfflinePending = false,
   notes,
   payments,
   metaFields,
@@ -182,7 +188,9 @@ export default function PrintTemplate({
   const showInvoiceDueBreakdown = docType === 'INVOICE' && previousDue !== undefined;
   const previousDueAmount = Math.max(0, Number(previousDue || 0));
   const totalDueAmount = Number(totalAmount) + previousDueAmount;
-  const currentDueAmount = previousDueAmount + Number(balanceDue || 0);
+  // Previous-due collected together with this invoice (POS due collection).
+  const dueCollectedAmount = Math.max(0, Math.min(Number(dueCollected || 0), previousDueAmount));
+  const currentDueAmount = previousDueAmount + Number(balanceDue || 0) - dueCollectedAmount;
 
   const logoSrc = company.logo_url || '/Whats-App-Image-2026-07-09-at-15-57-58.jpg';
 
@@ -483,6 +491,13 @@ export default function PrintTemplate({
                     {docNumber}
                   </td>
                 </tr>
+                {isOfflinePending && (
+                  <tr>
+                    <td colSpan={3} style={{ paddingBottom: '3px', textAlign: 'right', color: '#b45309', fontWeight: '600' }}>
+                      Provisional — queued offline; syncs as a POS-… number when back online
+                    </td>
+                  </tr>
+                )}
                 <tr>
                   <td style={{ color: '#555', paddingBottom: '3px' }}>Invoice Date</td>
                   <td style={{ color: '#555', paddingBottom: '3px', textAlign: 'center' }}>:</td>
@@ -733,6 +748,18 @@ export default function PrintTemplate({
                       <td style={{ padding: '2px 0', color: '#555' }}>Paid</td>
                       <td style={{ padding: '2px 0', textAlign: 'right', color: GREEN, fontWeight: '600' }}>-{fmt(amountPaid)}</td>
                     </tr>
+                    {dueCollectedAmount > 0 && (
+                      <tr>
+                        <td style={{ padding: '2px 0', color: '#555' }}>Previous Due Collected Now</td>
+                        <td style={{ padding: '2px 0', textAlign: 'right', color: GREEN, fontWeight: '600' }}>-{fmt(dueCollectedAmount)}</td>
+                      </tr>
+                    )}
+                    {dueCollectedAmount > 0 && (
+                      <tr>
+                        <td style={{ padding: '2px 0', color: '#555' }}>Total Received (This Sale + Due)</td>
+                        <td style={{ padding: '2px 0', textAlign: 'right', color: GREEN, fontWeight: '600' }}>{fmt(Number(amountPaid) + dueCollectedAmount)}</td>
+                      </tr>
+                    )}
                     <tr style={{ borderTop: '1px solid #dde3ef' }}>
                       <td style={{ padding: '5px 0 2px', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>CURRENT DUE</td>
                       <td style={{ padding: '5px 0 2px', textAlign: 'right', fontWeight: '800', color: PRIMARY, fontSize: '14px' }}>{fmt(currentDueAmount)}</td>

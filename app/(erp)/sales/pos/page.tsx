@@ -65,6 +65,8 @@ interface PosReceipt {
   amountPaid: number;
   cashPaid: number;
   storeCredit: number;
+  dueCollected: number;
+  previousDue: number;
   paymentMethod: string;
   reference: string;
 }
@@ -192,6 +194,11 @@ export default function POSPage() {
   const [categorySearch, setCategorySearch] = useState('');
   const [storeCreditBalance, setStoreCreditBalance] = useState(0);
   const [applyStoreCredit, setApplyStoreCredit] = useState(false);
+  // Previous-due collection alongside the current sale (Option A)
+  const [dueCollectInput, setDueCollectInput] = useState('');
+  const [customerOutstanding, setCustomerOutstanding] = useState<{ invoice_id: string; invoice_number: string; balance_due: number }[]>([]);
+  const previousDueTotal = customerOutstanding.reduce((s, r) => s + (Number(r.balance_due) || 0), 0);
+  const dueCollectAmount = Math.max(0, Math.min(parseFloat(dueCollectInput) || 0, previousDueTotal));
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
   const [reference, setReference] = useState('');
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -386,6 +393,47 @@ export default function POSPage() {
         setStoreCreditBalance(total);
         void cachePut(`store-credits:${selectedCustomer}`, total);
         if (total === 0) setApplyStoreCredit(false);
+      });
+  }, [selectedCustomer, walkInCustomerId]);
+
+  // Load previous outstanding invoices (oldest first) when the customer
+  // changes — drives the optional "collect previous due" input at checkout.
+  // The due is computed client-side with the same formula as the generated
+  // balance_due column (total - amount_paid - bad_debt): offline this read is
+  // served from the replica merged with queued payment ops, and the overlay
+  // patches amount_paid/status but cannot rewrite a stored generated column —
+  // so a queued due collection shrinks the offered due immediately. Status
+  // filtering and oldest-first ordering are client-side for the same reason.
+  // Failures degrade to "no collection offered"; the input resets on change.
+  useEffect(() => {
+    setDueCollectInput('');
+    if (!selectedCustomer || selectedCustomer === walkInCustomerId) {
+      setCustomerOutstanding([]);
+      return;
+    }
+    supabase
+      .from('invoices')
+      .select('id, invoice_number, status, invoice_date, created_at, total_amount, amount_paid, bad_debt_amount')
+      .eq('customer_id', selectedCustomer)
+      .then(({ data, error }) => {
+        if (error) {
+          setCustomerOutstanding([]);
+          return;
+        }
+        setCustomerOutstanding(
+          (data || [])
+            .filter((i: any) => !['cancelled', 'refunded', 'paid', 'draft'].includes(i.status))
+            .map((i: any) => ({
+              invoice_id: i.id,
+              invoice_number: i.invoice_number,
+              invoice_date: i.invoice_date || '',
+              created_at: i.created_at || '',
+              balance_due: Math.round((Number(i.total_amount) - Number(i.amount_paid) - Number(i.bad_debt_amount)) * 100) / 100,
+            }))
+            .filter((i) => i.balance_due > 0)
+            .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date) || a.created_at.localeCompare(b.created_at))
+            .map(({ invoice_id, invoice_number, balance_due }) => ({ invoice_id, invoice_number, balance_due }))
+        );
       });
   }, [selectedCustomer, walkInCustomerId]);
 
@@ -928,6 +976,23 @@ export default function POSPage() {
       }
     }
 
+    // Previous-due collection (Option A): a full-payment sale to a registered
+    // customer can sweep the tendered excess into the customer's oldest open
+    // invoices. Computed here because `amountPaid` (the tendered input) is
+    // shadowed by a local number inside the try block below. Online it posts
+    // via collect_customer_payment; offline queueOfflineOrder turns the same
+    // oldest-first allocation into queued payment.create ops.
+    const posCreditToApply = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
+    const invoiceCashDue = grandTotal - posCreditToApply;
+    const tenderedFull = paymentTerm === 'full' ? Math.max(parseFloat(amountPaid) || 0, invoiceCashDue) : 0;
+    let dueCollect =
+      paymentTerm === 'full' &&
+      selectedCustomer &&
+      selectedCustomer !== walkInCustomerId &&
+      previousDueTotal > 0
+        ? Math.round(Math.min(dueCollectAmount, previousDueTotal, Math.max(0, tenderedFull - invoiceCashDue)) * 100) / 100
+        : 0;
+
     setProcessing(true);
 
     try {
@@ -936,7 +1001,7 @@ export default function POSPage() {
       // same payload the online path would have written; the server applies
       // it atomically via sync_apply when connectivity returns.
       if (!networkMonitor.getState().online) {
-        const queued = await queueOfflineOrder();
+        const queued = await queueOfflineOrder(dueCollect);
         if (queued) {
           setProcessing(false);
           armOrderCompleteHide();
@@ -1132,6 +1197,45 @@ export default function POSPage() {
         if (payError) console.error('Payment record error:', payError.message);
       }
 
+      // Previous-due collection: sweep the tendered excess into the oldest
+      // open invoices via the shared RPC (each payment row is linked back to
+      // this sale so cancel_invoice can reverse the collection).
+      if (dueCollect > 0) {
+        let remaining = dueCollect;
+        const allocations: { invoice_id: string; amount: number; bad_debt_amount: number }[] = [];
+        for (const row of customerOutstanding) {
+          if (remaining <= 0) break;
+          const amt = Math.round(Math.min(Number(row.balance_due) || 0, remaining) * 100) / 100;
+          if (amt <= 0) continue;
+          allocations.push({ invoice_id: row.invoice_id, amount: amt, bad_debt_amount: 0 });
+          remaining -= amt;
+        }
+        if (allocations.length > 0) {
+          const { error: dueErr } = await supabase.rpc('collect_customer_payment', {
+            p_customer_id: customerId,
+            p_payment_date: invoiceDate,
+            p_payment_method: paymentMethod,
+            p_reference_number: null,
+            p_notes: `Collected with POS sale ${invoiceNumber}`,
+            p_allocations: allocations,
+            p_overpayment: 0,
+            p_route_overpayment: false,
+            p_collected_with_invoice_id: invoice.id,
+          });
+          if (dueErr) {
+            // The sale itself already succeeded — keep it, but warn loudly so
+            // the due can be re-collected from the Collect Payment screen.
+            console.error('Due collection error:', dueErr.message);
+            toast({
+              title: 'Due collection failed',
+              description: `Sale completed, but ${formatCurrency(dueCollect)} previous due was not recorded: ${dueErr.message}`,
+              variant: 'destructive',
+            });
+            dueCollect = 0;
+          }
+        }
+      }
+
       // Receipt snapshot — taken while the cart is still populated.
       setLastReceipt({
         number: invoiceNumber,
@@ -1158,6 +1262,8 @@ export default function POSPage() {
         amountPaid: paymentTerm === 'full' ? grandTotal : (paymentTerm === 'partial' ? amountPaid : 0),
         cashPaid: cashToPay,
         storeCredit: creditToApply,
+        dueCollected: dueCollect,
+        previousDue: previousDueTotal,
         paymentMethod,
         reference,
       });
@@ -1169,6 +1275,8 @@ export default function POSPage() {
       setSelectedCustomer(walkInCustomerId);
       setStoreCreditBalance(0);
       setApplyStoreCredit(false);
+      setDueCollectInput('');
+      setCustomerOutstanding([]);
       setPaymentTerm('full');
       setPartialAmount('');
       setShowCheckout(false);
@@ -1198,7 +1306,7 @@ export default function POSPage() {
   // sync_invoice_create handler replays this atomically (invoice → items →
   // cost history → store credit → payment, with FIFO/journal triggers firing
   // exactly as in the online path).
-  async function queueOfflineOrder(): Promise<boolean> {
+  async function queueOfflineOrder(dueCollect: number = 0): Promise<boolean> {
     const customerId = selectedCustomer;
     const creditToApply = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
 
@@ -1262,9 +1370,14 @@ export default function POSPage() {
       };
     });
 
+    // Client-generated invoice id: the server honors it (sync_invoice_create),
+    // so queued due-collection payments can link back to THIS sale before it
+    // has a real POS- number.
+    const invoiceId = crypto.randomUUID();
+
     try {
       await enqueueOp('invoice.create', {
-        id: crypto.randomUUID(),
+        id: invoiceId,
         idempotency_key: chargeIntentIdRef.current,
         temp_number: tempNumber,
         is_pos: true,
@@ -1289,6 +1402,48 @@ export default function POSPage() {
       toast({ title: 'Could not queue order', description: err?.message || 'Offline storage error', variant: 'destructive' });
       setProcessing(false);
       return false;
+    }
+
+    // Previous-due collection: one payment.create op per oldest-first
+    // allocation — the same shape CollectPaymentModal queues offline. Each op
+    // links back to this sale via collected_with_invoice_id; sync applies
+    // invoice.create first (strict queue order), so the link resolves at
+    // replay and a later cancel_invoice reverses the collection automatically.
+    // sync_payment_create re-validates the LIVE balance at replay, so a due
+    // settled by another device in the meantime parks as a Sync Center
+    // conflict instead of a silent overpay.
+    let queuedDue = 0;
+    if (dueCollect > 0) {
+      let remaining = dueCollect;
+      for (const row of customerOutstanding) {
+        if (remaining <= 0) break;
+        const amt = Math.round(Math.min(Number(row.balance_due) || 0, remaining) * 100) / 100;
+        if (amt <= 0) continue;
+        try {
+          await enqueueOp('payment.create', {
+            idempotency_key: crypto.randomUUID(),
+            invoice_id: row.invoice_id,
+            customer_id: customerId,
+            amount: amt,
+            bad_debt_amount: 0,
+            payment_method: paymentMethod,
+            payment_date: invoiceDate,
+            reference_number: null,
+            notes: `Collected with POS sale ${tempNumber}`,
+            payment_for: 'outstanding_invoice_pay',
+            collected_with_invoice_id: invoiceId,
+          }, `Due collection ${formatCurrency(amt)} — ${row.invoice_number}`);
+        } catch (err: any) {
+          // The sale itself is already queued — keep it; dues queued so far
+          // stay queued. The rest can be collected later from the Collect
+          // Payment screen.
+          toast({ title: 'Due collection not fully queued', description: err?.message || 'Offline storage error', variant: 'destructive' });
+          break;
+        }
+        remaining -= amt;
+        queuedDue += amt;
+      }
+      queuedDue = Math.round(queuedDue * 100) / 100;
     }
 
     // Optimistic local effects so this session stays consistent: decrement
@@ -1355,6 +1510,8 @@ export default function POSPage() {
         amountPaid,
       cashPaid: cashToPay,
       storeCredit: creditToApply,
+      dueCollected: queuedDue,
+      previousDue: queuedDue > 0 ? previousDueTotal : 0,
       paymentMethod,
       reference,
     });
@@ -1367,6 +1524,8 @@ export default function POSPage() {
     setSelectedCustomer(walkInCustomerId);
     setStoreCreditBalance(0);
     setApplyStoreCredit(false);
+    setDueCollectInput('');
+    setCustomerOutstanding([]);
     setPaymentTerm('full');
     setPartialAmount('');
     setShowCheckout(false);
@@ -1380,7 +1539,7 @@ export default function POSPage() {
     setLastInvoiceNumber(tempNumber);
     toast({
       title: 'Order queued offline',
-      description: `${tempNumber} (${formatCurrency(grandTotal)}) saved on this device — it will sync automatically when you're back online.`,
+      description: `${tempNumber} (${formatCurrency(grandTotal)}) saved on this device — it will sync automatically when you're back online.${queuedDue > 0 ? ` Includes ${formatCurrency(queuedDue)} previous-due collection.` : ''}`,
     });
     loadProducts(search);
     return true;
@@ -2216,6 +2375,10 @@ export default function POSPage() {
           setPaymentTerm={setPaymentTerm}
           partialAmount={partialAmount}
           setPartialAmount={setPartialAmount}
+          previousDueTotal={previousDueTotal}
+          customerOutstanding={customerOutstanding}
+          dueCollectInput={dueCollectInput}
+          setDueCollectInput={setDueCollectInput}
         />
       )}
 
@@ -2227,6 +2390,7 @@ export default function POSPage() {
           docNumber={lastReceipt.number}
           docDate={lastReceipt.date}
           status={lastReceipt.status}
+          isOfflinePending={lastReceipt.offline}
           company={{
             name: companySettings?.name || 'Your Company',
             address: companySettings?.address,
@@ -2253,6 +2417,16 @@ export default function POSPage() {
           totalAmount={lastReceipt.total}
           amountPaid={lastReceipt.cashPaid}
           balanceDue={Math.max(0, lastReceipt.total - lastReceipt.cashPaid)}
+          dueCollected={lastReceipt.dueCollected || 0}
+          customerOutstanding={lastReceipt.dueCollected > 0 ? {
+            total: lastReceipt.previousDue,
+            invoiceDues: lastReceipt.previousDue,
+            previousInvoiceDues: lastReceipt.previousDue,
+            thisInvoiceDues: 0,
+            manualDues: 0,
+            storeCredit: 0,
+            advanceBalance: 0,
+          } : undefined}
           reference={lastReceipt.reference || undefined}
           payments={lastReceipt.cashPaid > 0 ? [{
             payment_number: '',
@@ -2682,6 +2856,7 @@ function CheckoutModal({
   amountPaid, setAmountPaid, processing, onConfirm, onClose,
   storeCreditBalance, applyStoreCredit, setApplyStoreCredit, selectedCustomer, customers, cart,
   paymentTerm, setPaymentTerm, partialAmount, setPartialAmount,
+  previousDueTotal = 0, customerOutstanding = [], dueCollectInput = '', setDueCollectInput = () => {},
 }: {
   total: number; taxAmount: number; vatLabel: string; subtotal: number; discount: number; discountAmount: number; extraDiscount: number; shipping: number; itemDiscountTotal: number; cartDiscountAmount: number;
   paymentMethod: string; setPaymentMethod: (m: string) => void;
@@ -2692,6 +2867,9 @@ function CheckoutModal({
   selectedCustomer: any; customers: any[]; cart: any[];
   paymentTerm: string; setPaymentTerm: (v: any) => void;
   partialAmount: string; setPartialAmount: (v: string) => void;
+  previousDueTotal?: number;
+  customerOutstanding?: { invoice_id: string; invoice_number: string; balance_due: number }[];
+  dueCollectInput?: string; setDueCollectInput?: (v: string) => void;
 }) {
   const [step, setStep] = useState<'method' | 'confirm'>('method');
   const paid = parseFloat(amountPaid) || 0;
@@ -2701,6 +2879,19 @@ function CheckoutModal({
   const customerName = selectedCustomer ? (customers.find(c => c.id === selectedCustomer)?.name || 'Walk-in Customer') : 'Walk-in Customer';
   const partialNum = parseFloat(partialAmount) || 0;
   const isWalkIn = !selectedCustomer || selectedCustomer === '00000000-0000-0000-0000-000000000001';
+  // Previous-due collection: full-payment, registered customer. Works offline
+  // too — the due list comes from the replica and the collection is queued.
+  const dueCollectNum = Math.max(0, Math.min(parseFloat(dueCollectInput) || 0, previousDueTotal));
+  const showDueCollect = paymentTerm === 'full' && !isWalkIn && previousDueTotal > 0;
+  const dueAllocPreview: { invoice_id: string; invoice_number: string; amount: number }[] = [];
+  let dueRemaining = dueCollectNum;
+  for (const row of customerOutstanding) {
+    if (dueRemaining <= 0) break;
+    const amt = Math.min(Number(row.balance_due) || 0, dueRemaining);
+    if (amt > 0) { dueAllocPreview.push({ invoice_id: row.invoice_id, invoice_number: row.invoice_number, amount: amt }); dueRemaining -= amt; }
+  }
+  // Tendered change after reserving the due collection.
+  const effectiveChange = change - (showDueCollect ? dueCollectNum : 0);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[110] p-4">
@@ -2830,6 +3021,39 @@ function CheckoutModal({
                 </div>
               )}
 
+              {/* Previous-due collection — full payment, registered customer, online */}
+              {showDueCollect && (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-amber-800">Previous Due: {formatCurrency(previousDueTotal)}</p>
+                    <p className="text-[11px] text-amber-700">{customerOutstanding.length} invoice(s)</p>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    max={previousDueTotal}
+                    step="0.01"
+                    value={dueCollectInput}
+                    onChange={e => setDueCollectInput(e.target.value)}
+                    placeholder={`Collect previous due now (max ${formatCurrency(previousDueTotal)})`}
+                    className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                  />
+                  {dueCollectNum > 0 && (
+                    <div className="space-y-0.5">
+                      {dueAllocPreview.map(a => (
+                        <div key={a.invoice_id} className="flex justify-between text-[11px] text-amber-700">
+                          <span>{a.invoice_number}</span>
+                          <span>{formatCurrency(a.amount)}</span>
+                        </div>
+                      ))}
+                      <p className="text-[11px] text-amber-800 font-medium pt-0.5">
+                        Remaining previous due after collection: {formatCurrency(previousDueTotal - dueCollectNum)}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Amount paid input — only for full and partial terms */}
               {paymentTerm !== 'credit' && (
                 <div>
@@ -2844,8 +3068,8 @@ function CheckoutModal({
                     className="w-full border border-border rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   />
                   {paid > 0 && (
-                    <p className={`text-xs mt-1 ${change >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                      {change >= 0 ? `Change: ${formatCurrency(change)}` : `Remaining: ${formatCurrency(-change)}`}
+                    <p className={`text-xs mt-1 ${effectiveChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      {effectiveChange >= 0 ? `Change: ${formatCurrency(effectiveChange)}` : `Remaining: ${formatCurrency(-effectiveChange)}`}
                     </p>
                   )}
                 </div>
@@ -2873,7 +3097,8 @@ function CheckoutModal({
                 {paymentTerm === 'partial' && <div className="flex justify-between"><span className="text-muted-foreground">Amount Paid</span><span className="font-medium">{formatCurrency(partialNum)}</span></div>}
                 {paymentTerm === 'partial' && <div className="flex justify-between text-amber-600"><span className="text-muted-foreground">Balance Due</span><span className="font-medium">{formatCurrency(total - partialNum)}</span></div>}
                 {paymentTerm === 'credit' && <div className="flex justify-between text-blue-600"><span className="text-muted-foreground">Balance Due</span><span className="font-medium">{formatCurrency(total)}</span></div>}
-                {paymentTerm === 'full' && paid > 0 && change >= 0 && <div className="flex justify-between"><span className="text-muted-foreground">Change</span><span className="font-medium text-green-600">{formatCurrency(change)}</span></div>}
+                {showDueCollect && dueCollectNum > 0 && <div className="flex justify-between text-amber-700"><span>Previous Due Collected</span><span className="font-medium">{formatCurrency(dueCollectNum)}</span></div>}
+                {paymentTerm === 'full' && paid > 0 && effectiveChange >= 0 && <div className="flex justify-between"><span className="text-muted-foreground">Change</span><span className="font-medium text-green-600">{formatCurrency(effectiveChange)}</span></div>}
                 {applyStoreCredit && storeCreditBalance > 0 && paymentTerm !== 'credit' && <div className="flex justify-between text-amber-700"><span>Store Credit Applied</span><span className="font-medium">{formatCurrency(Math.min(storeCreditBalance, total))}</span></div>}
               </div>
 
