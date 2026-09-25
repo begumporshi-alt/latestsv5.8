@@ -174,6 +174,33 @@ export default function InvoicePreviewModal({
   const [hideItemDiscount, setHideItemDiscount] = useState(propHideItemDiscount);
   const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
   const [localCustomerOutstanding, setLocalCustomerOutstanding] = useState<CustomerOutstanding | null>(null);
+  const [fetchedDueCollected, setFetchedDueCollected] = useState(0);
+
+  // Standalone previews (e.g. from /sales) don't receive the POS-computed
+  // dueCollected prop, so reconstruct it from the payments linked back to this
+  // invoice via collected_with_invoice_id (non-reversed only).
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchDueCollected() {
+      if (!invoiceId) {
+        setFetchedDueCollected(0);
+        return;
+      }
+      const { data: linkedPayments } = await supabase
+        .from('payments')
+        .select('amount')
+        .eq('collected_with_invoice_id', invoiceId)
+        .eq('is_reversed', false);
+      if (cancelled) return;
+      setFetchedDueCollected(
+        (linkedPayments || []).reduce((s: number, p: any) => s + Number(p.amount || 0), 0),
+      );
+    }
+    fetchDueCollected();
+    return () => {
+      cancelled = true;
+    };
+  }, [invoiceId]);
 
   useEffect(() => {
     async function fetchCustomerOutstanding() {
@@ -261,8 +288,19 @@ export default function InvoicePreviewModal({
     : (statusConfig[status] || statusConfig.draft);
 
   const balance = Number(balanceDue ?? (Number(totalAmount) - Number(amountPaid)));
+  // POS passes dueCollected explicitly; standalone previews reconstruct it from
+  // payments linked via collected_with_invoice_id.
+  const effectiveDueCollected = Math.max(0, dueCollected || fetchedDueCollected);
+  // Live outstanding dues already have this sale's due-collection applied (the
+  // linked payments reduced the other invoices' balance_due), so add the
+  // collected amount back to restore the pre-sale previous due.
   const previousDue = customerOutstanding
-    ? Math.max(0, customerOutstanding.previousInvoiceDues + customerOutstanding.manualDues)
+    ? Math.max(
+        0,
+        customerOutstanding.previousInvoiceDues +
+          customerOutstanding.manualDues +
+          (propCustomerOutstanding ? 0 : effectiveDueCollected),
+      )
     : undefined;
 
   return (
@@ -480,7 +518,7 @@ export default function InvoicePreviewModal({
               amountPaid={amountPaid}
               balanceDue={balance}
               previousDue={previousDue}
-              dueCollected={dueCollected}
+              dueCollected={effectiveDueCollected}
               isOfflinePending={isOfflinePending}
               notes={notes}
               reference={reference}
