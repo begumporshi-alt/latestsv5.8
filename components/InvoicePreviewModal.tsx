@@ -108,6 +108,8 @@ export interface InvoicePreviewModalProps {
   customerOutstanding?: CustomerOutstanding | null;
   /** Amount of previous-due collected alongside this invoice (POS due collection). */
   dueCollected?: number;
+  /** Advance-wallet money applied to this invoice at POS checkout. */
+  advanceApplied?: number;
   // Optional features for invoice previews
   isOfflinePending?: boolean;
   offlineTempNumber?: string;
@@ -163,6 +165,7 @@ export default function InvoicePreviewModal({
   currentTab = 'details',
   customerOutstanding: propCustomerOutstanding,
   dueCollected = 0,
+  advanceApplied = 0,
   isOfflinePending = false,
   offlineTempNumber,
   showProductLinks = false,
@@ -519,6 +522,7 @@ export default function InvoicePreviewModal({
               balanceDue={balance}
               previousDue={previousDue}
               dueCollected={effectiveDueCollected}
+              advanceApplied={advanceApplied}
               isOfflinePending={isOfflinePending}
               notes={notes}
               reference={reference}

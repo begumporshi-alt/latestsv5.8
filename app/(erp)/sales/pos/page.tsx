@@ -37,6 +37,10 @@ import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
 import { QuickSellModal } from '@/components/quick-sell-modal';
 import { tokenizeSearch, applyIlikeTokens, matchesTokens } from '@/lib/search';
+import {
+  buildPosSettlement, round2, type PosCollectMode, type PosSettlement,
+  type PosOutstandingRow, type PosAdvanceRow,
+} from '@/lib/pos-settlement';
 
 // Snapshot of a completed charge, taken before the cart resets, so the
 // receipt can be printed afterwards — online with the real number, offline
@@ -68,6 +72,10 @@ interface PosReceipt {
   storeCredit: number;
   dueCollected: number;
   previousDue: number;
+  /** advance-wallet money applied to THIS invoice (advance-first mode) */
+  advanceApplied: number;
+  /** everything credited to this invoice: cash + store credit + advance */
+  paidTotal: number;
   paymentMethod: string;
   reference: string;
 }
@@ -130,6 +138,10 @@ const POS_SEARCH_COLUMNS = ['name', 'sku', 'barcode'];
 
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
 
+// Payment application ("Collect From") — the mode types, the settlement shape
+// and the one pure builder the checkout preview and the charge path share —
+// lives in lib/pos-settlement.ts so it can be unit-tested.
+
 function ProductNameTooltip({ name, sku, className }: { name: string; sku?: string; className?: string }) {
   return (
     <TooltipProvider delayDuration={200}>
@@ -170,6 +182,10 @@ export default function POSPage() {
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [paymentTerm, setPaymentTerm] = useState<PaymentTerm>('full');
   const [partialAmount, setPartialAmount] = useState('');
+  // Cash handed over at the till. Declared with its siblings because the
+  // payment-application settlement (built below, next to grandTotal) reads it
+  // on every render.
+  const [amountPaid, setAmountPaid] = useState('');
   const [discount, setDiscount] = useState(0);
   const [extraDiscount, setExtraDiscount] = useState(0);
   const [shipping, setShipping] = useState(0);
@@ -197,9 +213,14 @@ export default function POSPage() {
   const [applyStoreCredit, setApplyStoreCredit] = useState(false);
   // Previous-due collection alongside the current sale (Option A)
   const [dueCollectInput, setDueCollectInput] = useState('');
-  const [customerOutstanding, setCustomerOutstanding] = useState<{ invoice_id: string; invoice_number: string; balance_due: number }[]>([]);
+  const [customerOutstanding, setCustomerOutstanding] = useState<PosOutstandingRow[]>([]);
   const previousDueTotal = customerOutstanding.reduce((s, r) => s + (Number(r.balance_due) || 0), 0);
   const dueCollectAmount = Math.max(0, Math.min(parseFloat(dueCollectInput) || 0, previousDueTotal));
+  // Payment application chooser + the customer's advance wallets (money we
+  // already hold for him) — the "advance balance first" mode's source.
+  const [collectMode, setCollectMode] = useState<PosCollectMode>('cash');
+  const [customerAdvances, setCustomerAdvances] = useState<PosAdvanceRow[]>([]);
+  const advanceBalance = customerAdvances.reduce((s, a) => s + (Number(a.balance) || 0), 0);
   const [invoiceDate, setInvoiceDate] = useState(new Date().toISOString().split('T')[0]);
   const [reference, setReference] = useState('');
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -408,8 +429,12 @@ export default function POSPage() {
   // Failures degrade to "no collection offered"; the input resets on change.
   useEffect(() => {
     setDueCollectInput('');
+    // A different customer means a different account: never carry a previously
+    // chosen application mode into a new customer's checkout.
+    setCollectMode('cash');
     if (!selectedCustomer || selectedCustomer === walkInCustomerId) {
       setCustomerOutstanding([]);
+      setCustomerAdvances([]);
       return;
     }
     // Both the network read and the replica replay project these columns.
@@ -448,6 +473,48 @@ export default function POSPage() {
           .filter((i) => i.balance_due > 0)
           .sort((a, b) => a.invoice_date.localeCompare(b.invoice_date) || a.created_at.localeCompare(b.created_at))
           .map(({ invoice_id, invoice_number, balance_due }) => ({ invoice_id, invoice_number, balance_due }))
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCustomer, walkInCustomerId]);
+
+  // Load the customer's advance wallets (oldest first) — the money the shop
+  // already holds for him, which the "advance balance first" mode spends.
+  // Offline this is served from the replica plus the queued-op overlay (an
+  // `advance.apply` queued moments ago has already shrunk the balance), so the
+  // checkout can never offer advance money that is no longer there. The same
+  // fallback rule as the dues read: when the wrapped read fell back to a stale
+  // cache, prefer the replica's fresher copy.
+  useEffect(() => {
+    setCustomerAdvances([]);
+    if (!selectedCustomer || selectedCustomer === walkInCustomerId) return;
+    const columns = 'id, advance_number, balance, status, created_at';
+    let cancelled = false;
+    void (async () => {
+      const res: any = await supabase
+        .from('customer_advances')
+        .select(columns)
+        .eq('customer_id', selectedCustomer);
+      let rows: any[] = Array.isArray(res?.data) ? res.data : [];
+      if (res?.offline) {
+        const local = await runReplicaQuery('customer_advances', [
+          ['select', [columns]],
+          ['eq', ['customer_id', selectedCustomer]],
+        ]);
+        if (local && Array.isArray(local.data)) rows = local.data;
+      }
+      if (cancelled) return;
+      setCustomerAdvances(
+        rows
+          .filter((a: any) => a.status === 'active' && Number(a.balance) > 0)
+          .sort((a: any, b: any) => String(a.created_at || '').localeCompare(String(b.created_at || '')))
+          .map((a: any) => ({
+            advance_id: a.id,
+            advance_number: a.advance_number,
+            balance: round2(Number(a.balance) || 0),
+          }))
       );
     })();
     return () => {
@@ -896,6 +963,31 @@ export default function POSPage() {
   // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
   const grandTotal = posVat.total + (shipping || 0);
 
+  // The payment-application split for the charge about to be made. Pure and
+  // cheap, so the checkout preview and the charge path share one computation —
+  // the two can never disagree.
+  const isRegisteredCustomer = !!selectedCustomer && selectedCustomer !== walkInCustomerId;
+  const settlement = useMemo(
+    () => buildPosSettlement({
+      mode: collectMode,
+      registered: isRegisteredCustomer,
+      grandTotal,
+      storeCredit: applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0,
+      tendered: parseFloat(amountPaid) || 0,
+      partialAmount: parseFloat(partialAmount) || 0,
+      paymentTerm,
+      dueCollectInput: dueCollectAmount,
+      outstanding: customerOutstanding,
+      advances: customerAdvances,
+      advanceBalance,
+    }),
+    [
+      collectMode, isRegisteredCustomer, grandTotal, applyStoreCredit, storeCreditBalance,
+      amountPaid, partialAmount, paymentTerm, dueCollectAmount, customerOutstanding,
+      customerAdvances, advanceBalance,
+    ],
+  );
+
   // Auto-hide the Order Complete panel after 30s — long enough to click
   // Print Receipt, short enough that the next sale isn't blocked for long.
   // Re-armed per order so a stale timer can never hide a newer panel.
@@ -979,37 +1071,60 @@ export default function POSPage() {
       }
     }
 
-    // Credit-limit gate (warn-and-confirm): the receivable this sale creates
-    // is the part the customer still owes — total minus cash now minus store
-    // credit. A fully-paid sale creates no receivable and never warns. The
-    // customer is fetched fresh at gate time; a failed lookup fails open.
+    // Payment-application validation. The two account modes need a customer
+    // account to move money on, and each is meaningless without its money
+    // source — block early instead of writing a sale the cashier did not mean.
+    if (collectMode === 'dues_first' && isRegisteredCustomer && settlement.tendered <= 0) {
+      toast({
+        title: 'Enter the cash received',
+        description: 'Previous-dues-first clears the oldest unpaid invoices from the cash handed over.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    if (collectMode === 'advance_first' && isRegisteredCustomer
+      && settlement.advanceApplied <= 0 && settlement.tendered <= 0) {
+      toast({
+        title: 'Nothing to collect',
+        description: 'This customer has no advance balance left — enter the cash received or switch to Cash.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    // Partial terms still need a sane amount (the mode-independent guard that
+    // used to live next to the term switch inside the try block).
+    if (collectMode === 'cash' && paymentTerm === 'partial') {
+      const partialNum = parseFloat(partialAmount) || 0;
+      if (partialNum <= 0) {
+        toast({ title: 'Invalid amount', description: 'Please enter a partial payment amount', variant: 'destructive' });
+        return;
+      }
+      if (partialNum >= grandTotal) {
+        toast({ title: 'Invalid amount', description: 'Partial payment must be less than total. Use Full Payment.', variant: 'destructive' });
+        return;
+      }
+    }
+
+    // Credit-limit gate (warn-and-confirm): the receivable this sale creates is
+    // the part of THIS invoice the customer still owes after every source of
+    // money applied to it — cash, store credit and advance. Money that cleared
+    // OLDER invoices does not reduce it. The customer is fetched fresh at gate
+    // time; a failed lookup fails open.
     if (!creditConfirmedRef.current) {
-      const cashNow = paymentTerm === 'full' ? grandTotal : paymentTerm === 'partial' ? (parseFloat(partialAmount) || 0) : 0;
-      const creditApplied = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
-      const credit = await checkCreditLimit(selectedCustomer, newReceivableFor(grandTotal, cashNow, creditApplied));
+      const credit = await checkCreditLimit(
+        selectedCustomer,
+        newReceivableFor(
+          grandTotal,
+          settlement.cashToBill + settlement.advanceApplied,
+          settlement.storeCredit
+        )
+      );
       if (credit) {
         setPendingCreditCheck(credit);
         setCreditConfirmOpen(true);
         return;
       }
     }
-
-    // Previous-due collection (Option A): a full-payment sale to a registered
-    // customer can sweep the tendered excess into the customer's oldest open
-    // invoices. Computed here because `amountPaid` (the tendered input) is
-    // shadowed by a local number inside the try block below. Online it posts
-    // via collect_customer_payment; offline queueOfflineOrder turns the same
-    // oldest-first allocation into queued payment.create ops.
-    const posCreditToApply = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
-    const invoiceCashDue = grandTotal - posCreditToApply;
-    const tenderedFull = paymentTerm === 'full' ? Math.max(parseFloat(amountPaid) || 0, invoiceCashDue) : 0;
-    let dueCollect =
-      paymentTerm === 'full' &&
-      selectedCustomer &&
-      selectedCustomer !== walkInCustomerId &&
-      previousDueTotal > 0
-        ? Math.round(Math.min(dueCollectAmount, previousDueTotal, Math.max(0, tenderedFull - invoiceCashDue)) * 100) / 100
-        : 0;
 
     setProcessing(true);
 
@@ -1019,7 +1134,7 @@ export default function POSPage() {
       // same payload the online path would have written; the server applies
       // it atomically via sync_apply when connectivity returns.
       if (!networkMonitor.getState().online) {
-        const queued = await queueOfflineOrder(dueCollect);
+        const queued = await queueOfflineOrder(settlement);
         if (queued) {
           setProcessing(false);
           armOrderCompleteHide();
@@ -1032,34 +1147,19 @@ export default function POSPage() {
       setLastInvoiceNumber(invoiceNumber);
 
       const customerId = selectedCustomer;
-      const creditToApply = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
+      const creditToApply = settlement.storeCredit;
 
-      // Determine amount paid based on payment term
-      let amountPaid = 0;
-      let invoiceStatus = 'draft';
-      if (paymentTerm === 'full') {
-        amountPaid = grandTotal;
-        invoiceStatus = creditToApply > 0 && (grandTotal - creditToApply) > 0 ? 'partially_paid' : 'paid';
-      } else if (paymentTerm === 'partial') {
-        amountPaid = parseFloat(partialAmount) || 0;
-        if (amountPaid <= 0) {
-          toast({ title: 'Invalid amount', description: 'Please enter a partial payment amount', variant: 'destructive' });
-          setProcessing(false);
-          return;
-        }
-        if (amountPaid >= grandTotal) {
-          toast({ title: 'Invalid amount', description: 'Partial payment must be less than total. Use Full Payment.', variant: 'destructive' });
-          setProcessing(false);
-          return;
-        }
-        invoiceStatus = 'partially_paid';
-      } else {
-        // credit — no payment now
-        amountPaid = 0;
-        invoiceStatus = 'sent';
-      }
-
-      const cashToPay = paymentTerm === 'full' ? (grandTotal - creditToApply) : (paymentTerm === 'partial' ? amountPaid : 0);
+      // The payment-application split decides everything this charge writes:
+      // the invoice's paid amount/status, the cash row, the dues sweep and the
+      // advance application. See buildPosSettlement.
+      const amountPaid = settlement.invoiceAmountPaid;
+      const invoiceStatus = settlement.invoiceStatus;
+      const cashToPay = settlement.cashToBill;
+      // What actually landed. A failed dues sweep or a wallet that came up
+      // short shrinks these, and the receipt must show money that really moved
+      // rather than what we intended to move.
+      let duesClearedActual = settlement.duesCleared;
+      let advanceAppliedActual = 0;
 
       const { data: invoice, error: invError } = await supabase
         .from('invoices')
@@ -1074,7 +1174,7 @@ export default function POSPage() {
           tax_amount: posVat.taxAmount,
           shipping_cost: shipping || 0,
           total_amount: grandTotal,
-          amount_paid: paymentTerm === 'full' ? grandTotal : (paymentTerm === 'partial' ? amountPaid : 0),
+          amount_paid: amountPaid,
           status: invoiceStatus,
           is_pos: true,
           reference: reference || null,
@@ -1153,8 +1253,10 @@ export default function POSPage() {
       // Stock deduction is handled by the DB trigger on invoice_items INSERT
 
       // Record payment: if store credit is applied, record the cash/card portion separately
-      if (paymentTerm === 'credit') {
-        // On credit — no payment to record
+      if (settlement.mode === 'cash' && paymentTerm === 'credit') {
+        // On credit — no payment to record. The account modes always record the
+        // money they collected, so a stale "On Credit" term must not skip the
+        // store-credit redemption this bill is being paid with.
       } else if (creditToApply > 0) {
         // Redeem store credit — same expiry filter as the displayed balance,
         // so what can be spent is exactly what was offered
@@ -1215,41 +1317,70 @@ export default function POSPage() {
         if (payError) console.error('Payment record error:', payError.message);
       }
 
-      // Previous-due collection: sweep the tendered excess into the oldest
-      // open invoices via the shared RPC (each payment row is linked back to
-      // this sale so cancel_invoice can reverse the collection).
-      if (dueCollect > 0) {
-        let remaining = dueCollect;
-        const allocations: { invoice_id: string; amount: number; bad_debt_amount: number }[] = [];
-        for (const row of customerOutstanding) {
-          if (remaining <= 0) break;
-          const amt = Math.round(Math.min(Number(row.balance_due) || 0, remaining) * 100) / 100;
-          if (amt <= 0) continue;
-          allocations.push({ invoice_id: row.invoice_id, amount: amt, bad_debt_amount: 0 });
-          remaining -= amt;
-        }
-        if (allocations.length > 0) {
-          const { error: dueErr } = await supabase.rpc('collect_customer_payment', {
-            p_customer_id: customerId,
-            p_payment_date: invoiceDate,
-            p_payment_method: paymentMethod,
-            p_reference_number: null,
-            p_notes: `Collected with POS sale ${invoiceNumber}`,
-            p_allocations: allocations,
-            p_overpayment: 0,
-            p_route_overpayment: false,
-            p_collected_with_invoice_id: invoice.id,
+      // Previous-due collection: the settlement's oldest-first split of the
+      // cash goes through the shared RPC (each payment row is linked back to
+      // this sale so cancel_invoice reverses the collection).
+      if (settlement.duesAlloc.length > 0) {
+        const allocations = settlement.duesAlloc.map(a => ({
+          invoice_id: a.invoice_id,
+          amount: a.amount,
+          bad_debt_amount: 0,
+        }));
+        const { error: dueErr } = await supabase.rpc('collect_customer_payment', {
+          p_customer_id: customerId,
+          p_payment_date: invoiceDate,
+          p_payment_method: paymentMethod,
+          p_reference_number: null,
+          p_notes: settlement.mode === 'dues_first'
+            ? `Old dues cleared first with POS sale ${invoiceNumber}`
+            : `Collected with POS sale ${invoiceNumber}`,
+          p_allocations: allocations,
+          p_overpayment: 0,
+          p_route_overpayment: false,
+          p_collected_with_invoice_id: invoice.id,
+        });
+        if (dueErr) {
+          // The sale itself already succeeded — keep it, but warn loudly so
+          // the due can be re-collected from the Collect Payment screen.
+          console.error('Due collection error:', dueErr.message);
+          toast({
+            title: 'Due collection failed',
+            description: `Sale completed, but ${formatCurrency(settlement.duesCleared)} previous due was not recorded: ${dueErr.message}`,
+            variant: 'destructive',
           });
-          if (dueErr) {
-            // The sale itself already succeeded — keep it, but warn loudly so
-            // the due can be re-collected from the Collect Payment screen.
-            console.error('Due collection error:', dueErr.message);
+          duesClearedActual = 0;
+        }
+      }
+
+      // Advance-balance-first: the customer's wallets settle this invoice
+      // through collect_customer_advance (application rows, wallet balances,
+      // Dr 2300 / Cr 1100, invoice amount_paid + status). The invoice was
+      // written WITHOUT the advance, so a wallet that comes up short leaves a
+      // correctly-unpaid invoice instead of phantom money. The RPC is capped at
+      // the live balance and reports the shortfall rather than failing.
+      if (settlement.advanceApplied > 0) {
+        const { data: advRes, error: advErr } = await supabase.rpc('collect_customer_advance', {
+          p_customer_id: customerId,
+          p_invoice_id: invoice.id,
+          p_amount: settlement.advanceApplied,
+          p_advance_ids: settlement.advanceAlloc.map(a => a.advance_id),
+          p_payment_date: invoiceDate,
+          p_notes: `Advance applied with POS sale ${invoiceNumber}`,
+        });
+        if (advErr) {
+          console.error('Advance application error:', advErr.message);
+          toast({
+            title: 'Advance not applied',
+            description: `Sale completed, but ${formatCurrency(settlement.advanceApplied)} of advance balance was not applied: ${advErr.message}. The invoice keeps its balance — apply it from the Advances screen.`,
+            variant: 'destructive',
+          });
+        } else {
+          advanceAppliedActual = round2(Number(advRes?.applied_amount) || 0);
+          if (advanceAppliedActual + 0.001 < settlement.advanceApplied) {
             toast({
-              title: 'Due collection failed',
-              description: `Sale completed, but ${formatCurrency(dueCollect)} previous due was not recorded: ${dueErr.message}`,
-              variant: 'destructive',
+              title: 'Advance balance changed',
+              description: `Only ${formatCurrency(advanceAppliedActual)} of the ${formatCurrency(settlement.advanceApplied)} advance was still available. The rest stays due on this invoice.`,
             });
-            dueCollect = 0;
           }
         }
       }
@@ -1259,7 +1390,9 @@ export default function POSPage() {
         number: invoiceNumber,
         offline: false,
         date: invoiceDate,
-        status: invoiceStatus,
+        status: settlement.mode === 'advance_first' && advanceAppliedActual > 0
+          ? settlement.finalStatus
+          : invoiceStatus,
         customer: customers.find(c => c.id === customerId) || null,
         items: cart.map(item => ({
           product_name: item.name,
@@ -1277,11 +1410,13 @@ export default function POSPage() {
         taxAmount: posVat.taxAmount,
         shipping,
         total: grandTotal,
-        amountPaid: paymentTerm === 'full' ? grandTotal : (paymentTerm === 'partial' ? amountPaid : 0),
+        amountPaid,
         cashPaid: cashToPay,
         storeCredit: creditToApply,
-        dueCollected: dueCollect,
-        previousDue: previousDueTotal,
+        dueCollected: duesClearedActual,
+        previousDue: settlement.previousDueBefore,
+        advanceApplied: advanceAppliedActual,
+        paidTotal: round2(settlement.invoiceAmountPaid + advanceAppliedActual),
         paymentMethod,
         reference,
       });
@@ -1295,6 +1430,8 @@ export default function POSPage() {
       setApplyStoreCredit(false);
       setDueCollectInput('');
       setCustomerOutstanding([]);
+      setCustomerAdvances([]);
+      setCollectMode('cash');
       setPaymentTerm('full');
       setPartialAmount('');
       setShowCheckout(false);
@@ -1324,33 +1461,16 @@ export default function POSPage() {
   // sync_invoice_create handler replays this atomically (invoice → items →
   // cost history → store credit → payment, with FIFO/journal triggers firing
   // exactly as in the online path).
-  async function queueOfflineOrder(dueCollect: number = 0): Promise<boolean> {
+  async function queueOfflineOrder(settle: PosSettlement): Promise<boolean> {
     const customerId = selectedCustomer;
-    const creditToApply = applyStoreCredit ? Math.min(storeCreditBalance, grandTotal) : 0;
-
-    let amountPaid = 0;
-    let invoiceStatus = 'draft';
-    if (paymentTerm === 'full') {
-      amountPaid = grandTotal;
-      invoiceStatus = creditToApply > 0 && (grandTotal - creditToApply) > 0 ? 'partially_paid' : 'paid';
-    } else if (paymentTerm === 'partial') {
-      amountPaid = parseFloat(partialAmount) || 0;
-      if (amountPaid <= 0) {
-        toast({ title: 'Invalid amount', description: 'Please enter a partial payment amount', variant: 'destructive' });
-        setProcessing(false);
-        return false;
-      }
-      if (amountPaid >= grandTotal) {
-        toast({ title: 'Invalid amount', description: 'Partial payment must be less than total. Use Full Payment.', variant: 'destructive' });
-        setProcessing(false);
-        return false;
-      }
-      invoiceStatus = 'partially_paid';
-    } else {
-      amountPaid = 0;
-      invoiceStatus = 'sent';
-    }
-    const cashToPay = paymentTerm === 'full' ? (grandTotal - creditToApply) : (paymentTerm === 'partial' ? amountPaid : 0);
+    // Everything this queued sale carries comes from the same settlement the
+    // online path writes — including the advance applications replayed later by
+    // sync_advance_apply (application row, wallet balance, Dr 2300 / Cr 1100,
+    // invoice state), so offline and online leave identical books.
+    const creditToApply = settle.storeCredit;
+    const amountPaid = settle.invoiceAmountPaid;
+    const invoiceStatus = settle.invoiceStatus;
+    const cashToPay = settle.cashToBill;
 
     const tempNumber = `OFF-${Date.now().toString().slice(-8)}`;
     const customerName = customers.find(c => c.id === customerId)?.name || 'customer';
@@ -1431,37 +1551,53 @@ export default function POSPage() {
     // settled by another device in the meantime parks as a Sync Center
     // conflict instead of a silent overpay.
     let queuedDue = 0;
-    if (dueCollect > 0) {
-      let remaining = dueCollect;
-      for (const row of customerOutstanding) {
-        if (remaining <= 0) break;
-        const amt = Math.round(Math.min(Number(row.balance_due) || 0, remaining) * 100) / 100;
-        if (amt <= 0) continue;
-        try {
-          await enqueueOp('payment.create', {
-            idempotency_key: crypto.randomUUID(),
-            invoice_id: row.invoice_id,
-            customer_id: customerId,
-            amount: amt,
-            bad_debt_amount: 0,
-            payment_method: paymentMethod,
-            payment_date: invoiceDate,
-            reference_number: null,
-            notes: `Collected with POS sale ${tempNumber}`,
-            payment_for: 'outstanding_invoice_pay',
-            collected_with_invoice_id: invoiceId,
-          }, `Due collection ${formatCurrency(amt)} — ${row.invoice_number}`);
-        } catch (err: any) {
-          // The sale itself is already queued — keep it; dues queued so far
-          // stay queued. The rest can be collected later from the Collect
-          // Payment screen.
-          toast({ title: 'Due collection not fully queued', description: err?.message || 'Offline storage error', variant: 'destructive' });
-          break;
-        }
-        remaining -= amt;
-        queuedDue += amt;
+    for (const row of settle.duesAlloc) {
+      try {
+        await enqueueOp('payment.create', {
+          idempotency_key: crypto.randomUUID(),
+          invoice_id: row.invoice_id,
+          customer_id: customerId,
+          amount: row.amount,
+          bad_debt_amount: 0,
+          payment_method: paymentMethod,
+          payment_date: invoiceDate,
+          reference_number: null,
+          notes: settle.mode === 'dues_first'
+            ? `Old dues cleared first with POS sale ${tempNumber}`
+            : `Collected with POS sale ${tempNumber}`,
+          payment_for: 'outstanding_invoice_pay',
+          collected_with_invoice_id: invoiceId,
+        }, `Due collection ${formatCurrency(row.amount)} — ${row.invoice_number}`);
+      } catch (err: any) {
+        // The sale itself is already queued — keep it; dues queued so far
+        // stay queued. The rest can be collected later from the Collect
+        // Payment screen.
+        toast({ title: 'Due collection not fully queued', description: err?.message || 'Offline storage error', variant: 'destructive' });
+        break;
       }
-      queuedDue = Math.round(queuedDue * 100) / 100;
+      queuedDue = round2(queuedDue + row.amount);
+    }
+
+    // Advance-balance-first: one advance.apply op per wallet, queued AFTER the
+    // invoice op (strict queue order) so sync_advance_apply finds the invoice by
+    // the client-generated id and re-validates the LIVE wallet balance at
+    // replay. A wallet spent by another device in the meantime parks as a Sync
+    // Center conflict instead of silently over-spending it.
+    let queuedAdvance = 0;
+    for (const a of settle.advanceAlloc) {
+      try {
+        await enqueueOp('advance.apply', {
+          idempotency_key: crypto.randomUUID(),
+          advance_id: a.advance_id,
+          customer_id: customerId,
+          invoice_id: invoiceId,
+          amount: a.amount,
+        }, `Advance applied ${formatCurrency(a.amount)} — ${a.advance_number}`);
+      } catch (err: any) {
+        toast({ title: 'Advance not fully queued', description: err?.message || 'Offline storage error', variant: 'destructive' });
+        break;
+      }
+      queuedAdvance = round2(queuedAdvance + a.amount);
     }
 
     // Optimistic local effects so this session stays consistent: decrement
@@ -1507,7 +1643,9 @@ export default function POSPage() {
       number: tempNumber,
       offline: true,
       date: invoiceDate,
-      status: invoiceStatus,
+      status: settle.mode === 'advance_first' && queuedAdvance > 0
+        ? settle.finalStatus
+        : invoiceStatus,
       customer: customers.find(c => c.id === customerId) || null,
       items: cart.map(item => ({
         product_name: item.name,
@@ -1529,7 +1667,9 @@ export default function POSPage() {
       cashPaid: cashToPay,
       storeCredit: creditToApply,
       dueCollected: queuedDue,
-      previousDue: queuedDue > 0 ? previousDueTotal : 0,
+      previousDue: queuedDue > 0 ? settle.previousDueBefore : 0,
+      advanceApplied: queuedAdvance,
+      paidTotal: round2(settle.invoiceAmountPaid + queuedAdvance),
       paymentMethod,
       reference,
     });
@@ -1544,6 +1684,8 @@ export default function POSPage() {
     setApplyStoreCredit(false);
     setDueCollectInput('');
     setCustomerOutstanding([]);
+    setCustomerAdvances([]);
+    setCollectMode('cash');
     setPaymentTerm('full');
     setPartialAmount('');
     setShowCheckout(false);
@@ -1597,7 +1739,6 @@ export default function POSPage() {
     if (showCheckout) chargeIntentIdRef.current = crypto.randomUUID();
   }, [showCheckout]);
   const [showCartFooter, setShowCartFooter] = useState(true);
-  const [amountPaid, setAmountPaid] = useState('');
   const [defaultProductImage, setDefaultProductImage] = useState('');
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalProduct, setImageModalProduct] = useState<ProductData | null>(null);
@@ -2397,6 +2538,11 @@ export default function POSPage() {
           customerOutstanding={customerOutstanding}
           dueCollectInput={dueCollectInput}
           setDueCollectInput={setDueCollectInput}
+          collectMode={collectMode}
+          setCollectMode={setCollectMode}
+          settlement={settlement}
+          advanceBalance={advanceBalance}
+          isRegisteredCustomer={isRegisteredCustomer}
         />
       )}
 
@@ -2433,9 +2579,10 @@ export default function POSPage() {
           shippingAmount={lastReceipt.shipping}
           recalculatedSubtotal={lastReceipt.items.reduce((s, i) => s + (Number(i.subtotal) || 0), 0)}
           totalAmount={lastReceipt.total}
-          amountPaid={lastReceipt.cashPaid}
-          balanceDue={Math.max(0, lastReceipt.total - lastReceipt.cashPaid)}
+          amountPaid={lastReceipt.paidTotal}
+          balanceDue={Math.max(0, lastReceipt.total - lastReceipt.paidTotal)}
           dueCollected={lastReceipt.dueCollected || 0}
+          advanceApplied={lastReceipt.advanceApplied || 0}
           customerOutstanding={lastReceipt.dueCollected > 0 ? {
             total: lastReceipt.previousDue,
             invoiceDues: lastReceipt.previousDue,
@@ -2868,6 +3015,82 @@ function AddCustomerModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
   );
 }
 
+/** What a "Previous dues first" charge will do, line by line. */
+function DuesSplitPreview({ settlement, total }: { settlement: PosSettlement; total: number }) {
+  const leftDue = Math.max(0, round2(total - settlement.invoicePaidTotal));
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1 text-xs">
+      {settlement.duesAlloc.length > 0 ? (
+        <>
+          <p className="text-[11px] font-semibold text-amber-800">Clearing old dues (oldest first)</p>
+          {settlement.duesAlloc.map(a => (
+            <div key={a.invoice_id} className="flex justify-between text-[11px] text-amber-700">
+              <span>{a.invoice_number}</span>
+              <span>-{formatCurrency(a.amount)}</span>
+            </div>
+          ))}
+        </>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">No old dues are cleared with this amount.</p>
+      )}
+      <div className="flex justify-between pt-1 border-t border-amber-200">
+        <span className="text-muted-foreground">This bill paid</span>
+        <span className="font-medium">{formatCurrency(settlement.cashToBill)}</span>
+      </div>
+      <div className="flex justify-between text-blue-600">
+        <span>Left due on this bill</span>
+        <span className="font-medium">{formatCurrency(leftDue)}</span>
+      </div>
+      {settlement.change > 0 && (
+        <div className="flex justify-between text-green-600">
+          <span>Change</span>
+          <span className="font-medium">{formatCurrency(settlement.change)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What an "Advance balance first" charge will do, line by line. */
+function AdvanceSplitPreview({ settlement, total, advanceBalance }: { settlement: PosSettlement; total: number; advanceBalance: number }) {
+  const leftDue = Math.max(0, round2(total - settlement.invoicePaidTotal));
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 space-y-1 text-xs">
+      <p className="text-[11px] font-semibold text-blue-800">
+        Advance balance available: {formatCurrency(advanceBalance)}
+      </p>
+      {settlement.advanceAlloc.length > 0 ? (
+        settlement.advanceAlloc.map(a => (
+          <div key={a.advance_id} className="flex justify-between text-[11px] text-blue-700">
+            <span>{a.advance_number}</span>
+            <span>-{formatCurrency(a.amount)}</span>
+          </div>
+        ))
+      ) : (
+        <p className="text-[11px] text-muted-foreground">No advance balance is used for this bill.</p>
+      )}
+      <div className="flex justify-between text-blue-700 pt-1 border-t border-blue-200">
+        <span>Advance applied</span>
+        <span className="font-medium">{formatCurrency(settlement.advanceApplied)}</span>
+      </div>
+      <div className="flex justify-between">
+        <span className="text-muted-foreground">Cash for this bill</span>
+        <span className="font-medium">{formatCurrency(settlement.cashToBill)}</span>
+      </div>
+      <div className="flex justify-between text-blue-600">
+        <span>Left due on this bill</span>
+        <span className="font-medium">{formatCurrency(leftDue)}</span>
+      </div>
+      {settlement.change > 0 && (
+        <div className="flex justify-between text-green-600">
+          <span>Change</span>
+          <span className="font-medium">{formatCurrency(settlement.change)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CheckoutModal({
   total, taxAmount, vatLabel, subtotal, discount, discountAmount, extraDiscount, shipping, itemDiscountTotal, cartDiscountAmount, paymentMethod, setPaymentMethod,
   displayMethods, paymentMethodIcons, paymentMethodColors,
@@ -2875,6 +3098,7 @@ function CheckoutModal({
   storeCreditBalance, applyStoreCredit, setApplyStoreCredit, selectedCustomer, customers, cart,
   paymentTerm, setPaymentTerm, partialAmount, setPartialAmount,
   previousDueTotal = 0, customerOutstanding = [], dueCollectInput = '', setDueCollectInput = () => {},
+  collectMode = 'cash', setCollectMode = () => {}, settlement, advanceBalance = 0, isRegisteredCustomer = false,
 }: {
   total: number; taxAmount: number; vatLabel: string; subtotal: number; discount: number; discountAmount: number; extraDiscount: number; shipping: number; itemDiscountTotal: number; cartDiscountAmount: number;
   paymentMethod: string; setPaymentMethod: (m: string) => void;
@@ -2888,6 +3112,10 @@ function CheckoutModal({
   previousDueTotal?: number;
   customerOutstanding?: { invoice_id: string; invoice_number: string; balance_due: number }[];
   dueCollectInput?: string; setDueCollectInput?: (v: string) => void;
+  /** where the money comes from / goes to — see buildPosSettlement */
+  collectMode?: PosCollectMode; setCollectMode?: (m: PosCollectMode) => void;
+  settlement: PosSettlement;
+  advanceBalance?: number; isRegisteredCustomer?: boolean;
 }) {
   const [step, setStep] = useState<'method' | 'confirm'>('method');
   const paid = parseFloat(amountPaid) || 0;
@@ -2897,19 +3125,22 @@ function CheckoutModal({
   const customerName = selectedCustomer ? (customers.find(c => c.id === selectedCustomer)?.name || 'Walk-in Customer') : 'Walk-in Customer';
   const partialNum = parseFloat(partialAmount) || 0;
   const isWalkIn = !selectedCustomer || selectedCustomer === '00000000-0000-0000-0000-000000000001';
-  // Previous-due collection: full-payment, registered customer. Works offline
-  // too — the due list comes from the replica and the collection is queued.
-  const dueCollectNum = Math.max(0, Math.min(parseFloat(dueCollectInput) || 0, previousDueTotal));
-  const showDueCollect = paymentTerm === 'full' && !isWalkIn && previousDueTotal > 0;
-  const dueAllocPreview: { invoice_id: string; invoice_number: string; amount: number }[] = [];
-  let dueRemaining = dueCollectNum;
-  for (const row of customerOutstanding) {
-    if (dueRemaining <= 0) break;
-    const amt = Math.min(Number(row.balance_due) || 0, dueRemaining);
-    if (amt > 0) { dueAllocPreview.push({ invoice_id: row.invoice_id, invoice_number: row.invoice_number, amount: amt }); dueRemaining -= amt; }
-  }
-  // Tendered change after reserving the due collection.
-  const effectiveChange = change - (showDueCollect ? dueCollectNum : 0);
+  // The whole split (dues cleared, advance applied, cash to this bill, change)
+  // comes from the parent's settlement, so this preview is exactly what the
+  // charge will write. Works offline too — dues and advance wallets come from
+  // the replica and the queued work replays on reconnect.
+  const dueCollectNum = settlement.duesCleared;
+  const showDueCollect = settlement.mode === 'cash' && paymentTerm === 'full' && !isWalkIn && previousDueTotal > 0;
+  const dueAllocPreview = settlement.duesAlloc;
+  const mode = settlement.mode;
+  // Tendered change after reserving the due collection (cash mode) — the other
+  // modes already carry their own change in the settlement.
+  const effectiveChange = mode === 'cash' ? change - (showDueCollect ? dueCollectNum : 0) : settlement.change;
+  const appliesToAccount = isRegisteredCustomer && !isWalkIn;
+  // Cash the customer still has to hand over in the two account modes.
+  const accountModeNeeds = mode === 'dues_first'
+    ? Math.max(0, round2(settlement.billNeeds + previousDueTotal))
+    : Math.max(0, round2(settlement.billNeeds - settlement.advanceApplied));
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[110] p-4">
@@ -2947,7 +3178,56 @@ function CheckoutModal({
 
           {step === 'method' ? (
             <>
-              {/* Payment Terms */}
+              {/* Collect From — where the money comes from / goes to. Registered
+                  customers only: a walk-in has no account to charge or clear. */}
+              {appliesToAccount && (
+                <div>
+                  <label className="block text-xs font-semibold text-muted-foreground mb-2">COLLECT FROM</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCollectMode('cash')}
+                      className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-xl border-2 text-[11px] font-medium transition ${mode === 'cash' ? 'text-green-700 bg-green-50 border-green-600 ring-2 ring-green-500/10' : 'border-border text-muted-foreground hover:border-green-200 hover:bg-green-50/30'}`}
+                    >
+                      <Banknote className="w-4 h-4" /> Cash
+                      <span className="text-[10px] text-muted-foreground">Pay this bill</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCollectMode('dues_first')}
+                      disabled={previousDueTotal <= 0}
+                      className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-xl border-2 text-[11px] font-medium transition ${mode === 'dues_first' ? 'text-amber-700 bg-amber-50 border-amber-600 ring-2 ring-amber-500/10' : 'border-border text-muted-foreground hover:border-amber-200 hover:bg-amber-50/30'} ${previousDueTotal <= 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      <History className="w-4 h-4" /> Old Dues
+                      <span className="text-[10px] text-muted-foreground">Oldest first</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCollectMode('advance_first')}
+                      disabled={advanceBalance <= 0}
+                      className={`flex flex-col items-center gap-1 px-2 py-2.5 rounded-xl border-2 text-[11px] font-medium transition ${mode === 'advance_first' ? 'text-blue-700 bg-blue-50 border-blue-600 ring-2 ring-blue-500/10' : 'border-border text-muted-foreground hover:border-blue-200 hover:bg-blue-50/30'} ${advanceBalance <= 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      <Wallet className="w-4 h-4" /> Advance
+                      <span className="text-[10px] text-muted-foreground">Held money first</span>
+                    </button>
+                  </div>
+                  {mode === 'dues_first' && (
+                    <p className="text-[11px] text-amber-700 mt-1.5">
+                      The cash received clears {formatCurrency(previousDueTotal)} of old dues oldest-first;
+                      whatever is left pays this bill and the remainder stays due on this customer.
+                    </p>
+                  )}
+                  {mode === 'advance_first' && (
+                    <p className="text-[11px] text-blue-700 mt-1.5">
+                      {formatCurrency(advanceBalance)} of advance balance pays this bill first; only the
+                      remainder is collected in cash.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Payment Terms — the account modes derive the term themselves */}
+              {mode === 'cash' && (
               <div>
                 <label className="block text-xs font-semibold text-muted-foreground mb-2">PAYMENT TERMS</label>
                 <div className="grid grid-cols-3 gap-2">
@@ -2979,9 +3259,10 @@ function CheckoutModal({
                   <p className="text-[11px] text-amber-600 mt-1.5">Partial and credit terms require a selected customer. Walk-in customers must use full payment.</p>
                 )}
               </div>
+              )}
 
               {/* Partial payment amount input */}
-              {paymentTerm === 'partial' && (
+              {mode === 'cash' && paymentTerm === 'partial' && (
                 <div>
                   <label className="block text-xs font-semibold text-muted-foreground mb-1.5">PARTIAL PAYMENT AMOUNT</label>
                   <input
@@ -3000,8 +3281,8 @@ function CheckoutModal({
                 </div>
               )}
 
-              {/* Payment method grid — only for full and partial terms */}
-              {paymentTerm !== 'credit' && (
+              {/* Payment method grid — hidden only when nothing is collected now */}
+              {(mode !== 'cash' || paymentTerm !== 'credit') && (
                 <div>
                   <label className="block text-xs font-semibold text-muted-foreground mb-2">PAYMENT METHOD</label>
                   <div className="grid grid-cols-2 gap-2">
@@ -3024,7 +3305,7 @@ function CheckoutModal({
               )}
 
               {/* Store credit option */}
-              {storeCreditBalance > 0 && selectedCustomer && paymentTerm !== 'credit' && (
+              {storeCreditBalance > 0 && selectedCustomer && (mode !== 'cash' || paymentTerm !== 'credit') && (
                 <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl p-3">
                   <div>
                     <p className="text-xs font-semibold text-amber-800">Apply Store Credit</p>
@@ -3072,8 +3353,8 @@ function CheckoutModal({
                 </div>
               )}
 
-              {/* Amount paid input — only for full and partial terms */}
-              {paymentTerm !== 'credit' && (
+              {/* Amount paid input — cash mode keeps the term-driven label */}
+              {mode === 'cash' && paymentTerm !== 'credit' && (
                 <div>
                   <label className="block text-xs font-semibold text-muted-foreground mb-1.5">AMOUNT PAID</label>
                   <input
@@ -3089,6 +3370,31 @@ function CheckoutModal({
                     <p className={`text-xs mt-1 ${effectiveChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
                       {effectiveChange >= 0 ? `Change: ${formatCurrency(effectiveChange)}` : `Remaining: ${formatCurrency(-effectiveChange)}`}
                     </p>
+                  )}
+                </div>
+              )}
+
+              {/* Account modes — cash received, plus exactly what it does */}
+              {mode !== 'cash' && (
+                <div className="space-y-2">
+                  <div>
+                    <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                      CASH RECEIVED
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={amountPaid}
+                      onChange={e => setAmountPaid(e.target.value)}
+                      placeholder={accountModeNeeds.toFixed(2)}
+                      className="w-full border border-border rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    />
+                  </div>
+                  {mode === 'dues_first' ? (
+                    <DuesSplitPreview settlement={settlement} total={total} />
+                  ) : (
+                    <AdvanceSplitPreview settlement={settlement} total={total} advanceBalance={advanceBalance} />
                   )}
                 </div>
               )}
@@ -3110,14 +3416,23 @@ function CheckoutModal({
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between"><span className="text-muted-foreground">Customer</span><span className="font-medium truncate max-w-[180px]">{customerName}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">Items</span><span className="font-medium">{cart.length}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Payment Term</span><span className="font-medium">{paymentTerm === 'full' ? 'Full Payment' : paymentTerm === 'partial' ? 'Partial Payment' : 'On Credit'}</span></div>
-                {paymentTerm === 'full' && <div className="flex justify-between"><span className="text-muted-foreground">Amount Paid</span><span className="font-medium">{formatCurrency(paid || total)}</span></div>}
-                {paymentTerm === 'partial' && <div className="flex justify-between"><span className="text-muted-foreground">Amount Paid</span><span className="font-medium">{formatCurrency(partialNum)}</span></div>}
-                {paymentTerm === 'partial' && <div className="flex justify-between text-amber-600"><span className="text-muted-foreground">Balance Due</span><span className="font-medium">{formatCurrency(total - partialNum)}</span></div>}
-                {paymentTerm === 'credit' && <div className="flex justify-between text-blue-600"><span className="text-muted-foreground">Balance Due</span><span className="font-medium">{formatCurrency(total)}</span></div>}
+                {mode === 'cash' && (
+                  <div className="flex justify-between"><span className="text-muted-foreground">Payment Term</span><span className="font-medium">{paymentTerm === 'full' ? 'Full Payment' : paymentTerm === 'partial' ? 'Partial Payment' : 'On Credit'}</span></div>
+                )}
+                {mode === 'dues_first' && <div className="flex justify-between"><span className="text-muted-foreground">Collect From</span><span className="font-medium text-amber-700">Previous Dues First</span></div>}
+                {mode === 'advance_first' && <div className="flex justify-between"><span className="text-muted-foreground">Collect From</span><span className="font-medium text-blue-700">Advance Balance First</span></div>}
+                {mode === 'cash' && paymentTerm === 'full' && <div className="flex justify-between"><span className="text-muted-foreground">Amount Paid</span><span className="font-medium">{formatCurrency(paid || total)}</span></div>}
+                {mode === 'cash' && paymentTerm === 'partial' && <div className="flex justify-between"><span className="text-muted-foreground">Amount Paid</span><span className="font-medium">{formatCurrency(partialNum)}</span></div>}
+                {mode === 'cash' && paymentTerm === 'partial' && <div className="flex justify-between text-amber-600"><span className="text-muted-foreground">Balance Due</span><span className="font-medium">{formatCurrency(total - partialNum)}</span></div>}
+                {mode === 'cash' && paymentTerm === 'credit' && <div className="flex justify-between text-blue-600"><span className="text-muted-foreground">Balance Due</span><span className="font-medium">{formatCurrency(total)}</span></div>}
                 {showDueCollect && dueCollectNum > 0 && <div className="flex justify-between text-amber-700"><span>Previous Due Collected</span><span className="font-medium">{formatCurrency(dueCollectNum)}</span></div>}
-                {paymentTerm === 'full' && paid > 0 && effectiveChange >= 0 && <div className="flex justify-between"><span className="text-muted-foreground">Change</span><span className="font-medium text-green-600">{formatCurrency(effectiveChange)}</span></div>}
-                {applyStoreCredit && storeCreditBalance > 0 && paymentTerm !== 'credit' && <div className="flex justify-between text-amber-700"><span>Store Credit Applied</span><span className="font-medium">{formatCurrency(Math.min(storeCreditBalance, total))}</span></div>}
+                {mode === 'dues_first' && <div className="flex justify-between text-amber-700"><span>Old Dues Cleared</span><span className="font-medium">{formatCurrency(settlement.duesCleared)}</span></div>}
+                {mode === 'advance_first' && <div className="flex justify-between text-blue-700"><span>Advance Applied</span><span className="font-medium">{formatCurrency(settlement.advanceApplied)}</span></div>}
+                {(mode !== 'cash' || paymentTerm !== 'credit') && <div className="flex justify-between"><span className="text-muted-foreground">Cash Received</span><span className="font-medium">{formatCurrency(mode === 'cash' ? paid : settlement.tendered)}</span></div>}
+                {mode !== 'cash' && <div className="flex justify-between text-blue-600"><span>Left Due On This Bill</span><span className="font-medium">{formatCurrency(Math.max(0, round2(total - settlement.invoicePaidTotal)))}</span></div>}
+                {mode === 'cash' && paymentTerm === 'full' && paid > 0 && effectiveChange >= 0 && <div className="flex justify-between"><span className="text-muted-foreground">Change</span><span className="font-medium text-green-600">{formatCurrency(effectiveChange)}</span></div>}
+                {mode !== 'cash' && settlement.change > 0 && <div className="flex justify-between"><span className="text-muted-foreground">Change</span><span className="font-medium text-green-600">{formatCurrency(settlement.change)}</span></div>}
+                {applyStoreCredit && storeCreditBalance > 0 && (mode !== 'cash' || paymentTerm !== 'credit') && <div className="flex justify-between text-amber-700"><span>Store Credit Applied</span><span className="font-medium">{formatCurrency(Math.min(storeCreditBalance, total))}</span></div>}
               </div>
 
               <div className="bg-muted/30 rounded-xl p-3 space-y-1 text-xs">

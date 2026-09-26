@@ -72,6 +72,8 @@ export interface PrintTemplateProps {
   previousDue?: number;
   /** Previous-due amount collected together with this invoice (POS due collection). */
   dueCollected?: number;
+  /** Advance-wallet money applied to this invoice (POS advance-first checkout). */
+  advanceApplied?: number;
   /** Queued-offline document: print a provisional-number note next to the doc number. */
   isOfflinePending?: boolean;
   notes?: string;
@@ -157,6 +159,7 @@ export default function PrintTemplate({
   balanceDue = 0,
   previousDue,
   dueCollected = 0,
+  advanceApplied = 0,
   isOfflinePending = false,
   notes,
   payments,
@@ -191,6 +194,9 @@ export default function PrintTemplate({
   // Previous-due collected together with this invoice (POS due collection).
   const dueCollectedAmount = Math.max(0, Math.min(Number(dueCollected || 0), previousDueAmount));
   const currentDueAmount = previousDueAmount + Number(balanceDue || 0) - dueCollectedAmount;
+  // Advance-wallet money applied to this invoice (POS advance-first checkout).
+  // Amount Paid already includes it, so this row only names the source.
+  const advanceAppliedAmount = Math.max(0, Math.min(Number(advanceApplied || 0), Number(amountPaid || 0)));
 
   const logoSrc = company.logo_url || '/Whats-App-Image-2026-07-09-at-15-57-58.jpg';
 
@@ -771,6 +777,12 @@ export default function PrintTemplate({
                       <tr>
                         <td style={{ padding: '2px 0', color: '#555' }}>Amount Paid</td>
                         <td style={{ padding: '2px 0', textAlign: 'right', color: GREEN, fontWeight: '600' }}>-{fmt(amountPaid)}</td>
+                      </tr>
+                    )}
+                    {advanceAppliedAmount > 0 && (
+                      <tr>
+                        <td style={{ padding: '2px 0', color: '#555' }}>of which Advance Balance</td>
+                        <td style={{ padding: '2px 0', textAlign: 'right', color: '#2563eb', fontWeight: '600' }}>{fmt(advanceAppliedAmount)}</td>
                       </tr>
                     )}
                     <tr style={{ borderTop: '1px solid #dde3ef' }}>
