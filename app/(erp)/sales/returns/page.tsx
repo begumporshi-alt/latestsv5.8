@@ -411,11 +411,19 @@ function ReturnModal({ invoices, onClose, onSaved }: {
     return sum + qty * item.unit_price * discountMultiplier;
   }, 0);
 
+  /** Advance-wallet money still funding the selected invoice (refunded to the wallet, not the till). */
+  const [advanceFunded, setAdvanceFunded] = useState(0);
   const existingRefunds = selectedInvoice?.existing_refunds || 0;
   const maxRefundable = Math.max(0, (selectedInvoice?.amount_paid || 0) - existingRefunds);
   const refundExceedsPaid = totalRefundAmount > maxRefundable;
   const isOnCredit = (selectedInvoice?.amount_paid || 0) === 0;
   const cappedRefundAmount = Math.min(totalRefundAmount, maxRefundable);
+  // Money this invoice was paid with from the customer's advance wallet: that
+  // part of a refund goes BACK TO THE WALLET (server-side, record_sales_return),
+  // never out of the till and never as store credit. Shown so the cashier knows
+  // how much cash to actually hand over.
+  const advanceRefundPortion = Math.min(cappedRefundAmount, advanceFunded);
+  const methodRefundPortion = Math.max(0, cappedRefundAmount - advanceRefundPortion);
 
   const [fifoCostMap, setFifoCostMap] = useState<Record<string, number>>({});
 
@@ -443,6 +451,24 @@ function ReturnModal({ invoices, onClose, onSaved }: {
         setFifoCostMap(map);
       });
   }, [items]);
+
+  // How much of the selected invoice is still funded by the customer's advance
+  // wallet (applications shrink as returns hand the money back, so this is
+  // always the live remainder).
+  useEffect(() => {
+    if (!selectedInvoice) { setAdvanceFunded(0); return; }
+    let cancelled = false;
+    supabase
+      .from('customer_advance_applications')
+      .select('amount')
+      .eq('invoice_id', selectedInvoice.id)
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) { setAdvanceFunded(0); return; }
+        setAdvanceFunded((data || []).reduce((s: number, a: any) => s + (Number(a.amount) || 0), 0));
+      });
+    return () => { cancelled = true; };
+  }, [selectedInvoice]);
 
   // fifoCostMap is per BASE unit. Compute COGS using base_quantity.
   const totalCOGS = Object.entries(returnItems).reduce((sum, [itemId, { qty }]) => {
@@ -524,7 +550,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
           }, `Sales return ${formatCurrency(totalRefundAmount)} — ${selectedInvoice.invoice_number}`);
           toast({
             title: 'Return queued offline',
-            description: `${tempNumber} (${formatCurrency(totalRefundAmount)}) will process when you reconnect.`,
+            description: `${tempNumber} (${formatCurrency(totalRefundAmount)}) will process when you reconnect.${advanceRefundPortion > 0 ? ` ${formatCurrency(advanceRefundPortion)} of it goes back to the customer's advance wallet instead of the till.` : ''}`,
           });
           setTimeout(() => { onSaved(); onClose(); }, 800);
         } catch (err: any) {
@@ -555,10 +581,13 @@ function ReturnModal({ invoices, onClose, onSaved }: {
       });
       if (rpcError) throw new Error(rpcError.message);
 
-      const result = (data || {}) as { return_number?: string; refund_amount?: number };
+      const result = (data || {}) as { return_number?: string; refund_amount?: number; advance_refunded?: number; cash_refund_amount?: number };
+      const advanceBack = Number(result.advance_refunded || 0);
       toast({
         title: 'Return Processed Successfully',
-        description: `Return ${result.return_number} created. Refund: ${formatCurrency(Number(result.refund_amount || 0))}`
+        description: advanceBack > 0
+          ? `Return ${result.return_number} created. Refund: ${formatCurrency(Number(result.refund_amount || 0))} — ${formatCurrency(advanceBack)} returned to the customer's advance wallet, ${formatCurrency(Number(result.cash_refund_amount || 0))} refunded now.`
+          : `Return ${result.return_number} created. Refund: ${formatCurrency(Number(result.refund_amount || 0))}`
       });
 
       // Show success state briefly before closing
@@ -754,6 +783,25 @@ function ReturnModal({ invoices, onClose, onSaved }: {
                     <div className="flex items-start gap-2 p-2 bg-amber-50 border border-amber-200 rounded-lg">
                       <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
                       <p className="text-xs text-amber-700">Previous refunds for this invoice: {formatCurrency(existingRefunds)}. Remaining refundable: {formatCurrency(maxRefundable)}.</p>
+                    </div>
+                  )}
+                  {advanceRefundPortion > 0 && (
+                    <div className="flex items-start gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                      <AlertCircle className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                      <div className="text-xs text-blue-800 space-y-1">
+                        <p>
+                          {formatCurrency(advanceFunded)} of this invoice was paid from the customer&apos;s
+                          advance balance — that money goes back to his wallet, not out of the till.
+                        </p>
+                        <div className="flex justify-between">
+                          <span>Back to advance wallet</span>
+                          <span className="font-medium">{formatCurrency(advanceRefundPortion)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>{selectedPaymentMethod === 'store_credit' ? 'As store credit' : 'Hand back now'}</span>
+                          <span className="font-medium">{formatCurrency(methodRefundPortion)}</span>
+                        </div>
+                      </div>
                     </div>
                   )}
                   {totalCOGS > 0 && (
