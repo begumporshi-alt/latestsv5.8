@@ -3485,6 +3485,18 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
                     <span className="font-medium text-amber-600">{formatCurrency(Number(result.payments_reversed))}</span>
                   </div>
                 )}
+                {Number(result.due_collections_reversed) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Old Dues Collected With This Sale — Reversed</span>
+                    <span className="font-medium text-amber-600">{formatCurrency(Number(result.due_collections_reversed))}</span>
+                  </div>
+                )}
+                {Number(result.advance_applications_reversed) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Customer Advance Restored To Wallet</span>
+                    <span className="font-medium text-amber-600">{formatCurrency(Number(result.advance_applications_reversed))}</span>
+                  </div>
+                )}
               </div>
             )}
 

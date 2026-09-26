@@ -334,7 +334,20 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
       const res = data as any;
       if (!res.success) throw new Error(res.error || 'Failed to edit invoice');
 
-      toast({ title: 'Success', description: `Invoice updated — old total: ${formatCurrency(Number(res.old_total))}, new total: ${formatCurrency(Number(res.new_total))}` });
+      // An invoice that had advance-wallet money applied cannot carry that paid
+      // amount through an edit (the edit rebuilds the paid state from the
+      // payment term below). edit_invoice therefore puts the advance back on the
+      // customer's wallet first — say so, or the cashier will wonder why the
+      // invoice came back unpaid.
+      const advanceReversed = Number(res.advance_applications_reversed || 0);
+      if (advanceReversed > 0) {
+        toast({
+          title: 'Invoice updated',
+          description: `Old total: ${formatCurrency(Number(res.old_total))}, new total: ${formatCurrency(Number(res.new_total))}. ${formatCurrency(advanceReversed)} of advance balance returned to the customer's wallet — re-apply it from the Advances screen or collect it as payment.`,
+        });
+      } else {
+        toast({ title: 'Success', description: `Invoice updated — old total: ${formatCurrency(Number(res.old_total))}, new total: ${formatCurrency(Number(res.new_total))}` });
+      }
       onSaved();
     } catch (err: any) {
       setError(err.message || 'Failed to update invoice');
