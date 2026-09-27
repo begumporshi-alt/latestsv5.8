@@ -70,6 +70,16 @@ const statusConfig: Record<InvoiceStatus, { label: string; color: string; bg: st
   refundable: { label: 'Refundable', color: 'text-teal-600', bg: 'bg-teal-100' },
 };
 
+/** Label for a value of the status-filter dropdown. `paid_partial` is a
+ *  filter-only grouping (never a stored status), and `refunded` / `refundable`
+ *  / `overdue` are pseudo-statuses whose filter arms differ from a plain status
+ *  match (see `filtered`). Used by the empty-state message so an empty result
+ *  can name the filter that produced it. */
+const statusFilterLabel = (value: string): string =>
+  value === 'paid_partial'
+    ? 'Partial & On credit'
+    : (statusConfig[value as InvoiceStatus]?.label ?? value);
+
 const deliveryStatusConfig: Record<string, { label: string; color: string; bg: string }> = {
   pending: { label: 'Pending', color: 'text-gray-600', bg: 'bg-gray-100' },
   assigned: { label: 'Assigned', color: 'text-blue-600', bg: 'bg-blue-100' },
@@ -524,7 +534,19 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     : filtered.filter(inv => productFilteredIds.has(inv.id));
   const [invPage, setInvPage] = useState(1);
   const [invPageSize, setInvPageSize] = useState(25);
-  const pagedInvoices = displayInvoices.slice((invPage - 1) * invPageSize, invPage * invPageSize);
+  // Narrowing the filters (or the period) shrinks the result set and used to
+  // leave the current page past its end: the table body rendered empty while
+  // the footer still reported the matches ("Refunded" on page 3 showed
+  // "51–17 of 17" with no rows at all). Reset to page 1 whenever a filter
+  // changes and clamp defensively, so a shrinking list — including the async
+  // product filter — can never blank the table.
+  // (Same pattern as purchases/page.tsx and reports/inventory/page.tsx.)
+  useEffect(() => {
+    setInvPage(1);
+  }, [search, filterStatus, filterPaymentMethod, filterProduct, filterCustomer, period, filterDateFrom, filterDateTo]);
+  const invTotalPages = Math.max(1, Math.ceil(displayInvoices.length / invPageSize));
+  const safeInvPage = Math.min(invPage, invTotalPages);
+  const pagedInvoices = displayInvoices.slice((safeInvPage - 1) * invPageSize, safeInvPage * invPageSize);
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -791,7 +813,21 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
                 <tr key={i}>{Array.from({ length: 12 }).map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}</tr>
               )) : displayInvoices.length === 0 ? (
                 <tr><td colSpan={12} className="px-4 py-12 text-center text-muted-foreground text-sm">
-                  {period === 'today' ? 'No invoices for today. Try "Last 7 Days" to see more.' : 'No invoices found'}
+                  {(() => {
+                    // Name the active status filter and the period window so an
+                    // empty result is self-explanatory — a status like
+                    // "Refunded" usually has no match inside the default
+                    // "Today" window, and "No invoices found" hid that reason.
+                    const what = filterStatus ? `${statusFilterLabel(filterStatus)} invoices` : 'invoices';
+                    if (period === 'all') {
+                      return filterStatus ? `No ${what} match the current filters.` : 'No invoices found';
+                    }
+                    const when = period === 'today' ? 'today'
+                      : period === 'custom' ? 'in the selected dates'
+                      : period === 'last7' ? 'in the last 7 days'
+                      : 'in the last 30 days';
+                    return `No ${what} ${when}. Try a wider period to see more.`;
+                  })()}
                 </td></tr>
               ) : pagedInvoices.map((inv) => {
                 const cfg = isInvoiceOverdue(inv)
@@ -929,7 +965,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           </table>
         </div>
         <Pagination
-          page={invPage}
+          page={safeInvPage}
           pageSize={invPageSize}
           total={displayInvoices.length}
           onPageChange={setInvPage}
