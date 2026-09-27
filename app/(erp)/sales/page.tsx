@@ -30,6 +30,7 @@ import { isInvoiceOverdue } from '@/lib/format';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { cachedQuery } from '@/lib/offline/cache';
+import { REPLICA, replicaRows } from '@/lib/offline/replica';
 
 // Cached aggregate served offline — see loadData/fetchSalesData.
 interface SalesPageData {
@@ -3314,6 +3315,52 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
   const [error, setError] = useState('');
   const [step, setStep] = useState<'confirm' | 'processing' | 'done' | 'error'>('confirm');
   const [result, setResult] = useState<any>(null);
+  // Previous dues collected WITH this invoice at POS link back through
+  // payments.collected_with_invoice_id. The sale being cancelled and the old
+  // debt it collected are separate events, so the cashier chooses whether the
+  // debt payment is refunded (default) or kept as a valid standalone payment.
+  const [dueCollections, setDueCollections] = useState<{ count: number; total: number; ids: string[] } | null>(null);
+  // Linked returns: they stay valid documents (their payout to the customer
+  // already happened), so this cancellation reverses only the remainder.
+  const linkedReturns = invoice.sales_returns || [];
+  const alreadyRefunded = Number(invoice.refunded_amount || 0);
+  const [reverseDueCollections, setReverseDueCollections] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      let rows: { id: string; amount: number }[] | null = null;
+      try {
+        const { data, error: payError } = await supabase
+          .from('payments')
+          .select('id, amount')
+          .eq('collected_with_invoice_id', invoice.id)
+          .eq('is_reversed', false);
+        if (!payError && data) rows = data as any;
+      } catch {
+        // Offline — fall through to the replica below.
+      }
+      if (!rows) {
+        try {
+          const cached = await replicaRows<any>(REPLICA['Payments']);
+          rows = cached
+            .filter((p: any) => p.collected_with_invoice_id === invoice.id && !p.is_reversed)
+            .map((p: any) => ({ id: p.id, amount: Number(p.amount || 0) }));
+        } catch {
+          rows = [];
+        }
+      }
+      if (cancelled) return;
+      const list = rows || [];
+      setDueCollections({
+        count: list.length,
+        total: list.reduce((s, p) => s + Number(p.amount || 0), 0),
+        ids: list.map(p => String(p.id)),
+      });
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [invoice.id]);
 
   async function handleCancel() {
     if (!reason.trim()) { setError('Please provide a reason for cancelling this invoice'); return; }
@@ -3332,6 +3379,8 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
           invoice_id: invoice.id,
           reason,
           cancelled_by: 'Current User',
+          reverse_due_collections: reverseDueCollections,
+          due_payment_ids: reverseDueCollections ? [] : (dueCollections?.ids || []),
         }, `Cancel ${invoice.invoice_number}`);
         toast({
           title: 'Cancellation queued offline',
@@ -3352,6 +3401,7 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
         p_invoice_id: invoice.id,
         p_reason: reason,
         p_cancelled_by: 'Current User',
+        p_reverse_due_collections: reverseDueCollections,
       });
 
       if (rpcError) throw new Error(rpcError.message);
@@ -3396,10 +3446,22 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
                 <ul className="list-disc list-inside space-y-0.5 text-xs">
                   <li>Stock will be restored to inventory (net of any returned quantities)</li>
                   <li>Journal entries (AR, Revenue, COGS) will be reversed</li>
-                  {Number(invoice.amount_paid) > 0 && <li>Payments of {formatCurrency(Number(invoice.amount_paid))} will be reversed</li>}
-                  {invoice.sales_returns && invoice.sales_returns.length > 0 && (
-                    <li className="font-semibold text-red-700">
-                      {invoice.sales_returns.length} linked sales return{invoice.sales_returns.length > 1 ? 's' : ''} will also be voided and their journal entries reversed
+                  {Number(invoice.amount_paid) > 0 && (
+                    <li>
+                      Payments of {formatCurrency(Number(invoice.amount_paid))} will be reversed
+                      {alreadyRefunded > 0 && <> — the {formatCurrency(alreadyRefunded)} already refunded through the linked return will not be refunded again</>}
+                    </li>
+                  )}
+                  {Number(dueCollections?.total) > 0 && (
+                    <li className={reverseDueCollections ? undefined : 'font-semibold text-emerald-700'}>
+                      {reverseDueCollections
+                        ? `Old dues of ${formatCurrency(Number(dueCollections?.total))} collected with this sale will be refunded and the older invoices' balances restored`
+                        : `Old dues of ${formatCurrency(Number(dueCollections?.total))} collected with this sale will be KEPT as valid payments on the older invoices`}
+                    </li>
+                  )}
+                  {linkedReturns.length > 0 && (
+                    <li className="font-semibold text-sky-700">
+                      {linkedReturns.length} linked sales return{linkedReturns.length > 1 ? 's' : ''} stay{linkedReturns.length > 1 ? '' : 's'} valid — this cancellation reverses only the remainder (returned stock, revenue, VAT and COGS are not reversed twice)
                     </li>
                   )}
                   <li>Customer outstanding balance will be updated</li>
@@ -3407,6 +3469,33 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
                 </ul>
               </div>
             </div>
+
+            {Number(dueCollections?.total) > 0 && (
+              <div className={`rounded-lg border p-4 ${reverseDueCollections ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={reverseDueCollections}
+                    onChange={e => setReverseDueCollections(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-red-600"
+                  />
+                  <div>
+                    <p className={`text-sm font-semibold ${reverseDueCollections ? 'text-amber-900' : 'text-emerald-900'}`}>
+                      Reverse &amp; refund the {formatCurrency(Number(dueCollections?.total))} of old dues collected with this sale
+                    </p>
+                    <p className={`text-xs mt-1 ${reverseDueCollections ? 'text-amber-800' : 'text-emerald-800'}`}>
+                      {reverseDueCollections
+                        ? `${dueCollections?.count} payment${(dueCollections?.count || 0) > 1 ? 's' : ''} collected here for earlier invoices will be refunded (${
+                            formatCurrency(Number(dueCollections?.total))
+                          }) and those invoices go back to unpaid — the customer owes that money again.`
+                        : `Only ${invoice.invoice_number} is cancelled. The ${dueCollections?.count} payment${
+                            (dueCollections?.count || 0) > 1 ? 's' : ''
+                          } collected here stay posted against the earlier invoices, so the customer still owes nothing on those old dues.`}
+                    </p>
+                  </div>
+                </label>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-4 py-2">
               <div>
@@ -3451,7 +3540,11 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
         {step === 'processing' && (
           <div className="p-12 text-center">
             <div className="inline-block w-8 h-8 border-4 border-red-200 border-t-red-600 rounded-full animate-spin mb-4" />
-            <p className="text-sm text-muted-foreground">Cancelling invoice and reversing all effects...</p>
+            <p className="text-sm text-muted-foreground">
+              {reverseDueCollections
+                ? 'Cancelling invoice and reversing all effects...'
+                : 'Cancelling invoice — earlier dues stay paid...'}
+            </p>
           </div>
         )}
 
@@ -3462,7 +3555,11 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
                 <CheckCircle2 className="w-6 h-6 text-green-600" />
               </div>
               <h3 className="text-lg font-bold">Invoice Cancelled Successfully</h3>
-              <p className="text-sm text-muted-foreground mt-1">All effects have been reversed</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {Number(result?.due_collections_retained) > 0
+                  ? 'Sale reversed — earlier dues were kept as paid'
+                  : 'All effects have been reversed'}
+              </p>
             </div>
 
             {result && (
@@ -3485,10 +3582,34 @@ function CancelInvoiceModal({ invoice, onClose, onDone }: { invoice: any; onClos
                     <span className="font-medium text-amber-600">{formatCurrency(Number(result.payments_reversed))}</span>
                   </div>
                 )}
+                {Number(result.payments_refunded) > 0 && Number(result.payments_refunded) !== Number(result.payments_reversed) && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Cash Refunded To Customer</span>
+                    <span className="font-medium text-amber-600">{formatCurrency(Number(result.payments_refunded))}</span>
+                  </div>
+                )}
+                {Number(result.refund_offset_by_returns) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Already Refunded Via Returns — Not Refunded Again</span>
+                    <span className="font-medium text-sky-600">{formatCurrency(Number(result.refund_offset_by_returns))}</span>
+                  </div>
+                )}
+                {Number(result.stock_qty_already_returned) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Units Already Returned — Not Restocked Twice</span>
+                    <span className="font-medium text-sky-600">{Number(result.stock_qty_already_returned)}</span>
+                  </div>
+                )}
                 {Number(result.due_collections_reversed) > 0 && (
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Old Dues Collected With This Sale — Reversed</span>
                     <span className="font-medium text-amber-600">{formatCurrency(Number(result.due_collections_reversed))}</span>
+                  </div>
+                )}
+                {Number(result.due_collections_retained) > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Old Dues Collected With This Sale — Kept As Paid</span>
+                    <span className="font-medium text-emerald-600">{formatCurrency(Number(result.due_collections_retained))}</span>
                   </div>
                 )}
                 {Number(result.advance_applications_reversed) > 0 && (

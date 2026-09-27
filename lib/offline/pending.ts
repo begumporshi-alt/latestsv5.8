@@ -49,7 +49,7 @@ export const OP_TABLES: Record<string, string[]> = {
   'invoice.create': ['invoices', 'invoice_items'],
   'payment.create': ['payments', 'invoices'],
   'invoice.status': ['invoices'],
-  'invoice.cancel': ['invoices'],
+  'invoice.cancel': ['invoices', 'payments'],
   'sales_return.create': ['sales_returns'],
   'advance.receive': ['customer_advances'],
   'advance.apply': ['customer_advances', 'customer_advance_applications', 'invoices'],
@@ -189,7 +189,7 @@ export const OP_CACHE_KEYS: Record<string, string[]> = {
 
 type Patch = Record<string, any> | ((row: any) => Record<string, any>)
 
-type Effect =
+export type Effect =
   | { kind: 'row'; table: string; row: Record<string, any> }
   | { kind: 'patch'; table: string; id: string; patch: Patch }
   | { kind: 'delete'; table: string; id: string }
@@ -204,7 +204,7 @@ const num = (v: unknown, fallback = 0): number => {
 const str = (v: unknown): string | null => (v === undefined || v === null || v === '' ? null : String(v))
 
 /** Per-op effect derivation. `itemId`/`createdAt` come from the outbox item. */
-function deriveEffects(op: string, p: Record<string, any>, itemId: string, createdAt: number): Effect[] {
+export function deriveEffects(op: string, p: Record<string, any>, itemId: string, createdAt: number): Effect[] {
   const now = new Date(createdAt).toISOString()
   const synthId = (suffix: string) => `pending-${itemId}-${suffix}`
   const out: Effect[] = []
@@ -346,6 +346,22 @@ function deriveEffects(op: string, p: Record<string, any>, itemId: string, creat
     case 'invoice.cancel':
       if (p.invoice_id) {
         out.push({ kind: 'patch', table: 'invoices', id: String(p.invoice_id), patch: { status: 'cancelled' } })
+        // Retained due collections: the server RPC unlinks these payments from
+        // the cancelled sale instead of refunding them, so the local replica
+        // must drop the link too — otherwise the older invoice's collection
+        // keeps reading as "collected with" a cancelled sale until the
+        // post-sync replica refresh lands.
+        if (p.reverse_due_collections === false && Array.isArray(p.due_payment_ids)) {
+          for (const pid of p.due_payment_ids) {
+            if (!pid) continue
+            out.push({
+              kind: 'patch',
+              table: 'payments',
+              id: String(pid),
+              patch: { collected_with_invoice_id: null },
+            })
+          }
+        }
       }
       break
     case 'sales_return.create':
