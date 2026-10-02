@@ -448,7 +448,7 @@ export default function POSPage() {
       let rows: any[] = Array.isArray(res?.data) ? res.data : [];
       if (res?.offline) {
         // The read fallback answers from the last cached copy of this exact
-        // query, which can be far older than the 15-minute replica refresh —
+        // query, which can be far older than the hourly replica refresh —
         // and this figure decides how much cash the cashier takes. When it
         // fell back, prefer the replica (same chain, plus the queued-op
         // overlay); it declines with null if this device never replicated

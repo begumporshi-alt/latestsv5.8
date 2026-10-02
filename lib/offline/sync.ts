@@ -151,7 +151,7 @@ class SyncEngine {
       }
       // Applied work replaced provisional overlay rows with real server rows
       // — refresh the replica now so lists show the real numbers immediately
-      // instead of waiting for the 15-minute interval.
+      // instead of waiting for the hourly background interval.
       if (applied > 0) void replicateAll(true)
     } catch (err) {
       this.setState({ lastError: err instanceof Error ? err.message : String(err) })
