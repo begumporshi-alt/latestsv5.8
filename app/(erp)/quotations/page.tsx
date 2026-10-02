@@ -1345,7 +1345,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                   </div>
                 )}
                 <div className="flex justify-between items-center gap-2">
-                  <label className="text-xs text-muted-foreground">Shipping ৳</label>
+                  <label className="text-xs text-muted-foreground">Shipping /Service Fee ৳</label>
                   <input
                     type="number"
                     min="0"
@@ -1357,7 +1357,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                 </div>
                 {(form.shipping_cost || 0) > 0 && (
                   <div className="flex justify-between text-xs text-blue-700">
-                    <span>Shipping</span>
+                    <span>Shipping /Service Fee</span>
                     <span>+{formatCurrency(form.shipping_cost || 0)}</span>
                   </div>
                 )}
@@ -1972,11 +1972,11 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                 <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>
               )}
               <div className="flex justify-between items-center gap-2">
-                <label className="text-xs text-muted-foreground">Shipping ৳</label>
+                <label className="text-xs text-muted-foreground">Shipping /Service Fee ৳</label>
                 <input type="number" min="0" step="0.01" value={form.shipping_cost || 0} onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
               </div>
               {(form.shipping_cost || 0) > 0 && (
-                <div className="flex justify-between text-xs text-blue-700"><span>Shipping</span><span>+{formatCurrency(form.shipping_cost || 0)}</span></div>
+                <div className="flex justify-between text-xs text-blue-700"><span>Shipping /Service Fee</span><span>+{formatCurrency(form.shipping_cost || 0)}</span></div>
               )}
               {vatSettings.enabled && (
                 <div className="flex justify-between items-center pt-1 border-t border-border">

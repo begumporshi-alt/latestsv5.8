@@ -2414,7 +2414,7 @@ export default function POSPage() {
                     <input type="number" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">Shipping ৳</span>
+                    <span className="text-xs font-medium text-muted-foreground">Shipping /Service Fee ৳</span>
                     <input type="number" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                   </div>
                 </div>
@@ -2424,7 +2424,7 @@ export default function POSPage() {
                   {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item Discounts</span><span>-{formatCurrency(itemDiscountTotal)}</span></div>}
                   {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart Discount ({discount}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>}
                   {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>}
-                  {shipping > 0 && <div className="flex justify-between text-blue-700"><span>Shipping</span><span>+{formatCurrency(shipping)}</span></div>}
+                  {shipping > 0 && <div className="flex justify-between text-blue-700"><span>Shipping /Service Fee</span><span>+{formatCurrency(shipping)}</span></div>}
                   {vatSettings.enabled && (
                     <div className="flex justify-between items-center pt-1 border-t border-border">
                       <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
@@ -3168,7 +3168,7 @@ function CheckoutModal({
               <div className="flex justify-between text-red-600"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>
             )}
             {shipping > 0 && (
-              <div className="flex justify-between text-blue-700"><span>Shipping</span><span>+{formatCurrency(shipping)}</span></div>
+              <div className="flex justify-between text-blue-700"><span>Shipping /Service Fee</span><span>+{formatCurrency(shipping)}</span></div>
             )}
             {taxAmount > 0 && vatLabel && (
               <div className="flex justify-between text-blue-700"><span>{vatLabel}</span><span>+{formatCurrency(taxAmount)}</span></div>

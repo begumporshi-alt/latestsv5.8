@@ -564,7 +564,7 @@ export default function PrintTemplate({
         {/* ═══════════════════ ITEMS TABLE ═══════════════════ */}
         <table className="print-items-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
-            <tr style={{ background: PRIMARY, color: '#fff' }}>
+            <tr style={{ background: '#eef2f8' }}>
               {[
                 { label: 'SL',          align: 'center' as const, width: '36px'  },
                 { label: 'ITEM CODE',   align: 'left'   as const, width: '90px'  },
@@ -586,7 +586,9 @@ export default function PrintTemplate({
                     fontWeight: '700',
                     letterSpacing: '0.4px',
                     width: col.width,
-                    borderRight: '1px solid rgba(255,255,255,0.15)',
+                    color: PRIMARY,
+                    borderRight: '1px solid #dde3ef',
+                    borderBottom: `2px solid ${PRIMARY}`,
                   }}
                 >
                   {col.label}
@@ -732,7 +734,7 @@ export default function PrintTemplate({
                 )}
                 {(shippingAmount || 0) > 0 && (
                   <tr>
-                    <td style={{ padding: '2px 0 4px', color: '#555' }}>Shipping</td>
+                    <td style={{ padding: '2px 0 4px', color: '#555' }}>Shipping /Service Fee</td>
                     <td style={{ padding: '2px 0 4px', textAlign: 'right', fontWeight: '500' }}>+{fmt(shippingAmount)}</td>
                   </tr>
                 )}
@@ -921,84 +923,6 @@ export default function PrintTemplate({
               <div style={{ width: '100%', borderTop: '1.5px solid #999', paddingTop: '3px', textAlign: 'center' }}>
                 <span style={{ fontSize: '10px', color: '#555', fontWeight: '500' }}>Authorized Signature</span>
               </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ═══════════════════ FOOTER BAR ═══════════════════ */}
-        <div
-          style={{
-            background: PRIMARY,
-            color: '#fff',
-            display: 'flex',
-            alignItems: 'stretch',
-          }}
-        >
-          {/* Phone */}
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 18px', borderRight: '1px solid rgba(255,255,255,0.25)' }}>
-            <div
-              style={{
-                width: '32px', height: '32px',
-                border: '2px solid rgba(255,255,255,0.7)',
-                borderRadius: '50%',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0,
-              }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-                <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.37 11.5 19.79 19.79 0 0 1 1.25 2.85 2 2 0 0 1 3.22 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 21 16z" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            </div>
-            <div>
-              <div style={{ fontSize: '11px', fontWeight: '700', letterSpacing: '0.3px' }}>{company.phone || '01842173617'}</div>
-              <div style={{ fontSize: '9px', opacity: 0.75, marginTop: '1px' }}>For any queries</div>
-            </div>
-          </div>
-
-          {/* Website */}
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 18px', borderRight: '1px solid rgba(255,255,255,0.25)', justifyContent: 'center' }}>
-            <div
-              style={{
-                width: '32px', height: '32px',
-                border: '2px solid rgba(255,255,255,0.7)',
-                borderRadius: '50%',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0,
-              }}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="12" r="10" stroke="#fff" strokeWidth="2" />
-                <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            </div>
-            <div>
-              <div style={{ fontSize: '11px', fontWeight: '700', letterSpacing: '0.3px' }}>
-                {company.website || 'www.sibuildingsolutions.com'}
-              </div>
-              <div style={{ fontSize: '9px', opacity: 0.75, marginTop: '1px' }}>Visit our website</div>
-            </div>
-          </div>
-
-          {/* Computer-generated note */}
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 18px' }}>
-            <div
-              style={{
-                width: '32px', height: '32px',
-                border: '2px solid rgba(255,255,255,0.7)',
-                borderRadius: '8px',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0,
-              }}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                <polyline points="14,2 14,8 20,8" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                <line x1="16" y1="13" x2="8" y2="13" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
-                <line x1="16" y1="17" x2="8" y2="17" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            </div>
-            <div style={{ fontSize: '10px', opacity: 0.9, lineHeight: '1.5' }}>
-              This is a computer-generated document and does not require a signature.
             </div>
           </div>
         </div>

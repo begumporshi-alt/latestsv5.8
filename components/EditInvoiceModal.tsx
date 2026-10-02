@@ -581,7 +581,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                 </div>
               )}
               <div className="flex justify-between items-center gap-2">
-                <label className="text-xs text-muted-foreground">Shipping ৳</label>
+                <label className="text-xs text-muted-foreground">Shipping /Service Fee ৳</label>
                 <input
                   type="number"
                   min="0"
@@ -593,7 +593,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
               </div>
               {(form.shipping_cost || 0) > 0 && (
                 <div className="flex justify-between text-xs text-blue-700">
-                  <span>Shipping</span>
+                  <span>Shipping /Service Fee</span>
                   <span>+{formatCurrency(form.shipping_cost || 0)}</span>
                 </div>
               )}
