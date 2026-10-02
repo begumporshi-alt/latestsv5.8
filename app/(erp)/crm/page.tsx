@@ -211,10 +211,18 @@ export default function CRMPage() {
     };
   }
 
-  // Unique cities for filter dropdown
+  // Unique cities for filter dropdown. Cities are matched case-insensitively
+  // (and trimmed) below because the same city is often typed with different
+  // casing; the first-seen spelling is shown as the label.
   const cities = useMemo(() => {
-    const set = new Set(customers.map(c => c.city).filter(Boolean) as string[]);
-    return Array.from(set).sort();
+    const map = new Map<string, string>();
+    customers.forEach(c => {
+      const city = (c.city || '').trim();
+      if (!city) return;
+      const key = city.toLowerCase();
+      if (!map.has(key)) map.set(key, city);
+    });
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
   }, [customers]);
 
   // Period cutoff date
@@ -238,7 +246,7 @@ export default function CRMPage() {
         if (!matches) return false;
       }
       if (filterType && c.type !== filterType) return false;
-      if (filterCity && c.city !== filterCity) return false;
+      if (filterCity && (c.city || '').trim().toLowerCase() !== filterCity.toLowerCase()) return false;
       if (periodCutoff && c.created_at && new Date(c.created_at) < new Date(periodCutoff)) return false;
 
       // Outstanding type filter
@@ -249,6 +257,8 @@ export default function CRMPage() {
           : Number(c.outstanding_balance);
       if (outstandingMin && outstandingVal < Number(outstandingMin)) return false;
       if (outstandingMax && outstandingVal > Number(outstandingMax)) return false;
+      // Selecting an outstanding type without a range means "who has this kind of due"
+      if (filterOutstandingType && !outstandingMin && !outstandingMax && outstandingVal <= 0) return false;
 
       // Credit limit range
       if (creditMin && Number(c.credit_limit) < Number(creditMin)) return false;
