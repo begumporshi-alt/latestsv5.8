@@ -416,7 +416,7 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
                 <div className="flex items-center gap-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                   <Package className="w-4 h-4 text-blue-600 shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-foreground leading-snug line-clamp-2">{selectedProduct.name}</p>
+                    <p className="text-sm font-semibold text-foreground leading-snug break-words">{selectedProduct.name}</p>
                     <p className="text-xs text-muted-foreground">{selectedProduct.sku}</p>
                   </div>
                   {form.from_warehouse_id && (
@@ -454,7 +454,7 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
                             <Package className="w-3.5 h-3.5 text-muted-foreground" />
                           </div>
                           <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-foreground leading-snug line-clamp-2">{p.name}</p>
+                            <p className="text-sm font-medium text-foreground leading-snug break-words">{p.name}</p>
                             <p className="text-xs text-muted-foreground">{p.sku}</p>
                           </div>
                           {stock !== null && (

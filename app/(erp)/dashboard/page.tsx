@@ -508,7 +508,7 @@ export default function DashboardPage() {
                   <Package className="w-4 h-4 text-slate-400" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-foreground leading-snug line-clamp-2">{item.product?.name}</p>
+                  <p className="text-xs font-semibold text-foreground leading-snug break-words">{item.product?.name}</p>
                   <p className="text-[10px] text-muted-foreground">SKU: {item.product?.sku}</p>
                 </div>
                 <div className="text-right shrink-0">

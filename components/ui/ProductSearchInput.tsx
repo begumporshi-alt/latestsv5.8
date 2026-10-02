@@ -160,7 +160,7 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
           title={`Filter by ${label}`}
         >
           <Filter className="w-3.5 h-3.5" />
-          <span className="max-w-[160px] line-clamp-2 whitespace-normal text-left">{selected ? selectedName : `All ${label}s`}</span>
+          <span className="max-w-[160px] break-words line-clamp-2 whitespace-normal text-left">{selected ? selectedName : `All ${label}s`}</span>
           {selected && (
             <span
               role="button"
@@ -290,7 +290,7 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
                     }
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground leading-snug line-clamp-2">{p.name}</p>
+                    <p className="text-sm font-medium text-foreground leading-snug break-words">{p.name}</p>
                     <p className="text-xs text-muted-foreground">{p.sku}</p>
                   </div>
                   <div className="text-right shrink-0">

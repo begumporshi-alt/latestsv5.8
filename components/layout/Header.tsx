@@ -243,7 +243,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
                       <result.icon className="w-3.5 h-3.5" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground leading-snug line-clamp-2">{result.label}</p>
+                      <p className="text-sm font-medium text-foreground leading-snug break-words">{result.label}</p>
                       <p className="text-[10px] text-muted-foreground">{result.type}{result.sub ? ` · ${result.sub}` : ''}</p>
                     </div>
                   </Link>

@@ -48,7 +48,7 @@ export function OversellConfirmDialog({
           {shortfalls.map((s, i) => (
             <div key={i} className="flex items-center justify-between text-sm border border-amber-200 bg-amber-50/50 rounded-lg px-3 py-2">
               <div className="min-w-0">
-                <p className="font-medium text-foreground leading-snug line-clamp-2">{s.name}</p>
+                <p className="font-medium text-foreground leading-snug break-words">{s.name}</p>
                 <p className="text-xs text-muted-foreground">
                   Ledger: {s.ledgerQty} of {s.baseQty} — short <b className="text-amber-700">{s.shortfall}</b> units
                 </p>

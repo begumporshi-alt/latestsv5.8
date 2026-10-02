@@ -2076,7 +2076,7 @@ export default function POSPage() {
                       </div>
                     ) : null}
                   </div>
-                  <p className="text-xs font-semibold text-foreground leading-tight mb-0.5 line-clamp-3">{p.name}</p>
+                  <p className="text-xs font-semibold text-foreground leading-tight mb-0.5 break-words">{p.name}</p>
                   <p className="text-[10px] text-muted-foreground mb-1">{p.sku}</p>
                   <div className="flex items-center justify-between">
                     {/* Price area — hovering here reveals cost/profit tooltip */}
@@ -2201,7 +2201,7 @@ export default function POSPage() {
                 <ProductNameTooltip
                   name={item.name}
                   sku={item.sku}
-                  className="flex-1 min-w-0 text-sm font-semibold text-foreground leading-tight line-clamp-2 cursor-default"
+                  className="flex-1 min-w-0 text-sm font-semibold text-foreground leading-tight break-words cursor-default"
                 />
                 <span className="text-sm font-bold text-blue-600 shrink-0 whitespace-nowrap">{formatCurrency(lineTotal)}</span>
               </div>
@@ -2344,7 +2344,7 @@ export default function POSPage() {
                             <ProductNameTooltip
                               name={item.name}
                               sku={item.sku}
-                              className="text-sm font-medium text-foreground line-clamp-2 max-w-[160px] cursor-default"
+                              className="text-sm font-medium text-foreground break-words max-w-[160px] cursor-default"
                             />
                             <p className="text-xs text-muted-foreground">{item.selected_unit?.unit_name || 'pcs'}</p>
                           </td>
