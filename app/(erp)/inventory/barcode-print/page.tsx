@@ -9,7 +9,7 @@ import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { Barcode, QrCode, Printer, Search, Package, FileText, X, ChevronDown, CircleCheck as CheckCircle2, Settings, Layers, Boxes, ShoppingCart, Eye, Download, Ruler } from 'lucide-react';
 import type { Product, Category, Brand, Invoice } from '@/lib/types';
-import { LABEL_SIZES, resolveLabelConfig, describeProductLabelSize, type LabelSize, type ProductLabelOverride } from '@/lib/label-sizes';
+import { LABEL_SIZES, resolveLabelConfig, fitNameFontSize, describeProductLabelSize, type LabelSize, type ProductLabelOverride } from '@/lib/label-sizes';
 
 type CodeType = 'barcode' | 'qrcode';
 type Mode = 'products' | 'invoices';
@@ -302,12 +302,12 @@ export default function BarcodePrintPage() {
 
       let infoHTML = '';
       if (mode === 'products') {
-        const nameLine = showProductName ? `<div class="name" style="font-size:${cfg.nameFontSize};">${escapeHtml(item.name)}</div>` : '';
+        const nameLine = showProductName ? `<div class="name" style="font-size:${fitNameFontSize(cfg.nameFontSize, item.name, cfg.width)};">${escapeHtml(item.name)}</div>` : '';
         const skuLine = showSku ? `<div class="code" style="font-size:${cfg.skuFontSize};">${escapeHtml(item.sku)}</div>` : '';
         const priceLine = showPrice ? `<div class="price-row"><span class="mrp-label" style="font-size:${cfg.mrpLabelFontSize};">MRP</span><span class="mrp" style="font-size:${cfg.priceFontSize};">${formatCurrency(item.price)}</span></div>` : '';
         infoHTML = nameLine + skuLine + priceLine;
       } else {
-        const invLine = showInvoiceNumber ? `<div class="name" style="font-size:${cfg.nameFontSize};">${escapeHtml(item.invoiceNumber)}</div>` : '';
+        const invLine = showInvoiceNumber ? `<div class="name" style="font-size:${fitNameFontSize(cfg.nameFontSize, item.invoiceNumber, cfg.width)};">${escapeHtml(item.invoiceNumber)}</div>` : '';
         const custLine = showCustomer ? `<div class="code" style="font-size:${cfg.skuFontSize};">${escapeHtml(item.customer)}</div>` : '';
         const amtLine = showAmount ? `<div class="price-row"><span class="mrp-label" style="font-size:${cfg.mrpLabelFontSize};">Amount</span><span class="mrp" style="font-size:${cfg.priceFontSize};">${formatCurrency(item.amount)}</span></div>` : '';
         infoHTML = invLine + custLine + amtLine;
@@ -331,7 +331,7 @@ export default function BarcodePrintPage() {
         padding: 4px 6px; box-sizing: border-box;
         border: 1px solid #e0e0e0; border-radius: 4px; overflow: hidden;
       }
-      .name { font-weight: 600; text-align: center; line-height: 1.2; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+      .name { font-weight: 600; text-align: center; line-height: 1.15; color: #1a1a1a; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; max-width: 100%; }
       .code { font-family: 'Courier New', monospace; color: #1a1a1a; letter-spacing: 0.5px; }
       .mrp { font-weight: 700; color: #1a1a1a; }
       .mrp-label { font-weight: 600; color: #1a1a1a; text-transform: uppercase; letter-spacing: 1px; }
@@ -678,7 +678,7 @@ export default function BarcodePrintPage() {
                 style={{ width: previewCfg.width, minHeight: previewCfg.height }}
               >
                 {mode === 'products' && showProductName && (
-                  <p className="text-center font-semibold text-foreground leading-tight line-clamp-2" style={{ fontSize: previewCfg.nameFontSize }}>
+                  <p className="text-center font-semibold text-foreground leading-tight line-clamp-2" style={{ fontSize: fitNameFontSize(previewCfg.nameFontSize, filteredProducts[0]?.name || 'Sample Product', previewCfg.width) }}>
                     {filteredProducts[0]?.name || 'Sample Product'}
                   </p>
                 )}
@@ -799,7 +799,7 @@ function ProductLabelSizeModal({ product, onClose, onSaved }: {
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div>
             <h2 className="text-base font-bold flex items-center gap-2"><Ruler className="w-4 h-4 text-blue-600" /> Label Size</h2>
-            <p className="text-xs text-muted-foreground truncate max-w-[240px]">{product.name}</p>
+            <p className="text-xs text-muted-foreground break-words max-w-[240px]">{product.name}</p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>

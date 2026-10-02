@@ -80,7 +80,7 @@ export function BatchAllocationEditor({
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
           <div className="min-w-0">
             <h3 className="font-bold text-sm flex items-center gap-2"><Layers className="w-4 h-4 text-blue-600" /> Edit Batch Allocation</h3>
-            <p className="text-xs text-muted-foreground truncate">{productName}</p>
+            <p className="text-xs text-muted-foreground break-words">{productName}</p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground shrink-0"><X className="w-5 h-5" /></button>
         </div>

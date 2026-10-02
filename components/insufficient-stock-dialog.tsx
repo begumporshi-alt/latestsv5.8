@@ -36,7 +36,7 @@ export function InsufficientStockDialog({
           </div>
           <div className="min-w-0">
             <h3 className="font-bold text-sm text-foreground">Insufficient stock</h3>
-            <p className="text-xs text-muted-foreground truncate">{info.productName}</p>
+            <p className="text-xs text-muted-foreground break-words">{info.productName}</p>
           </div>
         </div>
         <div className="px-5 py-4 space-y-3">

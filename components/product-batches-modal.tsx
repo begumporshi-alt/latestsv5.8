@@ -129,7 +129,7 @@ export function ProductBatchesModal({ product, onClose }: {
         <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
           <div className="min-w-0">
             <h3 className="font-bold text-sm flex items-center gap-2"><Layers className="w-4 h-4 text-blue-600" /> Batches</h3>
-            <p className="text-xs text-muted-foreground truncate">{product.name} · {product.sku}</p>
+            <p className="text-xs text-muted-foreground break-words">{product.name} · {product.sku}</p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground shrink-0"><X className="w-5 h-5" /></button>
         </div>

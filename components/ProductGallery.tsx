@@ -187,7 +187,7 @@ export function ProductGalleryBody({ products, onPick }: {
                   <div className="flex items-start gap-2">
                     <Package className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium truncate" title={p.name}>{p.name}</p>
+                      <p className="text-xs font-medium leading-snug line-clamp-2" title={p.name}>{p.name}</p>
                       <p className="text-[10px] text-muted-foreground truncate">{p.sku || ''}</p>
                     </div>
                   </div>

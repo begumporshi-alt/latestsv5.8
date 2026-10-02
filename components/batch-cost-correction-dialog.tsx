@@ -90,7 +90,7 @@ export function BatchCostCorrectionDialog({ target, onClose, onCorrected }: {
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div className="min-w-0">
             <h3 className="font-bold text-sm flex items-center gap-2"><Pencil className="w-4 h-4 text-blue-600" /> Correct Batch Cost</h3>
-            <p className="text-xs text-muted-foreground truncate">{target.productName} · {target.batchNumber || target.batchId.slice(0, 8)}</p>
+            <p className="text-xs text-muted-foreground break-words">{target.productName} · {target.batchNumber || target.batchId.slice(0, 8)}</p>
           </div>
           <button onClick={onClose} disabled={submitting} className="text-muted-foreground hover:text-foreground shrink-0 disabled:opacity-40">✕</button>
         </div>

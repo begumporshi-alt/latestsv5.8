@@ -637,7 +637,7 @@ export default function PurchasesPage() {
                     </div>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-foreground truncate">{prod?.name || 'Unknown Product'}</p>
+                    <p className="text-sm font-semibold text-foreground leading-snug line-clamp-2">{prod?.name || 'Unknown Product'}</p>
                     <p className="text-[10px] text-muted-foreground">{prod?.sku || ''}</p>
                     <div className="flex items-center gap-2 mt-1 text-[10px]">
                       <span className="text-amber-600 font-medium">Stock: {reminder.current_stock}</span>

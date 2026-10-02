@@ -95,6 +95,25 @@ export function resolveLabelConfig(page: PageLabelSettings, product?: ProductLab
   };
 }
 
+// Bold Helvetica/Arial averages ~0.67em per glyph for mixed-case product
+// names — calibrated from a real 2" label where a 30-char name filled the
+// printable width at 9px. Shrink the name font until the full text fits
+// one line, floored at a readable minimum — below the floor the label CSS
+// wraps to 2 lines instead.
+const NAME_CHAR_WIDTH_EM = 0.67;
+const NAME_MIN_FONT_PX = 5;
+const NAME_HORIZONTAL_PADDING_PX = 16;
+
+export function fitNameFontSize(baseFontSize: string, name: string, labelWidth: string): string {
+  const basePx = parseFloat(baseFontSize);
+  const availPx = parseFloat(labelWidth) * 96 - NAME_HORIZONTAL_PADDING_PX;
+  if (!(basePx > 0) || !(availPx > 0) || !name) return baseFontSize;
+  const textPx = name.length * NAME_CHAR_WIDTH_EM * basePx;
+  if (textPx <= availPx) return baseFontSize;
+  const fitted = Math.floor((availPx / textPx) * basePx * 10) / 10;
+  return `${Math.max(NAME_MIN_FONT_PX, fitted)}px`;
+}
+
 // Short badge text for a product's saved override, e.g. `2.5" × 1.4"`.
 export function describeProductLabelSize(product?: ProductLabelOverride | null): string | null {
   const productSize = product?.barcode_label_size;

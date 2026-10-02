@@ -12,7 +12,7 @@ import { useRouter } from 'next/navigation';
 import JsBarcode from 'jsbarcode';
 import { Package, Plus, Search, CreditCard as Edit, Trash2, TriangleAlert as AlertTriangle, ChartBar as BarChart3, Boxes, TrendingDown, RefreshCw, X, Warehouse, Palette, Ruler, ChevronDown, ChevronUp, ChevronRight, Info, Settings, Barcode, Camera, Printer, Download, Upload, CircleCheck as CheckCircle2 } from 'lucide-react';
 import type { Product, Category, Brand, Warehouse as WarehouseType, ProductColor, ProductSize, ProductUnit } from '@/lib/types';
-import { LABEL_SIZES, resolveLabelConfig, describeProductLabelSize, type LabelSize } from '@/lib/label-sizes';
+import { LABEL_SIZES, resolveLabelConfig, fitNameFontSize, describeProductLabelSize, type LabelSize } from '@/lib/label-sizes';
 import Pagination from '@/components/ui/AppPagination';
 import { ProductBatchesModal } from '@/components/product-batches-modal';
 import { networkMonitor } from '@/lib/offline/network';
@@ -2311,7 +2311,7 @@ function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose
       @page { margin: 0; }
       body { margin: 0; padding: 0; font-family: 'Helvetica Neue', Arial, sans-serif; }
       .label { width: ${cfg.width}; height: ${cfg.height}; display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 6px 8px; box-sizing: border-box; border: 1px solid #e0e0e0; border-radius: 4px; }
-      .name { font-size: ${cfg.nameFontSize}; font-weight: 600; text-align: center; line-height: 1.2; color: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+      .name { font-size: ${fitNameFontSize(cfg.nameFontSize, product.name, cfg.width)}; font-weight: 600; text-align: center; line-height: 1.15; color: #1a1a1a; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; max-width: 100%; }
       .barcode-wrap { display: flex; justify-content: center; max-width: 100%; overflow: hidden; }
       .barcode-wrap svg { display: block; max-width: 100%; height: auto; }
       .code { font-size: ${cfg.skuFontSize}; font-family: 'Courier New', monospace; color: #1a1a1a; letter-spacing: 0.5px; }
@@ -2343,7 +2343,7 @@ function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose
         <div className="p-6 flex flex-col items-center">
           {/* Professional label preview */}
           <div className="border border-gray-200 rounded-lg p-4 bg-white flex flex-col items-center gap-1.5 shadow-sm" style={{ width: cfg.width, minHeight: cfg.height, maxWidth: '100%' }}>
-            <p className="font-semibold text-foreground text-center leading-tight line-clamp-2" style={{ fontSize: cfg.nameFontSize }}>{product.name}</p>
+            <p className="font-semibold text-foreground text-center leading-tight line-clamp-2" style={{ fontSize: fitNameFontSize(cfg.nameFontSize, product.name, cfg.width) }}>{product.name}</p>
             <div className="flex justify-center w-full overflow-hidden">
               <svg ref={svgRef} className="max-w-full h-auto" />
             </div>

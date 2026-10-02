@@ -74,7 +74,7 @@ export default function ProductFilterDropdown({ value, onChange, placeholder = '
         className="w-full flex items-center gap-2 border border-border rounded-lg px-3 py-2 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition"
       >
         <Package className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-        <span className={`flex-1 truncate text-left ${selectedProduct ? 'text-foreground' : 'text-muted-foreground'}`}>
+        <span className={`flex-1 text-left leading-snug line-clamp-2 ${selectedProduct ? 'text-foreground' : 'text-muted-foreground'}`}>
           {selectedProduct ? selectedProduct.name : placeholder}
         </span>
         {selectedProduct ? (
@@ -121,7 +121,7 @@ export default function ProductFilterDropdown({ value, onChange, placeholder = '
                 >
                   <Package className="w-3.5 h-3.5 shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <p className="truncate">{p.name}</p>
+                    <p className="leading-snug line-clamp-2">{p.name}</p>
                     {p.sku && <p className="text-[10px] text-muted-foreground truncate">{p.sku}</p>}
                   </div>
                   {value === p.id && <Check className="w-3.5 h-3.5 ml-auto" />}
