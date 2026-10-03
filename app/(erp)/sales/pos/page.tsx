@@ -2499,11 +2499,24 @@ export default function POSPage() {
                 // The panel settles over several frames (footer renders first,
                 // then the auto-grow override lands), so keep re-correcting
                 // every frame until the height is stable and the drift is 0.
+                // Any user scroll/hinput cancels the correction immediately —
+                // otherwise this loop would undo the user's own scrolling.
                 let lastH = -1;
                 let calm = 0;
                 let frames = 0;
+                let done = false;
+                const stop = () => { done = true; };
+                const stopOpts: AddEventListenerOptions = { capture: true, passive: true };
+                window.addEventListener('wheel', stop, stopOpts);
+                window.addEventListener('touchstart', stop, stopOpts);
+                window.addEventListener('keydown', stop, { capture: true });
+                const cleanup = () => {
+                  window.removeEventListener('wheel', stop, stopOpts);
+                  window.removeEventListener('touchstart', stop, stopOpts);
+                  window.removeEventListener('keydown', stop, { capture: true });
+                };
                 const tick = () => {
-                  if (++frames > 180) return;
+                  if (done || ++frames > 180) { cleanup(); return; }
                   const h = cartPanelRef.current?.offsetHeight ?? -1;
                   const dy = Math.round(btn.getBoundingClientRect().top - startTop);
                   if (Math.abs(dy) > 1) {
@@ -2519,7 +2532,7 @@ export default function POSPage() {
                   }
                   const settled = h === lastH && calm > 10;
                   lastH = h;
-                  if (settled) return;
+                  if (settled) { cleanup(); return; }
                   requestAnimationFrame(tick);
                 };
                 requestAnimationFrame(tick);
