@@ -1858,7 +1858,7 @@ export default function POSPage() {
   }, [customerDropdownOpen]);
 
   return (
-    <div ref={posRootRef} className="flex flex-col lg:flex-row lg:h-[var(--pos-h,calc(100dvh_-_104px))] gap-4 animate-fade-in">
+    <div ref={posRootRef} className="flex flex-col lg:flex-row lg:h-[var(--pos-h,calc(100dvh_-_104px))] transition-[height] duration-300 ease-out gap-4 animate-fade-in">
       {/* Mobile Cart Overlay */}
       {showMobileCart && (
         <div
@@ -2222,7 +2222,7 @@ export default function POSPage() {
         ${cartMaximized ? 'rounded-none lg:rounded-none' : 'rounded-t-3xl lg:rounded-2xl'}
         border border-border shadow-sm overflow-hidden relative
         z-50
-        transition-transform duration-300 ease-out lg:transition-none
+        transition-transform duration-300 ease-out lg:transition-[height]
         ${showMobileCart || cartMaximized ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}
         ${cartMaximized ? '' : 'h-[85vh] lg:h-[var(--cart-ovh,100%)]'}
       `}>
@@ -2535,12 +2535,21 @@ export default function POSPage() {
                   const h = cartPanelRef.current?.offsetHeight ?? -1;
                   const dy = Math.round(btn.getBoundingClientRect().top - startTop);
                   if (Math.abs(dy) > 1) {
-                    // Whichever is actually scrollable right now: <main> is
-                    // the scroller when the layout constrains it, but once the
-                    // cart grows the page, <main> grows too and the window
-                    // (documentElement) is the scroller.
-                    if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) scroller.scrollTop += dy;
-                    else window.scrollBy(0, dy);
+                    // Scroll the document first — it holds the overflow
+                    // created by the page growing. <main> is the scroller
+                    // only when the layout constrains it, and feeding it
+                    // first can starve the document mid-animation: <main>
+                    // stays "scrollable" but saturated, so the drift would
+                    // lag behind the panel's height transition.
+                    const se = document.scrollingElement;
+                    let applied = 0;
+                    if (se) {
+                      const before = se.scrollTop;
+                      se.scrollTop = before + dy;
+                      applied = se.scrollTop - before;
+                    }
+                    const rest = dy - applied;
+                    if (Math.abs(rest) > 0 && scroller && scroller.scrollHeight > scroller.clientHeight + 1) scroller.scrollTop += rest;
                     calm = 0;
                   } else {
                     calm++;
