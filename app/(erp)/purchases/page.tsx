@@ -845,12 +845,13 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
   const [showAddSupplier, setShowAddSupplier] = useState(false);
   const [supplierList, setSupplierList] = useState(suppliers);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
-  const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default?: boolean }[]>([]);
+  const [headerWarehouseId, setHeaderWarehouseId] = useState('');
 
   useEffect(() => {
     supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
       .then(({ data }) => { if (data) setPaymentMethods(data); });
-    supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('name')
+    supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('name')
       .then(({ data }) => { if (data) setWarehouses(data as any); });
 
     // Load bulk reminder products from sessionStorage
@@ -864,6 +865,8 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
         const productIds: string[] = JSON.parse(bulkProductsRaw);
         const reminderIds: string[] = bulkReminderIdsRaw ? JSON.parse(bulkReminderIdsRaw) : [];
         if (productIds.length > 0) {
+          const { data: whRes } = await supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('name');
+          const sysDefaultWhId = whRes && whRes.length > 0 ? ((whRes as any[]).find(w => w.is_default)?.id || whRes[0].id) : '';
           // Fetch product details and auto-add to items
           const { data: prods } = await supabase
             .from('products')
@@ -876,7 +879,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
               const defaultUnit = multi ? getDefaultSaleUnit(units) : null;
               const unitPrice = defaultUnit ? defaultUnit.cost_price : (p.cost_price || 0);
               const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
-              const defaultWarehouseId = warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '';
+              const defaultWarehouseId = sysDefaultWhId;
               return {
                 product_id: p.id,
                 product_name: p.name,
@@ -916,6 +919,8 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
           const rows: any[] = Array.isArray(payload?.items) ? payload.items : [];
           const ids = [...new Set(rows.map((r: any) => r.product_id).filter(Boolean))];
           if (!rows.length || !ids.length) return;
+          const { data: whs } = await supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('name');
+          const sysDefaultWhId = whs && whs.length > 0 ? ((whs as any[]).find(w => w.is_default)?.id || whs[0].id) : '';
           // Online: fetch full product details (units + inventory). Offline:
           // fall back to the page-level product list so the prefilled items
           // still appear (base-unit pricing; user can adjust on the form).
@@ -938,7 +943,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
             const quantity = Math.max(1, Number(row.quantity) || 1);
             const unitPrice = selectedUnit ? (selectedUnit.cost_price || p.cost_price || 0) : (p.cost_price || 0);
             const baseQty = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
-            const warehouseId = row.warehouse_id || (warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '');
+            const warehouseId = row.warehouse_id || sysDefaultWhId;
             return {
               product_id: p.id, product_name: p.name, product_sku: p.sku,
               product_unit: p.unit, product_base_unit: p.base_unit,
@@ -978,18 +983,29 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
     }
   }
 
+  function pickDefaultWarehouseId() {
+    if (headerWarehouseId) return headerWarehouseId;
+    return warehouses.length > 0 ? (warehouses.find(w => w.is_default)?.id || warehouses[0].id) : '';
+  }
+
+  function applyHeaderWarehouse(whId: string) {
+    setHeaderWarehouseId(whId);
+    if (whId) setItems(items.map(it => ({ ...it, warehouse_id: whId })));
+  }
+
   function addProductToItems(product: any) {
     const units = (product.units || []).filter((u: any) => u.is_active);
     const multi = isMultiUnitEnabled(product);
     const defaultUnit = multi ? getDefaultSaleUnit(units) : null;
     const unitPrice = defaultUnit ? defaultUnit.cost_price : (product.cost_price || 0);
     const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
+    const defaultWarehouseId = pickDefaultWarehouseId();
 
     // Deduplicate: if same product+unit+warehouse already exists, increment quantity
     const existingIdx = items.findIndex(it =>
       it.product_id === product.id &&
       (!defaultUnit || (it.selected_unit && it.selected_unit.id === defaultUnit.id)) &&
-      it.warehouse_id === (warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '')
+      it.warehouse_id === defaultWarehouseId
     );
     if (existingIdx >= 0) {
       const updated = [...items];
@@ -997,9 +1013,6 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
       setItems(updated);
       return;
     }
-
-    // Pick default warehouse (first warehouse or the default one)
-    const defaultWarehouseId = warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '';
 
     setItems([...items, {
       product_id: product.id,
@@ -1226,9 +1239,22 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium mb-1">Reference</label>
-            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person or PO ref" />
+          <div className="grid grid-cols-3 gap-4">
+            <div className="col-span-2">
+              <label className="block text-xs font-medium mb-1">Reference</label>
+              <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person or PO ref" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Receive Into</label>
+              <select
+                value={headerWarehouseId}
+                onChange={e => applyHeaderWarehouse(e.target.value)}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              >
+                <option value="">Default warehouse</option>
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
           </div>
 
           <div>
@@ -1827,7 +1853,8 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [supplierList, setSupplierList] = useState(suppliers);
-  const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default?: boolean }[]>([]);
+  const [headerWarehouseId, setHeaderWarehouseId] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -1836,7 +1863,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           .from('purchase_order_items')
           .select('*, product:products(name, sku, unit, base_unit, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order))')
           .eq('purchase_order_id', order.id),
-        supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('name'),
+        supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('name'),
       ]);
       setWarehouses((whRes.data as any) || []);
       setItems((itemsRes.data || []).map((it: any) => {
@@ -1885,13 +1912,23 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
     setItems(items.filter((_, i) => i !== index));
   }
 
+  function pickDefaultWarehouseId() {
+    if (headerWarehouseId) return headerWarehouseId;
+    return warehouses.length > 0 ? (warehouses.find(w => w.is_default)?.id || warehouses[0].id) : '';
+  }
+
+  function applyHeaderWarehouse(whId: string) {
+    setHeaderWarehouseId(whId);
+    if (whId) setItems(items.map(it => ({ ...it, warehouse_id: whId })));
+  }
+
   function addProductToItems(product: any) {
     const units = (product.units || []).filter((u: any) => u.is_active);
     const multi = isMultiUnitEnabled(product);
     const defaultUnit = multi ? getDefaultSaleUnit(units) : null;
     const unitPrice = defaultUnit ? defaultUnit.cost_price : (product.cost_price || 0);
     const baseQty = defaultUnit ? convertToBaseUnit(1, defaultUnit) : 1;
-    const defaultWhId = warehouses.length > 0 ? (warehouses.find(w => (w as any).is_default)?.id || warehouses[0].id) : '';
+    const defaultWhId = pickDefaultWarehouseId();
 
     const existingIdx = items.findIndex(it =>
       it.product_id === product.id &&
@@ -2090,9 +2127,22 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium mb-1">Reference</label>
-            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person or PO ref" />
+          <div className="grid grid-cols-3 gap-4">
+            <div className="col-span-2">
+              <label className="block text-xs font-medium mb-1">Reference</label>
+              <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person or PO ref" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Receive Into</label>
+              <select
+                value={headerWarehouseId}
+                onChange={e => applyHeaderWarehouse(e.target.value)}
+                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              >
+                <option value="">Default warehouse</option>
+                {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+              </select>
+            </div>
           </div>
 
           <div>
