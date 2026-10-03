@@ -151,7 +151,7 @@ export default function Sidebar({ collapsed }: SidebarProps) {
   }
 
   return (
-    <aside className={`min-h-screen flex flex-col sidebar-bg text-white shrink-0 transition-all duration-300 ${collapsed ? 'w-[60px]' : 'w-[220px]'}`}>
+    <aside className={`h-screen flex flex-col sidebar-bg text-white shrink-0 transition-all duration-300 ${collapsed ? 'w-[60px]' : 'w-[220px]'}`}>
       {/* Logo */}
       <div className={`flex items-center gap-2.5 px-4 py-4 border-b border-white/10 ${collapsed ? 'justify-center px-2' : ''}`}>
         <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center shrink-0">
