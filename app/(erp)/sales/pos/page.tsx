@@ -1816,7 +1816,22 @@ export default function POSPage() {
       const padTop = main ? parseFloat(getComputedStyle(main).paddingTop) || 0 : 0;
       const padBottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0;
       const avail = main ? window.innerHeight - main.offsetTop - padTop - padBottom : window.innerHeight;
-      const desired = panel.offsetHeight - list.offsetHeight + list.scrollHeight;
+      // Natural content height of the list. `list.scrollHeight` cannot be
+      // used when the panel is taller than its content (e.g. right after
+      // closing the footer): a stretched list reports its stretched height,
+      // pinning the panel at the expanded size and leaving a large gap.
+      // Span from the first real item to the last instead (scroll-safe; the
+      // sticky fade overlay is excluded).
+      const cs = getComputedStyle(list);
+      const listPad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      const items = Array.from(list.children).filter((c) => {
+        const p = getComputedStyle(c).position;
+        return p !== 'sticky' && p !== 'absolute';
+      }) as HTMLElement[];
+      const natural = items.length
+        ? listPad + (items[items.length - 1].getBoundingClientRect().bottom - items[0].getBoundingClientRect().top)
+        : list.scrollHeight;
+      const desired = panel.offsetHeight - list.offsetHeight + Math.ceil(natural);
       setCartHeightOverride(desired > avail ? desired : null);
     });
     return () => cancelAnimationFrame(raf);
