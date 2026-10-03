@@ -1796,12 +1796,15 @@ export default function POSPage() {
   // Auto-grow: from 3 items the cart extends downward (the page grows with it)
   // so every item stays visible; past 50 items growth stops and the list
   // scrolls internally. "Reset size" in the cart header turns it off.
+  // The expanded footer always gets room: the panel grows downward so the list
+  // (and the toggle the user just clicked) never shifts.
   useEffect(() => {
-    if (!cartAutoGrow || cart.length < 3) {
+    if (cart.length > 50 && !showCartFooter) return; // freeze at the 50-item height
+    const itemGrow = cartAutoGrow && cart.length >= 3;
+    if (!showCartFooter && !itemGrow) {
       setCartHeightOverride(null);
       return;
     }
-    if (cart.length > 50) return; // freeze at the 50-item height
     let raf = requestAnimationFrame(() => {
       const root = posRootRef.current;
       const panel = cartPanelRef.current;
@@ -2484,7 +2487,43 @@ export default function POSPage() {
           <div className="border-t border-border">
             {/* Collapse toggle */}
             <button
-              onClick={() => setShowCartFooter(p => !p)}
+              onClick={(e) => {
+                // The toggle must stay put on screen: the cart grows for the
+                // footer, so afterwards scroll the page by whatever the
+                // button drifted, keeping the user's view anchored here.
+                const btn = e.currentTarget;
+                const startTop = btn.getBoundingClientRect().top;
+                // The ERP layout scrolls inside <main>, not the window.
+                const scroller = posRootRef.current?.parentElement;
+                setShowCartFooter(p => !p);
+                // The panel settles over several frames (footer renders first,
+                // then the auto-grow override lands), so keep re-correcting
+                // every frame until the height is stable and the drift is 0.
+                let lastH = -1;
+                let calm = 0;
+                let frames = 0;
+                const tick = () => {
+                  if (++frames > 180) return;
+                  const h = cartPanelRef.current?.offsetHeight ?? -1;
+                  const dy = Math.round(btn.getBoundingClientRect().top - startTop);
+                  if (Math.abs(dy) > 1) {
+                    // Whichever is actually scrollable right now: <main> is
+                    // the scroller when the layout constrains it, but once the
+                    // cart grows the page, <main> grows too and the window
+                    // (documentElement) is the scroller.
+                    if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) scroller.scrollTop += dy;
+                    else window.scrollBy(0, dy);
+                    calm = 0;
+                  } else {
+                    calm++;
+                  }
+                  const settled = h === lastH && calm > 10;
+                  lastH = h;
+                  if (settled) return;
+                  requestAnimationFrame(tick);
+                };
+                requestAnimationFrame(tick);
+              }}
               className="w-full flex items-center justify-between px-3 py-2 border border-blue-200 bg-blue-50/60 text-blue-600 hover:bg-blue-100/60 transition text-xs font-medium"
             >
               <span className="flex items-center gap-1.5">
