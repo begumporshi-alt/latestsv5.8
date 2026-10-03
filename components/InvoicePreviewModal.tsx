@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, History, DollarSign, Printer, ChevronDown, Pencil, Ban, CreditCard, Copy, AlertTriangle, Check, Package } from 'lucide-react';
+import { X, History, DollarSign, Printer, ChevronDown, Pencil, Ban, CreditCard, Copy, AlertTriangle, Check, Package, MessageCircle, Mail, Link2 } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate, isInvoiceOverdue } from '@/lib/format';
+import { openWhatsApp, openEmail, generateShareToken, shareLinkUrl } from '@/lib/share';
 import { printNode } from '@/lib/print';
 import PrintTemplate from './PrintTemplate';
 import { useRouter } from 'next/navigation';
@@ -55,6 +56,7 @@ export interface InvoicePreviewModalProps {
     name: string;
     code?: string;
     phone?: string;
+    email?: string;
     address?: string;
   };
   items: {
@@ -97,6 +99,8 @@ export interface InvoicePreviewModalProps {
   showCustomerOutstanding?: boolean;
   showActions?: boolean;
   invoiceId?: string;
+  /** Existing public share token (from the invoice row), if any. */
+  shareToken?: string | null;
   customer_id?: string;
   onEdit?: () => void;
   onCancel?: () => void;
@@ -155,6 +159,7 @@ export default function InvoicePreviewModal({
   showCustomerOutstanding = false,
   showActions = false,
   invoiceId,
+  shareToken,
   customer_id,
   onEdit,
   onCancel,
@@ -306,6 +311,74 @@ export default function InvoicePreviewModal({
       )
     : undefined;
 
+  function buildShareText() {
+    const lines = [
+      `*${docType} ${docNumber}*`,
+      `From: ${company?.name || 'Our Company'}`,
+      `Date: ${formatDate(docDate)}`,
+      ...(dueDate ? [`Due Date: ${formatDate(dueDate)}`] : []),
+      '',
+      'Items:',
+      ...items.map((item, i) => `${i + 1}. ${item.product_name || 'Item'} — Qty: ${item.quantity} ${item.unit_name || ''} — ${formatCurrency(item.subtotal)}`),
+      '',
+      `Total: ${formatCurrency(totalAmount)}`,
+    ];
+    if (docType === 'INVOICE') {
+      lines.push(`Paid: ${formatCurrency(amountPaid)}`, `Due: ${formatCurrency(balance)}`);
+    }
+    lines.push('', 'Thank you for your business!');
+    return lines.join('\n');
+  }
+
+  function shareWhatsApp() {
+    openWhatsApp(customer?.phone, buildShareText());
+  }
+
+  function shareEmail() {
+    openEmail(customer?.email, `${docType} ${docNumber} from ${company?.name || 'Our Company'}`, buildShareText());
+  }
+
+  const [currentShareToken, setCurrentShareToken] = useState<string | null>(shareToken ?? null);
+  const [shareLinkBusy, setShareLinkBusy] = useState(false);
+  useEffect(() => { setCurrentShareToken(shareToken ?? null); }, [shareToken]);
+
+  async function copyShareLink() {
+    if (!invoiceId || shareLinkBusy) return;
+    setShareLinkBusy(true);
+    try {
+      let token = currentShareToken;
+      if (!token) {
+        token = generateShareToken();
+        const { error } = await supabase.from('invoices').update({ share_token: token }).eq('id', invoiceId);
+        if (error) throw error;
+        setCurrentShareToken(token);
+      }
+      const url = shareLinkUrl(token);
+      try {
+        await navigator.clipboard.writeText(url);
+        toast({ title: 'Link copied', description: 'Anyone with this link can view the invoice — no login needed.' });
+      } catch {
+        toast({ title: 'Copy blocked by browser', description: url, variant: 'destructive' });
+      }
+    } catch (err: any) {
+      toast({ title: 'Could not create link', description: err?.message || 'Check your connection and try again.', variant: 'destructive' });
+    } finally {
+      setShareLinkBusy(false);
+    }
+  }
+
+  async function revokeShareLink() {
+    if (!invoiceId || !currentShareToken) return;
+    try {
+      const { error } = await supabase.from('invoices').update({ share_token: null }).eq('id', invoiceId);
+      if (error) throw error;
+      setCurrentShareToken(null);
+      toast({ title: 'Share link disabled', description: 'The old link no longer works.' });
+    } catch (err: any) {
+      toast({ title: 'Could not disable link', description: err?.message || 'Try again.', variant: 'destructive' });
+    }
+  }
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="print-modal bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -385,6 +458,37 @@ export default function InvoicePreviewModal({
                 Copy Products
               </button>
             )}
+            {docType === 'INVOICE' && (
+              <button
+                onClick={shareWhatsApp}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition"
+                title="Share this invoice on WhatsApp"
+              >
+                <MessageCircle className="w-3.5 h-3.5" />
+                WhatsApp
+              </button>
+            )}
+            {docType === 'INVOICE' && (
+              <button
+                onClick={shareEmail}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition"
+                title="Email this invoice to the customer"
+              >
+                <Mail className="w-3.5 h-3.5" />
+                Email
+              </button>
+            )}
+            {docType === 'INVOICE' && invoiceId && (
+              <button
+                onClick={copyShareLink}
+                disabled={shareLinkBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white rounded-lg text-sm font-medium transition"
+                title="Create a public link anyone can open to view and print this invoice"
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                {currentShareToken ? 'Copy Link' : 'Share Link'}
+              </button>
+            )}
             <button
               onClick={() => {
                 if (printRef.current) {
@@ -452,6 +556,14 @@ export default function InvoicePreviewModal({
                         <span className="text-green-700 font-medium">Visible</span>
                       )}
                     </button>
+                    {currentShareToken && (
+                      <button
+                        onClick={revokeShareLink}
+                        className="w-full text-left px-3 py-2 rounded-md text-sm text-red-600 hover:bg-red-50 transition"
+                      >
+                        Disable Share Link
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

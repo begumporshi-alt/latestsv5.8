@@ -50,7 +50,7 @@ interface PosReceipt {
   offline: boolean;
   date: string;
   status: string;
-  customer: { name: string; code?: string; phone?: string; address?: string } | null;
+  customer: { name: string; code?: string; phone?: string; email?: string; address?: string } | null;
   items: {
     product_name: string;
     product_sku?: string;
@@ -2566,6 +2566,7 @@ export default function POSPage() {
             name: lastReceipt.customer?.name || 'Walk In',
             code: lastReceipt.customer?.code,
             phone: lastReceipt.customer?.phone,
+            email: lastReceipt.customer?.email,
             address: lastReceipt.customer?.address,
           }}
           items={lastReceipt.items}

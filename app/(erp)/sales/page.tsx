@@ -237,7 +237,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     // invoices and understated Total Sales by ~6.3L).
     const [invoicesData, returnsData, paymentsData, deliveriesData, receivablePaymentsData, returnsForStatsData, accountsRes, cphData, creditRes, gapRes] = await Promise.all([
       fetchAll(() => {
-        let q = supabase.from('invoices').select('*, customer:customers(name, code, phone, address)').order('created_at', { ascending: false });
+        let q = supabase.from('invoices').select('*, customer:customers(name, code, phone, email, address)').order('created_at', { ascending: false });
         if (from) q = q.gte('invoice_date', from);
         if (to) q = q.lte('invoice_date', to);
         return q;
@@ -1008,6 +1008,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
             name: viewingInvoice.customer?.name || '—',
             code: viewingInvoice.customer?.code,
             phone: viewingInvoice.customer?.phone,
+            email: (viewingInvoice.customer as any)?.email,
             address: viewingInvoice.customer?.address,
           }}
           items={invoiceItems.map((item: any) => ({
@@ -1039,6 +1040,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           }))}
           onClose={() => setViewingInvoice(null)}
           invoiceId={viewingInvoice.id}
+          shareToken={(viewingInvoice as any).share_token}
           customer_id={viewingInvoice.customer_id}
           showTabs={true}
           showCustomerOutstanding={true}

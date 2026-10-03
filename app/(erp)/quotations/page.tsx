@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { openWhatsApp, openEmail, generateShareToken, shareLinkUrl } from '@/lib/share';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart, LayoutGrid } from 'lucide-react';
+import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart, LayoutGrid, Link2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { ProductGalleryBody } from '@/components/ProductGallery';
 import { fetchAll } from '@/lib/fetch-all';
@@ -34,7 +35,7 @@ const statusConfig: Record<QuotationStatus, { label: string; color: string; bg: 
 };
 
 interface QuotationWithCustomer extends Omit<Quotation, 'customer'> {
-  customer?: { name: string; code: string };
+  customer?: { name: string; code: string; phone?: string; email?: string; address?: string };
 }
 
 /** Slow-changing reference data, cached separately with a longer TTL so the
@@ -2464,6 +2465,45 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
   // VAT rate for the printed quotation's tax row label.
   const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
   useEffect(() => { loadVatSettings(supabase).then(setVatSettings); }, []);
+  const [currentShareToken, setCurrentShareToken] = useState<string | null>((quotation as any).share_token ?? null);
+  const [shareLinkBusy, setShareLinkBusy] = useState(false);
+
+  async function copyShareLink() {
+    if (shareLinkBusy) return;
+    setShareLinkBusy(true);
+    try {
+      let token = currentShareToken;
+      if (!token) {
+        token = generateShareToken();
+        const { error } = await supabase.from('quotations').update({ share_token: token }).eq('id', quotation.id);
+        if (error) throw error;
+        setCurrentShareToken(token);
+      }
+      const url = shareLinkUrl(token);
+      try {
+        await navigator.clipboard.writeText(url);
+        toast({ title: 'Link copied', description: 'Anyone with this link can view the quotation — no login needed.' });
+      } catch {
+        toast({ title: 'Copy blocked by browser', description: url, variant: 'destructive' });
+      }
+    } catch (err: any) {
+      toast({ title: 'Could not create link', description: err?.message || 'Check your connection and try again.', variant: 'destructive' });
+    } finally {
+      setShareLinkBusy(false);
+    }
+  }
+
+  async function revokeShareLink() {
+    if (!currentShareToken) return;
+    try {
+      const { error } = await supabase.from('quotations').update({ share_token: null }).eq('id', quotation.id);
+      if (error) throw error;
+      setCurrentShareToken(null);
+      toast({ title: 'Share link disabled', description: 'The old link no longer works.' });
+    } catch (err: any) {
+      toast({ title: 'Could not disable link', description: err?.message || 'Try again.', variant: 'destructive' });
+    }
+  }
 
   function copyProductList() {
     const text = JSON.stringify({ type: 'invoice-product-list', items: items.map((item: any) => ({
@@ -2499,19 +2539,12 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
   }
 
   function shareWhatsApp() {
-    const phone = (quotation.customer as any)?.phone?.replace(/[^0-9]/g, '');
-    const text = encodeURIComponent(buildShareText());
-    const url = phone
-      ? `https://wa.me/${phone}?text=${text}`
-      : `https://wa.me/?text=${text}`;
-    window.open(url, '_blank');
+    openWhatsApp((quotation.customer as any)?.phone, buildShareText());
   }
 
   function shareEmail() {
-    const email = (quotation.customer as any)?.email || '';
-    const subject = encodeURIComponent(`Quotation ${quotation.quote_number} from ${companySettings?.name || 'Our Company'}`);
-    const body = encodeURIComponent(buildShareText());
-    window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
+    const subject = `Quotation ${quotation.quote_number} from ${companySettings?.name || 'Our Company'}`;
+    openEmail((quotation.customer as any)?.email, subject, buildShareText());
   }
 
   return (
@@ -2540,6 +2573,14 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
             </button>
             <button onClick={shareEmail} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
               <Mail className="w-3.5 h-3.5" />Email
+            </button>
+            <button
+              onClick={copyShareLink}
+              disabled={shareLinkBusy}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white rounded-lg text-sm font-medium transition"
+              title="Create a public link anyone can open to view and print this quotation"
+            >
+              <Link2 className="w-3.5 h-3.5" />{currentShareToken ? 'Copy Link' : 'Share Link'}
             </button>
             <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-sm font-medium transition">
               <Printer className="w-3.5 h-3.5" />Print
@@ -2595,6 +2636,14 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
                       <span className="text-green-700 font-medium">Visible</span>
                     )}
                   </button>
+                  {currentShareToken && (
+                    <button
+                      onClick={revokeShareLink}
+                      className="w-full text-left px-3 py-2 rounded-md text-sm text-red-600 hover:bg-red-50 transition"
+                    >
+                      Disable Share Link
+                    </button>
+                  )}
                 </div>
               )}
             </div>
