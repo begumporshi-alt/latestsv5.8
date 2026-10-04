@@ -1747,7 +1747,7 @@ export default function POSPage() {
     // The toggle must stay put on screen: the cart grows for the
     // footer, so afterwards scroll the page by whatever the
     // button drifted, keeping the user's view anchored here.
-    // Shared by the button click and the F3 shortcut.
+    // Shared by the button click and the Shift+L shortcut.
     const btn = footerToggleRef.current;
     if (!btn) return;
     if (!showCartFooter) {
@@ -1765,13 +1765,13 @@ export default function POSPage() {
     // every frame until the height is stable and the drift is 0.
     // Any user scroll/input cancels the correction immediately —
     // otherwise this loop would undo the user's own scrolling.
-    // F3 is exempt: it IS this toggle, fired via the shortcut.
+    // Shift+L is exempt: it IS this toggle, fired via the shortcut.
     let lastH = -1;
     let calm = 0;
     let frames = 0;
     let done = false;
     const stop = () => { done = true; };
-    const onKeyStop = (e: KeyboardEvent) => { if (e.key !== 'F3') stop(); };
+    const onKeyStop = (e: KeyboardEvent) => { if (!(e.shiftKey && e.code === 'KeyL')) stop(); };
     const stopOpts: AddEventListenerOptions = { capture: true, passive: true };
     window.addEventListener('wheel', stop, stopOpts);
     window.addEventListener('touchstart', stop, stopOpts);
@@ -1913,9 +1913,10 @@ export default function POSPage() {
   useEffect(() => {
     sessionStorage.setItem('posCartAutoGrow', cartAutoGrow ? 'on' : 'off');
   }, [cartAutoGrow]);
-  // Keyboard shortcuts (cheat-sheet on "?"): "/" focus search, F2 new sale,
-  // F4 / Ctrl+Enter checkout, F3 footer toggle, Esc step back. While typing
-  // in an input only Esc works, so "/" and friends never eat typed text.
+  // Keyboard shortcuts (cheat-sheet on "?"): "/" focus search, Shift+N new
+  // sale, Shift+P / Ctrl+Enter checkout, Shift+L footer toggle, Esc step
+  // back. While typing in an input only Esc and Ctrl+Enter work, so letters
+  // and "/" never eat typed text.
   useEffect(() => {
     const isEditable = (t: EventTarget | null) =>
       t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
@@ -1930,11 +1931,21 @@ export default function POSPage() {
         if (cartMaximized) { setCartMaximized(false); return; }
         return;
       }
+      // Ctrl+Enter never inserts text, so it stays live even while typing;
+      // Shift-letters would insert capitals, so they wait until below the
+      // isEditable guard, as do "/" and "?".
       if (showCheckout || showQuickSell) return;
-      // F-keys and Ctrl+Enter never insert text, so they stay live even while
-      // typing in an input; "/" and "?" are gated to non-editable targets so
-      // they can still be typed.
-      if (e.key === 'F2') {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (cart.length > 0 && !processing) setShowCheckout(true);
+        return;
+      }
+      if (isEditable(e.target)) return;
+      // e.code distinguishes the physical key, so Shift+S etc. and any
+      // uppercase the layout produces both match; bare modifiers are excluded
+      // so system shortcuts like Ctrl+Shift+... are never hijacked.
+      const shiftKey = e.code.startsWith('Key') && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
+      if (shiftKey && e.code === 'KeyN') {
         e.preventDefault();
         if (cart.length > 0 && !processing) {
           setCart([]);
@@ -1942,17 +1953,16 @@ export default function POSPage() {
         }
         return;
       }
-      if (e.key === 'F4' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+      if (shiftKey && e.code === 'KeyP') {
         e.preventDefault();
         if (cart.length > 0 && !processing) setShowCheckout(true);
         return;
       }
-      if (e.key === 'F3') {
+      if (shiftKey && e.code === 'KeyL') {
         e.preventDefault();
         if (cart.length > 0) toggleCartFooter();
         return;
       }
-      if (isEditable(e.target)) return;
       if (e.key === '/') {
         e.preventDefault();
         searchInputRef.current?.focus();
@@ -2375,7 +2385,7 @@ export default function POSPage() {
               </button>
             )}
             {cart.length > 0 && (
-              <button onClick={() => setCart([])} className="text-xs text-red-500 hover:underline">Clear <kbd className="rounded border border-border bg-muted px-0.5 text-[9px] font-semibold text-muted-foreground">F2</kbd></button>
+              <button onClick={() => setCart([])} className="text-xs text-red-500 hover:underline">Clear <kbd className="rounded border border-border bg-muted px-0.5 text-[9px] font-semibold text-muted-foreground">⇧N</kbd></button>
             )}
             <button
               onClick={() => setShowShortcuts(true)}
@@ -2646,7 +2656,7 @@ export default function POSPage() {
                 {showCartFooter ? 'Hide footer' : 'See more in list (Optional)'}
               </span>
               <span className="flex items-center gap-1.5">
-                <kbd className="rounded border border-blue-200 bg-white px-1 text-[10px] font-semibold text-blue-400">F3</kbd>
+                <kbd className="rounded border border-blue-200 bg-white px-1 text-[10px] font-semibold text-blue-400">⇧L</kbd>
                 {showCartFooter ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </span>
             </button>
@@ -2730,7 +2740,7 @@ export default function POSPage() {
                 >
                   <Receipt className="w-4 h-4" />
                   Pay
-                  <kbd className="rounded bg-white/20 px-1 text-[10px] font-semibold leading-4">F4</kbd>
+                  <kbd className="rounded bg-white/20 px-1 text-[10px] font-semibold leading-4">⇧P</kbd>
                 </button>
               </div>
             )}
@@ -2919,10 +2929,10 @@ export default function POSPage() {
             <ul className="space-y-2">
               {[
                 ['/', 'Focus product search'],
-                ['F2', 'New sale (clear cart)'],
-                ['F4', 'Checkout (Pay)'],
+                ['Shift+N', 'New sale (clear cart)'],
+                ['Shift+P', 'Checkout (Pay)'],
                 ['Ctrl+Enter', 'Checkout (Pay)'],
-                ['F3', 'Toggle "See more in list"'],
+                ['Shift+L', 'Toggle "See more in list"'],
                 ['Esc', 'Close / step back'],
                 ['?', 'This cheat-sheet'],
               ].map(([k, d]) => (
