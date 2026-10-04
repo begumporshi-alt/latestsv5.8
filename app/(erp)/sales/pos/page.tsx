@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap, Keyboard } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -1738,7 +1738,80 @@ export default function POSPage() {
   const posRootRef = useRef<HTMLDivElement>(null);
   const cartPanelRef = useRef<HTMLDivElement>(null);
   const cartListRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const footerToggleRef = useRef<HTMLButtonElement>(null);
+  const listHBeforeFooterRef = useRef(0);
   const [cartHeightOverride, setCartHeightOverride] = useState<number | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const toggleCartFooter = () => {
+    // The toggle must stay put on screen: the cart grows for the
+    // footer, so afterwards scroll the page by whatever the
+    // button drifted, keeping the user's view anchored here.
+    // Shared by the button click and the F3 shortcut.
+    const btn = footerToggleRef.current;
+    if (!btn) return;
+    if (!showCartFooter) {
+      // Remember the list's rendered height so opening the footer grows the
+      // panel instead of shrinking a list that had slack (which would lift
+      // the button the user just clicked).
+      listHBeforeFooterRef.current = cartListRef.current?.offsetHeight ?? 0;
+    }
+    const startTop = btn.getBoundingClientRect().top;
+    // The ERP layout scrolls inside <main>, not the window.
+    const scroller = posRootRef.current?.parentElement;
+    setShowCartFooter(p => !p);
+    // The panel settles over several frames (footer renders first,
+    // then the auto-grow override lands), so keep re-correcting
+    // every frame until the height is stable and the drift is 0.
+    // Any user scroll/input cancels the correction immediately —
+    // otherwise this loop would undo the user's own scrolling.
+    // F3 is exempt: it IS this toggle, fired via the shortcut.
+    let lastH = -1;
+    let calm = 0;
+    let frames = 0;
+    let done = false;
+    const stop = () => { done = true; };
+    const onKeyStop = (e: KeyboardEvent) => { if (e.key !== 'F3') stop(); };
+    const stopOpts: AddEventListenerOptions = { capture: true, passive: true };
+    window.addEventListener('wheel', stop, stopOpts);
+    window.addEventListener('touchstart', stop, stopOpts);
+    window.addEventListener('keydown', onKeyStop, { capture: true });
+    const cleanup = () => {
+      window.removeEventListener('wheel', stop, stopOpts);
+      window.removeEventListener('touchstart', stop, stopOpts);
+      window.removeEventListener('keydown', onKeyStop, { capture: true });
+    };
+    const tick = () => {
+      if (done || ++frames > 180) { cleanup(); return; }
+      const h = cartPanelRef.current?.offsetHeight ?? -1;
+      const dy = Math.round(btn.getBoundingClientRect().top - startTop);
+      if (Math.abs(dy) > 1) {
+        // Scroll the document first — it holds the overflow
+        // created by the page growing. <main> is the scroller
+        // only when the layout constrains it, and feeding it
+        // first can starve the document mid-animation: <main>
+        // stays "scrollable" but saturated, so the drift would
+        // lag behind the panel's height transition.
+        const se = document.scrollingElement;
+        let applied = 0;
+        if (se) {
+          const before = se.scrollTop;
+          se.scrollTop = before + dy;
+          applied = se.scrollTop - before;
+        }
+        const rest = dy - applied;
+        if (Math.abs(rest) > 0 && scroller && scroller.scrollHeight > scroller.clientHeight + 1) scroller.scrollTop += rest;
+        calm = 0;
+      } else {
+        calm++;
+      }
+      const settled = h === lastH && calm > 10;
+      lastH = h;
+      if (settled) { cleanup(); return; }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  };
   const [cartAutoGrow, setCartAutoGrow] = useState(() => {
     if (typeof window === 'undefined') return true;
     return sessionStorage.getItem('posCartAutoGrow') !== 'off';
@@ -1831,7 +1904,8 @@ export default function POSPage() {
       const natural = items.length
         ? listPad + (items[items.length - 1].getBoundingClientRect().bottom - items[0].getBoundingClientRect().top)
         : list.scrollHeight;
-      const desired = panel.offsetHeight - list.offsetHeight + Math.ceil(natural);
+      const desired = panel.offsetHeight - list.offsetHeight
+        + (showCartFooter ? Math.max(Math.ceil(natural), listHBeforeFooterRef.current) : Math.ceil(natural));
       setCartHeightOverride(desired > avail ? desired : null);
     });
     return () => cancelAnimationFrame(raf);
@@ -1839,6 +1913,58 @@ export default function POSPage() {
   useEffect(() => {
     sessionStorage.setItem('posCartAutoGrow', cartAutoGrow ? 'on' : 'off');
   }, [cartAutoGrow]);
+  // Keyboard shortcuts (cheat-sheet on "?"): "/" focus search, F2 new sale,
+  // F4 / Ctrl+Enter checkout, F3 footer toggle, Esc step back. While typing
+  // in an input only Esc works, so "/" and friends never eat typed text.
+  useEffect(() => {
+    const isEditable = (t: EventTarget | null) =>
+      t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (showShortcuts) { setShowShortcuts(false); return; }
+        if (showCheckout) { setShowCheckout(false); return; }
+        if (showQuickSell) { setShowQuickSell(false); return; }
+        if (isEditable(e.target)) { (e.target as HTMLElement).blur(); return; }
+        if (showCartFooter) { setShowCartFooter(false); return; }
+        if (showMobileCart) { setShowMobileCart(false); return; }
+        if (cartMaximized) { setCartMaximized(false); return; }
+        return;
+      }
+      if (showCheckout || showQuickSell) return;
+      // F-keys and Ctrl+Enter never insert text, so they stay live even while
+      // typing in an input; "/" and "?" are gated to non-editable targets so
+      // they can still be typed.
+      if (e.key === 'F2') {
+        e.preventDefault();
+        if (cart.length > 0 && !processing) {
+          setCart([]);
+          toast({ title: 'New sale', description: 'Cart cleared — started a fresh sale.' });
+        }
+        return;
+      }
+      if (e.key === 'F4' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+        e.preventDefault();
+        if (cart.length > 0 && !processing) setShowCheckout(true);
+        return;
+      }
+      if (e.key === 'F3') {
+        e.preventDefault();
+        if (cart.length > 0) toggleCartFooter();
+        return;
+      }
+      if (isEditable(e.target)) return;
+      if (e.key === '/') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+      if (e.key === '?') { e.preventDefault(); setShowShortcuts(true); return; }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCheckout, showQuickSell, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, processing]);
   const [defaultProductImage, setDefaultProductImage] = useState('');
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalProduct, setImageModalProduct] = useState<ProductData | null>(null);
@@ -1881,11 +2007,13 @@ export default function POSPage() {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input
+              ref={searchInputRef}
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Search products by name, SKU or barcode..."
-              className="w-full pl-10 pr-4 py-2.5 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
+              className="w-full pl-10 pr-10 py-2.5 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
             />
+            <kbd className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground pointer-events-none">/</kbd>
           </div>
           {/* Quick Sell — non-stock items bought on demand, sold immediately */}
           <button
@@ -2247,8 +2375,15 @@ export default function POSPage() {
               </button>
             )}
             {cart.length > 0 && (
-              <button onClick={() => setCart([])} className="text-xs text-red-500 hover:underline">Clear</button>
+              <button onClick={() => setCart([])} className="text-xs text-red-500 hover:underline">Clear <kbd className="rounded border border-border bg-muted px-0.5 text-[9px] font-semibold text-muted-foreground">F2</kbd></button>
             )}
+            <button
+              onClick={() => setShowShortcuts(true)}
+              className="hidden lg:flex text-muted-foreground hover:text-foreground p-1 transition"
+              title="Keyboard shortcuts (?)"
+            >
+              <Keyboard className="w-4 h-4" />
+            </button>
             <button
               onClick={() => setCartMaximized(v => !v)}
               className="hidden lg:flex text-muted-foreground hover:text-foreground p-1 transition"
@@ -2502,72 +2637,18 @@ export default function POSPage() {
           <div className="border-t border-border">
             {/* Collapse toggle */}
             <button
-              onClick={(e) => {
-                // The toggle must stay put on screen: the cart grows for the
-                // footer, so afterwards scroll the page by whatever the
-                // button drifted, keeping the user's view anchored here.
-                const btn = e.currentTarget;
-                const startTop = btn.getBoundingClientRect().top;
-                // The ERP layout scrolls inside <main>, not the window.
-                const scroller = posRootRef.current?.parentElement;
-                setShowCartFooter(p => !p);
-                // The panel settles over several frames (footer renders first,
-                // then the auto-grow override lands), so keep re-correcting
-                // every frame until the height is stable and the drift is 0.
-                // Any user scroll/hinput cancels the correction immediately —
-                // otherwise this loop would undo the user's own scrolling.
-                let lastH = -1;
-                let calm = 0;
-                let frames = 0;
-                let done = false;
-                const stop = () => { done = true; };
-                const stopOpts: AddEventListenerOptions = { capture: true, passive: true };
-                window.addEventListener('wheel', stop, stopOpts);
-                window.addEventListener('touchstart', stop, stopOpts);
-                window.addEventListener('keydown', stop, { capture: true });
-                const cleanup = () => {
-                  window.removeEventListener('wheel', stop, stopOpts);
-                  window.removeEventListener('touchstart', stop, stopOpts);
-                  window.removeEventListener('keydown', stop, { capture: true });
-                };
-                const tick = () => {
-                  if (done || ++frames > 180) { cleanup(); return; }
-                  const h = cartPanelRef.current?.offsetHeight ?? -1;
-                  const dy = Math.round(btn.getBoundingClientRect().top - startTop);
-                  if (Math.abs(dy) > 1) {
-                    // Scroll the document first — it holds the overflow
-                    // created by the page growing. <main> is the scroller
-                    // only when the layout constrains it, and feeding it
-                    // first can starve the document mid-animation: <main>
-                    // stays "scrollable" but saturated, so the drift would
-                    // lag behind the panel's height transition.
-                    const se = document.scrollingElement;
-                    let applied = 0;
-                    if (se) {
-                      const before = se.scrollTop;
-                      se.scrollTop = before + dy;
-                      applied = se.scrollTop - before;
-                    }
-                    const rest = dy - applied;
-                    if (Math.abs(rest) > 0 && scroller && scroller.scrollHeight > scroller.clientHeight + 1) scroller.scrollTop += rest;
-                    calm = 0;
-                  } else {
-                    calm++;
-                  }
-                  const settled = h === lastH && calm > 10;
-                  lastH = h;
-                  if (settled) { cleanup(); return; }
-                  requestAnimationFrame(tick);
-                };
-                requestAnimationFrame(tick);
-              }}
+              ref={footerToggleRef}
+              onClick={() => toggleCartFooter()}
               className="w-full flex items-center justify-between px-3 py-2 border border-blue-200 bg-blue-50/60 text-blue-600 hover:bg-blue-100/60 transition text-xs font-medium"
             >
               <span className="flex items-center gap-1.5">
                 <Eye className="w-3.5 h-3.5" />
                 {showCartFooter ? 'Hide footer' : 'See more in list (Optional)'}
               </span>
-              {showCartFooter ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              <span className="flex items-center gap-1.5">
+                <kbd className="rounded border border-blue-200 bg-white px-1 text-[10px] font-semibold text-blue-400">F3</kbd>
+                {showCartFooter ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </span>
             </button>
 
             {showCartFooter && (
@@ -2649,6 +2730,7 @@ export default function POSPage() {
                 >
                   <Receipt className="w-4 h-4" />
                   Pay
+                  <kbd className="rounded bg-white/20 px-1 text-[10px] font-semibold leading-4">F4</kbd>
                 </button>
               </div>
             )}
@@ -2822,6 +2904,36 @@ export default function POSPage() {
           }}
           onCancel={() => setInsufficient(null)}
         />
+      )}
+
+      {/* Keyboard shortcut cheat-sheet ("?") */}
+      {showShortcuts && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40" onClick={() => setShowShortcuts(false)}>
+          <div className="bg-white rounded-2xl shadow-xl p-5 w-[340px] text-sm" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-foreground">Keyboard shortcuts</h3>
+              <button onClick={() => setShowShortcuts(false)} className="text-muted-foreground hover:text-foreground transition" title="Close (Esc)">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <ul className="space-y-2">
+              {[
+                ['/', 'Focus product search'],
+                ['F2', 'New sale (clear cart)'],
+                ['F4', 'Checkout (Pay)'],
+                ['Ctrl+Enter', 'Checkout (Pay)'],
+                ['F3', 'Toggle "See more in list"'],
+                ['Esc', 'Close / step back'],
+                ['?', 'This cheat-sheet'],
+              ].map(([k, d]) => (
+                <li key={k} className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">{d}</span>
+                  <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] font-semibold text-foreground whitespace-nowrap">{k}</kbd>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
       )}
 
       {/* Quick Sell — non-stock items bought on demand from another shop */}
