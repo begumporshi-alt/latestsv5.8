@@ -1040,7 +1040,6 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           }))}
           onClose={() => setViewingInvoice(null)}
           invoiceId={viewingInvoice.id}
-          shareToken={(viewingInvoice as any).share_token}
           customer_id={viewingInvoice.customer_id}
           showTabs={true}
           showCustomerOutstanding={true}

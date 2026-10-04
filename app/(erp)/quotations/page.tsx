@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
-import { openWhatsApp, openEmail, generateShareToken, shareLinkUrl } from '@/lib/share';
+import { openWhatsApp, openEmail, sharePdfFile, downloadFile } from '@/lib/share';
+import { buildDocumentPdf } from '@/lib/pdf-document';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart, LayoutGrid, Link2 } from 'lucide-react';
+import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart, LayoutGrid } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { ProductGalleryBody } from '@/components/ProductGallery';
 import { fetchAll } from '@/lib/fetch-all';
@@ -2465,43 +2466,74 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
   // VAT rate for the printed quotation's tax row label.
   const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
   useEffect(() => { loadVatSettings(supabase).then(setVatSettings); }, []);
-  const [currentShareToken, setCurrentShareToken] = useState<string | null>((quotation as any).share_token ?? null);
-  const [shareLinkBusy, setShareLinkBusy] = useState(false);
+  const [shareMenuOpen, setShareMenuOpen] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
 
-  async function copyShareLink() {
-    if (shareLinkBusy) return;
-    setShareLinkBusy(true);
+  async function sharePdf(target: 'whatsapp' | 'email') {
+    setShareMenuOpen(false);
+    if (shareBusy) return;
+    setShareBusy(true);
     try {
-      let token = currentShareToken;
-      if (!token) {
-        token = generateShareToken();
-        const { error } = await supabase.from('quotations').update({ share_token: token }).eq('id', quotation.id);
-        if (error) throw error;
-        setCurrentShareToken(token);
-      }
-      const url = shareLinkUrl(token);
-      try {
-        await navigator.clipboard.writeText(url);
-        toast({ title: 'Link copied', description: 'Anyone with this link can view the quotation — no login needed.' });
-      } catch {
-        toast({ title: 'Copy blocked by browser', description: url, variant: 'destructive' });
+      const file = await buildDocumentPdf(
+        {
+          docType: 'QUOTATION',
+          docNumber: quotation.quote_number,
+          docDate: quotation.issue_date,
+          dueDate: quotation.expiry_date,
+          status: quotation.status,
+          company: {
+            name: companySettings?.name || 'Our Company',
+            address: companySettings?.address,
+            phone: companySettings?.phone,
+            email: companySettings?.email,
+            logo_url: companySettings?.logo_url,
+          },
+          customer: {
+            name: quotation.customer?.name || '',
+            code: quotation.customer?.code,
+            phone: (quotation.customer as any)?.phone,
+            address: (quotation.customer as any)?.address,
+          },
+          items: items.map((item: any) => ({
+            product_name: item.product?.name || 'Item',
+            product_sku: item.product?.sku,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            discount_percent: item.discount_percent || 0,
+            subtotal: item.subtotal,
+            unit_name: item.unit_name || item.product?.unit || undefined,
+          })),
+          subtotal: Number(quotation.subtotal),
+          discountTotal: items.reduce((s, item: any) => s + (item.quantity * item.unit_price * (item.discount_percent || 0) / 100), 0),
+          cartDiscount: Number((quotation as any).discount_amount) || 0,
+          cartDiscountPercent: Number((quotation as any).cart_discount_percent) || 0,
+          extraDiscount: Number((quotation as any).extra_discount) || 0,
+          taxAmount: Number(quotation.tax_amount) || 0,
+          taxLabel: vatSettings.rate > 0 ? `VAT (${vatSettings.rate}%)` : 'VAT',
+          shippingAmount: Number((quotation as any).shipping_cost) || 0,
+          totalAmount: Number(quotation.total_amount),
+          notes: (quotation as any).notes,
+          reference: (quotation as any).reference,
+        },
+        `QUOTATION-${quotation.quote_number}.pdf`,
+      );
+      const text = buildShareText();
+      if (target === 'whatsapp') {
+        const result = await sharePdfFile(file, text);
+        if (result === 'downloaded') {
+          openWhatsApp((quotation.customer as any)?.phone, text);
+          toast({ title: 'PDF downloaded', description: 'Attach it in the WhatsApp chat that just opened.' });
+        }
+      } else {
+        downloadFile(file);
+        const subject = `Quotation ${quotation.quote_number} from ${companySettings?.name || 'Our Company'}`;
+        openEmail((quotation.customer as any)?.email, subject, text);
+        toast({ title: 'PDF downloaded', description: 'Attach it to the email draft that just opened.' });
       }
     } catch (err: any) {
-      toast({ title: 'Could not create link', description: err?.message || 'Check your connection and try again.', variant: 'destructive' });
+      toast({ title: 'Could not share PDF', description: err?.message || 'Try again.', variant: 'destructive' });
     } finally {
-      setShareLinkBusy(false);
-    }
-  }
-
-  async function revokeShareLink() {
-    if (!currentShareToken) return;
-    try {
-      const { error } = await supabase.from('quotations').update({ share_token: null }).eq('id', quotation.id);
-      if (error) throw error;
-      setCurrentShareToken(null);
-      toast({ title: 'Share link disabled', description: 'The old link no longer works.' });
-    } catch (err: any) {
-      toast({ title: 'Could not disable link', description: err?.message || 'Try again.', variant: 'destructive' });
+      setShareBusy(false);
     }
   }
 
@@ -2538,15 +2570,6 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
     return lines.join('\n');
   }
 
-  function shareWhatsApp() {
-    openWhatsApp((quotation.customer as any)?.phone, buildShareText());
-  }
-
-  function shareEmail() {
-    const subject = `Quotation ${quotation.quote_number} from ${companySettings?.name || 'Our Company'}`;
-    openEmail((quotation.customer as any)?.email, subject, buildShareText());
-  }
-
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="print-modal bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -2568,20 +2591,34 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
                 <Trash2 className="w-3.5 h-3.5" />Delete
               </button>
             )}
-            <button onClick={shareWhatsApp} className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition">
-              <MessageCircle className="w-3.5 h-3.5" />WhatsApp
-            </button>
-            <button onClick={shareEmail} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
-              <Mail className="w-3.5 h-3.5" />Email
-            </button>
-            <button
-              onClick={copyShareLink}
-              disabled={shareLinkBusy}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white rounded-lg text-sm font-medium transition"
-              title="Create a public link anyone can open to view and print this quotation"
-            >
-              <Link2 className="w-3.5 h-3.5" />{currentShareToken ? 'Copy Link' : 'Share Link'}
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShareMenuOpen(v => !v)}
+                disabled={shareBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white rounded-lg text-sm font-medium transition"
+                title="Share this quotation as a PDF"
+              >
+                <Share2 className="w-3.5 h-3.5" />{shareBusy ? 'Preparing…' : 'Share'}
+              </button>
+              {shareMenuOpen && (
+                <div className="absolute right-0 mt-2 w-44 bg-white border border-border rounded-lg shadow-lg p-1 z-50">
+                  <button
+                    onClick={() => sharePdf('whatsapp')}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                  >
+                    <MessageCircle className="w-4 h-4 text-green-600" />
+                    WhatsApp
+                  </button>
+                  <button
+                    onClick={() => sharePdf('email')}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                  >
+                    <Mail className="w-4 h-4 text-blue-600" />
+                    Email
+                  </button>
+                </div>
+              )}
+            </div>
             <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-sm font-medium transition">
               <Printer className="w-3.5 h-3.5" />Print
             </button>
@@ -2636,14 +2673,6 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
                       <span className="text-green-700 font-medium">Visible</span>
                     )}
                   </button>
-                  {currentShareToken && (
-                    <button
-                      onClick={revokeShareLink}
-                      className="w-full text-left px-3 py-2 rounded-md text-sm text-red-600 hover:bg-red-50 transition"
-                    >
-                      Disable Share Link
-                    </button>
-                  )}
                 </div>
               )}
             </div>

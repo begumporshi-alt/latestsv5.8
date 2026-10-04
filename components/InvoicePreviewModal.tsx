@@ -1,11 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { X, History, DollarSign, Printer, ChevronDown, Pencil, Ban, CreditCard, Copy, AlertTriangle, Check, Package, MessageCircle, Mail, Link2 } from 'lucide-react';
+import { X, History, DollarSign, Printer, ChevronDown, Pencil, Ban, CreditCard, Copy, AlertTriangle, Check, Package, Share2, MessageCircle, Mail } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate, isInvoiceOverdue } from '@/lib/format';
-import { openWhatsApp, openEmail, generateShareToken, shareLinkUrl } from '@/lib/share';
+import { openWhatsApp, openEmail, sharePdfFile, downloadFile } from '@/lib/share';
+import { buildDocumentPdf } from '@/lib/pdf-document';
 import { printNode } from '@/lib/print';
 import PrintTemplate from './PrintTemplate';
 import { useRouter } from 'next/navigation';
@@ -99,8 +100,6 @@ export interface InvoicePreviewModalProps {
   showCustomerOutstanding?: boolean;
   showActions?: boolean;
   invoiceId?: string;
-  /** Existing public share token (from the invoice row), if any. */
-  shareToken?: string | null;
   customer_id?: string;
   onEdit?: () => void;
   onCancel?: () => void;
@@ -159,7 +158,6 @@ export default function InvoicePreviewModal({
   showCustomerOutstanding = false,
   showActions = false,
   invoiceId,
-  shareToken,
   customer_id,
   onEdit,
   onCancel,
@@ -330,52 +328,77 @@ export default function InvoicePreviewModal({
     return lines.join('\n');
   }
 
-  function shareWhatsApp() {
-    openWhatsApp(customer?.phone, buildShareText());
-  }
+  const [shareMenuOpen, setShareMenuOpen] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
 
-  function shareEmail() {
-    openEmail(customer?.email, `${docType} ${docNumber} from ${company?.name || 'Our Company'}`, buildShareText());
-  }
-
-  const [currentShareToken, setCurrentShareToken] = useState<string | null>(shareToken ?? null);
-  const [shareLinkBusy, setShareLinkBusy] = useState(false);
-  useEffect(() => { setCurrentShareToken(shareToken ?? null); }, [shareToken]);
-
-  async function copyShareLink() {
-    if (!invoiceId || shareLinkBusy) return;
-    setShareLinkBusy(true);
+  async function sharePdf(target: 'whatsapp' | 'email') {
+    setShareMenuOpen(false);
+    if (docType !== 'INVOICE' || shareBusy) return;
+    setShareBusy(true);
     try {
-      let token = currentShareToken;
-      if (!token) {
-        token = generateShareToken();
-        const { error } = await supabase.from('invoices').update({ share_token: token }).eq('id', invoiceId);
-        if (error) throw error;
-        setCurrentShareToken(token);
-      }
-      const url = shareLinkUrl(token);
-      try {
-        await navigator.clipboard.writeText(url);
-        toast({ title: 'Link copied', description: 'Anyone with this link can view the invoice — no login needed.' });
-      } catch {
-        toast({ title: 'Copy blocked by browser', description: url, variant: 'destructive' });
+      const file = await buildDocumentPdf(
+        {
+          docType,
+          docNumber,
+          docDate,
+          dueDate,
+          status,
+          company: {
+            name: company?.name || 'Our Company',
+            address: company?.address,
+            phone: company?.phone,
+            email: company?.email,
+            logo_url: company?.logo_url,
+          },
+          customer: {
+            name: customer?.name || '',
+            code: customer?.code,
+            phone: customer?.phone,
+            address: customer?.address,
+          },
+          items: items.map((item) => ({
+            product_name: item.product_name,
+            product_sku: item.product_sku,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            discount_percent: item.discount_percent,
+            subtotal: item.subtotal,
+            unit_name: item.unit_name,
+          })),
+          subtotal,
+          discountTotal,
+          cartDiscount,
+          cartDiscountPercent,
+          extraDiscount,
+          taxAmount,
+          taxLabel,
+          shippingAmount,
+          totalAmount,
+          amountPaid,
+          balanceDue: balance,
+          previousDue: docType === 'INVOICE' ? previousDue : undefined,
+          notes,
+          reference,
+          paymentMethod: payments?.[0]?.payment_method?.replace(/_/g, ' '),
+        },
+        `${docType}-${docNumber}.pdf`,
+      );
+      const text = buildShareText();
+      if (target === 'whatsapp') {
+        const result = await sharePdfFile(file, text);
+        if (result === 'downloaded') {
+          openWhatsApp(customer?.phone, text);
+          toast({ title: 'PDF downloaded', description: 'Attach it in the WhatsApp chat that just opened.' });
+        }
+      } else {
+        downloadFile(file);
+        openEmail(customer?.email, `${docType} ${docNumber} from ${company?.name || 'Our Company'}`, text);
+        toast({ title: 'PDF downloaded', description: 'Attach it to the email draft that just opened.' });
       }
     } catch (err: any) {
-      toast({ title: 'Could not create link', description: err?.message || 'Check your connection and try again.', variant: 'destructive' });
+      toast({ title: 'Could not share PDF', description: err?.message || 'Try again.', variant: 'destructive' });
     } finally {
-      setShareLinkBusy(false);
-    }
-  }
-
-  async function revokeShareLink() {
-    if (!invoiceId || !currentShareToken) return;
-    try {
-      const { error } = await supabase.from('invoices').update({ share_token: null }).eq('id', invoiceId);
-      if (error) throw error;
-      setCurrentShareToken(null);
-      toast({ title: 'Share link disabled', description: 'The old link no longer works.' });
-    } catch (err: any) {
-      toast({ title: 'Could not disable link', description: err?.message || 'Try again.', variant: 'destructive' });
+      setShareBusy(false);
     }
   }
 
@@ -459,35 +482,35 @@ export default function InvoicePreviewModal({
               </button>
             )}
             {docType === 'INVOICE' && (
-              <button
-                onClick={shareWhatsApp}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition"
-                title="Share this invoice on WhatsApp"
-              >
-                <MessageCircle className="w-3.5 h-3.5" />
-                WhatsApp
-              </button>
-            )}
-            {docType === 'INVOICE' && (
-              <button
-                onClick={shareEmail}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition"
-                title="Email this invoice to the customer"
-              >
-                <Mail className="w-3.5 h-3.5" />
-                Email
-              </button>
-            )}
-            {docType === 'INVOICE' && invoiceId && (
-              <button
-                onClick={copyShareLink}
-                disabled={shareLinkBusy}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 disabled:opacity-60 text-white rounded-lg text-sm font-medium transition"
-                title="Create a public link anyone can open to view and print this invoice"
-              >
-                <Link2 className="w-3.5 h-3.5" />
-                {currentShareToken ? 'Copy Link' : 'Share Link'}
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShareMenuOpen(v => !v)}
+                  disabled={shareBusy}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 disabled:opacity-60 text-white rounded-lg text-sm font-medium transition"
+                  title="Share this invoice as a PDF"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  {shareBusy ? 'Preparing…' : 'Share'}
+                </button>
+                {shareMenuOpen && (
+                  <div className="absolute right-0 mt-2 w-44 bg-white border border-border rounded-lg shadow-lg p-1 z-50">
+                    <button
+                      onClick={() => sharePdf('whatsapp')}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <MessageCircle className="w-4 h-4 text-green-600" />
+                      WhatsApp
+                    </button>
+                    <button
+                      onClick={() => sharePdf('email')}
+                      className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <Mail className="w-4 h-4 text-blue-600" />
+                      Email
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
             <button
               onClick={() => {
@@ -556,14 +579,6 @@ export default function InvoicePreviewModal({
                         <span className="text-green-700 font-medium">Visible</span>
                       )}
                     </button>
-                    {currentShareToken && (
-                      <button
-                        onClick={revokeShareLink}
-                        className="w-full text-left px-3 py-2 rounded-md text-sm text-red-600 hover:bg-red-50 transition"
-                      >
-                        Disable Share Link
-                      </button>
-                    )}
                   </div>
                 )}
               </div>

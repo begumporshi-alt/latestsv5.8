@@ -36,15 +36,33 @@ export function openEmail(email: string | null | undefined, subject: string, bod
   window.location.href = `mailto:${email || ''}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
 
-/** 32-char url-safe base64 token (192 bits) for public share links. */
-export function generateShareToken(): string {
-  const bytes = new Uint8Array(24);
-  crypto.getRandomValues(bytes);
-  let bin = '';
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+export function downloadFile(file: File) {
+  const url = URL.createObjectURL(file);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file.name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
-export function shareLinkUrl(token: string): string {
-  return `${window.location.origin}/share/${token}`;
+export type PdfShareResult = 'shared' | 'downloaded';
+
+/**
+ * Hand the PDF to the OS share sheet (WhatsApp, Mail, etc.) when the browser
+ * supports file sharing; otherwise download it so the user can attach it
+ * manually.
+ */
+export async function sharePdfFile(file: File, text: string): Promise<PdfShareResult> {
+  const nav = navigator as Navigator & {
+    canShare?: (data: { files?: File[] }) => boolean;
+    share?: (data: { files?: File[]; text?: string; title?: string }) => Promise<void>;
+  };
+  if (nav.share && nav.canShare?.({ files: [file] })) {
+    await nav.share({ files: [file], text, title: file.name });
+    return 'shared';
+  }
+  downloadFile(file);
+  return 'downloaded';
 }

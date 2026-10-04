@@ -253,8 +253,6 @@ export interface Quotation {
   total_amount: number;
   notes?: string;
   reference?: string;
-  /** Public share token — set on demand; NULL until someone clicks Share Link. */
-  share_token?: string | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;
@@ -293,7 +291,6 @@ export interface Invoice {
   /** Device temp reference (OFF-…) printed on receipts while offline; the
    *  final number is assigned by the server at sync. */
   client_temp_number?: string;
-  share_token?: string | null;
   created_at: string;
   updated_at: string;
   customer?: Customer;
