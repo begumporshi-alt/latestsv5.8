@@ -2645,9 +2645,9 @@ export default function POSPage() {
                 <button
                   onClick={() => setShowCheckout(true)}
                   disabled={processing || !selectedCustomer}
-                  className="ml-3 shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold px-3 py-2 rounded-lg transition disabled:opacity-60 text-xs flex items-center gap-1"
+                  className="ml-3 shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2.5 rounded-lg transition disabled:opacity-60 text-sm flex items-center gap-1.5"
                 >
-                  <Receipt className="w-3.5 h-3.5" />
+                  <Receipt className="w-4 h-4" />
                   Pay
                 </button>
               </div>
