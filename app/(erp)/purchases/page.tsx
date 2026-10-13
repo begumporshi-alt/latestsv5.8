@@ -67,6 +67,7 @@ export default function PurchasesPage() {
   // loadData once the orders are available.
   const [prefillSupplierId, setPrefillSupplierId] = useState<string | null>(null);
   const prefillOpenedRef = useRef(false);
+  const statusUpdateInFlight = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('new') === '1') {
@@ -379,6 +380,20 @@ export default function PurchasesPage() {
   }
 
   async function updateOrderStatus(order: PurchaseOrderWithSupplier, newStatus: PurchaseOrderStatus) {
+    if (statusUpdateInFlight.current) return;
+    if (order.status === newStatus) {
+      toast({ title: 'Info', description: `Order is already ${newStatus}` });
+      return;
+    }
+    statusUpdateInFlight.current = true;
+    try {
+      await performOrderStatusUpdate(order, newStatus);
+    } finally {
+      statusUpdateInFlight.current = false;
+    }
+  }
+
+  async function performOrderStatusUpdate(order: PurchaseOrderWithSupplier, newStatus: PurchaseOrderStatus) {
     // Offline: receiving stock must go through the GRN flow (it maintains
     // FIFO batches and journals) — the status-mark receive path is online-only.
     if (!networkMonitor.getState().online) {
