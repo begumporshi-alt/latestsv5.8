@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
@@ -9,6 +9,8 @@ import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, P
 import type { Supplier, Warehouse } from '@/lib/types';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
+import { printNode } from '@/lib/print';
+import GrnPrint from '@/components/GrnPrint';
 
 interface PurchaseOrder {
   id: string;
@@ -37,7 +39,7 @@ interface GRN {
   received_date: string;
   status: string;
   notes: string;
-  supplier?: { name: string };
+  supplier?: { name: string; code?: string; phone?: string };
   purchase_order?: { po_number: string };
   warehouse?: { name: string };
 }
@@ -74,7 +76,7 @@ export default function GRNPage() {
     setLoading(true);
     const { data } = await supabase
       .from('goods_receipt_notes')
-      .select('*, supplier:suppliers(name), purchase_order:purchase_orders(po_number), warehouse:warehouses(name)')
+      .select('*, supplier:suppliers(name, code, phone), purchase_order:purchase_orders(po_number), warehouse:warehouses(name)')
       .order('created_at', { ascending: false });
     setGrns(data || []);
 
@@ -218,7 +220,7 @@ export default function GRNPage() {
                       <button onClick={() => viewGRNDetails(g)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="View Details">
                         <Eye className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => viewGRNDetails(g)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition" title="Print" onClickCapture={() => setTimeout(() => window.print(), 100)}>
+                      <button onClick={() => viewGRNDetails(g)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition" title="Print">
                         <Printer className="w-3.5 h-3.5" />
                       </button>
                     </div>
@@ -247,6 +249,22 @@ export default function GRNPage() {
 
 function ViewGRNModal({ grn, items, onClose }: { grn: GRN; items: GRNItem[]; onClose: () => void }) {
   const totalValue = items.reduce((sum, item) => sum + item.quantity * item.unit_cost, 0);
+  const [showPrint, setShowPrint] = useState(false);
+  const printRef = useRef<HTMLDivElement>(null);
+  const [companySettings, setCompanySettings] = useState<any>({ name: '', address: '', phone: '', email: '', logo_url: '' });
+
+  useEffect(() => {
+    supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle()
+      .then(({ data }) => { if (data?.setting_value) setCompanySettings(data.setting_value); });
+  }, []);
+
+  const printItems = items.map(it => ({
+    product_name: it.product?.name || '—',
+    product_sku: it.product?.sku,
+    unit_name: it.product?.unit,
+    quantity: Number(it.quantity),
+    unit_cost: Number(it.unit_cost),
+  }));
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -254,7 +272,7 @@ function ViewGRNModal({ grn, items, onClose }: { grn: GRN; items: GRNItem[]; onC
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white no-print">
           <h2 className="text-base font-bold">GRN {grn.grn_number}</h2>
           <div className="flex items-center gap-2">
-            <button onClick={() => window.print()} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-muted transition">
+            <button onClick={() => setShowPrint(true)} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-muted transition">
               <Printer className="w-4 h-4" />Print
             </button>
             <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
@@ -313,6 +331,40 @@ function ViewGRNModal({ grn, items, onClose }: { grn: GRN; items: GRNItem[]; onC
           </div>
         </div>
       </div>
+
+      {showPrint && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
+              <span className="text-sm font-semibold text-muted-foreground">GRN Print Preview</span>
+              <div className="flex items-center gap-2">
+                <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
+                  <Printer className="w-3.5 h-3.5" />Print
+                </button>
+                <button onClick={() => setShowPrint(false)} className="text-muted-foreground hover:text-foreground p-1"><X className="w-5 h-5" /></button>
+              </div>
+            </div>
+            <div className="p-8" ref={printRef}>
+              <GrnPrint
+                grnNumber={grn.grn_number}
+                grnDate={grn.received_date}
+                status={grn.status}
+                poNumber={grn.purchase_order?.po_number}
+                warehouse={grn.warehouse?.name}
+                company={companySettings}
+                supplier={{
+                  name: grn.supplier?.name || '—',
+                  code: grn.supplier?.code,
+                  phone: grn.supplier?.phone,
+                }}
+                items={printItems}
+                totalValue={totalValue}
+                notes={grn.notes || undefined}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -322,6 +374,9 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
   const [step, setStep] = useState(1);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [showPrint, setShowPrint] = useState(false);
+  const printRef = useRef<HTMLDivElement>(null);
+  const [companySettings, setCompanySettings] = useState<any>({ name: '', address: '', phone: '', email: '', logo_url: '' });
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
   const [items, setItems] = useState<PurchaseOrderItem[]>([]);
@@ -366,6 +421,8 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
       ]);
       setSuppliers(supRes.data || []);
       setWarehouses(whRes.data || []);
+      supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle()
+        .then(({ data }) => { if (data?.setting_value) setCompanySettings(data.setting_value); });
       setPurchaseOrders((poRes.data || []).map((po: any) => ({
         ...po,
         supplier: Array.isArray(po.supplier) ? po.supplier[0] : po.supplier,
@@ -587,9 +644,14 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                 <p className="text-xs text-muted-foreground text-center">No product prices changed.</p>
               )}
 
-              <button onClick={onClose} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition">
-                Done
-              </button>
+              <div className="flex gap-2">
+                <button onClick={() => setShowPrint(true)} className="flex-1 py-2 border border-border rounded-lg text-sm font-semibold transition hover:bg-muted flex items-center justify-center gap-1.5">
+                  <Printer className="w-4 h-4" />Print GRN
+                </button>
+                <button onClick={onClose} className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition">
+                  Done
+                </button>
+              </div>
             </div>
           )}
 
@@ -767,6 +829,41 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
           )}
         </div>
       </div>
+
+      {showPrint && savedResult && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
+              <span className="text-sm font-semibold text-muted-foreground">GRN Print Preview</span>
+              <div className="flex items-center gap-2">
+                <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
+                  <Printer className="w-3.5 h-3.5" />Print
+                </button>
+                <button onClick={() => setShowPrint(false)} className="text-muted-foreground hover:text-foreground p-1"><X className="w-5 h-5" /></button>
+              </div>
+            </div>
+            <div className="p-8" ref={printRef}>
+              <GrnPrint
+                grnNumber={savedResult.grnNumber}
+                grnDate={new Date().toISOString()}
+                status="posted"
+                poNumber={savedResult.poNumber}
+                warehouse={directMode
+                  ? warehouses.find(w => w.id === directWarehouse)?.name
+                  : (warehouses.find(w => w.is_default)?.name || warehouses[0]?.name)}
+                company={companySettings}
+                supplier={{
+                  name: savedResult.supplierName || suppliers.find(s => s.id === directSupplier)?.name || '—',
+                }}
+                items={savedResult.lines.map(l => ({ product_name: l.name, quantity: l.qty, unit_cost: l.cost }))}
+                totalValue={savedResult.lines.reduce((s, l) => s + l.qty * l.cost, 0)}
+                costUpdates={savedResult.costUpdates}
+                saleUpdates={savedResult.saleUpdates}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
