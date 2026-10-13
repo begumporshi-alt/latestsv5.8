@@ -333,6 +333,14 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
+  const [savedResult, setSavedResult] = useState<{
+    grnNumber: string;
+    poNumber?: string;
+    supplierName?: string;
+    lines: { name: string; qty: number; cost: number }[];
+    saleUpdates: { name: string; before: number; after: number }[];
+    costUpdates: { name: string; before: number; after: number }[];
+  } | null>(null);
 
   async function selectPO(po: PurchaseOrder) {
     setSelectedPO(po);
@@ -480,26 +488,28 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
       const result = (data || {}) as {
         grn_number?: string;
         cost_updates?: { name: string; before: number; after: number }[];
+        sale_price_updates?: { name: string; before: number; after: number }[];
       };
 
-      // Cost prices can only rise here: the DB trigger sets products.cost_price
-      // to the received unit cost only when it is higher than the current cost.
-      let costUpdateSummary = '';
-      const changed = result.cost_updates || [];
-      if (changed.length > 0) {
-        const lines = changed
-          .map(c => `${c.name}: ৳${Number(c.before).toFixed(2)} → ৳${Number(c.after).toFixed(2)}`)
-          .slice(0, 3);
-        const more = changed.length > 3 ? ` (+${changed.length - 3} more)` : '';
-        costUpdateSummary = ` • Cost updated — ${lines.join(', ')}${more}`;
-      }
+      const receivedLines = itemsToReceive.map(([itemId, qty]) => {
+        const item = items.find(i => i.id === itemId);
+        return {
+          name: item?.product?.name || 'Unknown product',
+          qty: Number(qty),
+          cost: Number(item?.unit_cost || 0),
+        };
+      });
 
-      toast({
-        title: 'Success',
-        description: `GRN ${result.grn_number} created successfully${costUpdateSummary}`,
+      setSavedResult({
+        grnNumber: result.grn_number || '',
+        poNumber: selectedPO?.po_number,
+        supplierName: selectedPO?.supplier?.name,
+        lines: receivedLines,
+        saleUpdates: result.sale_price_updates || [],
+        costUpdates: result.cost_updates || [],
       });
       onSaved();
-      onClose();
+      setSaving(false);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -520,9 +530,70 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         </div>
 
         <div className="p-6">
-          {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm mb-4">{error}</div>}
+          {error && !savedResult && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm mb-4">{error}</div>}
 
-          {step === 1 && (
+          {savedResult && (
+            <div className="space-y-4">
+              <div className="text-center py-1">
+                <CheckCircle className="w-12 h-12 text-green-600 mx-auto mb-2" />
+                <h3 className="text-lg font-bold text-foreground">GRN {savedResult.grnNumber} posted</h3>
+                {savedResult.poNumber && (
+                  <p className="text-sm text-muted-foreground">{savedResult.poNumber} • {savedResult.supplierName}</p>
+                )}
+              </div>
+
+              <div className="border border-border rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40">
+                    <tr>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Unit Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {savedResult.lines.map((l, i) => (
+                      <tr key={i}>
+                        <td className="px-3 py-2 text-foreground">{l.name}</td>
+                        <td className="px-3 py-2 text-right text-foreground">{l.qty}</td>
+                        <td className="px-3 py-2 text-right text-foreground">{formatCurrency(l.cost)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {savedResult.saleUpdates.length > 0 && (
+                <div className="p-3 bg-blue-50 rounded-lg">
+                  <p className="text-xs font-semibold text-blue-700 mb-1">Sale price updated on product</p>
+                  <ul className="text-sm text-blue-900 space-y-0.5">
+                    {savedResult.saleUpdates.map((u, i) => (
+                      <li key={i}>{u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {savedResult.costUpdates.length > 0 && (
+                <div className="p-3 bg-amber-50 rounded-lg">
+                  <p className="text-xs font-semibold text-amber-700 mb-1">Cost price updated on product</p>
+                  <ul className="text-sm text-amber-900 space-y-0.5">
+                    {savedResult.costUpdates.map((u, i) => (
+                      <li key={i}>{u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {savedResult.saleUpdates.length === 0 && savedResult.costUpdates.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center">No product prices changed.</p>
+              )}
+
+              <button onClick={onClose} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition">
+                Done
+              </button>
+            </div>
+          )}
+
+          {!savedResult && step === 1 && (
             <div className="space-y-4">
               <div className="flex gap-2 mb-4">
                 <button
@@ -619,7 +690,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
             </div>
           )}
 
-          {step === 2 && selectedPO && !directMode && (
+          {!savedResult && step === 2 && selectedPO && !directMode && (
             <div className="space-y-4">
               <div className="p-3 bg-muted/50 rounded-lg">
                 <div className="flex items-center justify-between">
