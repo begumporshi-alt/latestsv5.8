@@ -6,10 +6,11 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { fetchAll } from '@/lib/fetch-all';
-import { cachedQuery } from '@/lib/offline/cache';
+import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 import { toast } from '@/hooks/use-toast';
+import ProductModal from '@/components/ProductModal';
 import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban, Undo2, ChevronLeft, ChevronRight, Calendar, Bell, Package, ShoppingBag } from 'lucide-react';
-import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit, PurchaseReminder } from '@/lib/types';
+import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit, PurchaseReminder, Category, Brand, Warehouse as WarehouseType } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
@@ -42,6 +43,13 @@ export default function PurchasesPage() {
   const [filterStatus, setFilterStatus] = useState('');
   const [stats, setStats] = useState({ total: 0, pending: 0, received: 0, outstanding: 0, returns: 0, returnAmount: 0, totalValue: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showAddProductModal, setShowAddProductModal] = useState(false);
+  const [productModalRefs, setProductModalRefs] = useState<{
+    categories: Category[];
+    brands: Brand[];
+    warehouses: WarehouseType[];
+    unitTypes: { id: string; unit_name: string; unit_short: string }[];
+  } | null>(null);
   const [viewingOrder, setViewingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
   const [orderItems, setOrderItems] = useState<any[]>([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -63,6 +71,29 @@ export default function PurchasesPage() {
   const pageSize = 10;
 
   useEffect(() => { loadData(); }, []);
+
+  // Reference data for the shared Add Product modal — fetched lazily the
+  // first time the modal opens rather than on every page load.
+  useEffect(() => {
+    if (!showAddProductModal || productModalRefs) return;
+    let cancelled = false;
+    (async () => {
+      const [catRes, brandRes, whRes, unitRes] = await Promise.all([
+        supabase.from('categories').select('*').eq('is_active', true),
+        supabase.from('brands').select('*').eq('is_active', true),
+        supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
+        supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
+      ]);
+      if (cancelled) return;
+      setProductModalRefs({
+        categories: (catRes.data || []) as Category[],
+        brands: (brandRes.data || []) as Brand[],
+        warehouses: (whRes.data || []) as WarehouseType[],
+        unitTypes: unitRes.data || [],
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [showAddProductModal, productModalRefs]);
 
   // Deep-links from the supplier profile: /purchases?new=1&supplier=<id>
   // opens the create modal pre-filled; /purchases?view=<poId> is consumed in
@@ -545,9 +576,14 @@ export default function PurchasesPage() {
           <h1 className="text-2xl font-bold text-foreground">Purchase Orders</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Manage procurement and supplier orders</p>
         </div>
-        <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">
-          <Plus className="w-4 h-4" />New Purchase Order
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowAddProductModal(true)} className="flex items-center gap-2 border border-border hover:bg-muted text-foreground px-3 py-2 rounded-lg text-sm font-semibold transition">
+            <Plus className="w-4 h-4" />Add Product
+          </button>
+          <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">
+            <Plus className="w-4 h-4" />New Purchase Order
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -783,6 +819,22 @@ export default function PurchasesPage() {
           )}
         </div>
       </div>
+
+      {showAddProductModal && productModalRefs && (
+        <ProductModal
+          categories={productModalRefs.categories}
+          brands={productModalRefs.brands}
+          warehouses={productModalRefs.warehouses}
+          unitTypes={productModalRefs.unitTypes}
+          onClose={() => setShowAddProductModal(false)}
+          onSaved={async () => {
+            // Drop the 5-min refs cache so the new product is searchable in
+            // the PO pickers immediately.
+            await cacheDelete('purchases:refs');
+            loadData();
+          }}
+        />
+      )}
 
       {showCreateModal && (
         <CreatePOModal
@@ -1387,7 +1439,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
               <div className="flex justify-between items-center pt-1 border-t border-border"><p className="text-xs font-medium text-muted-foreground">Total</p><p className="text-lg font-bold text-foreground">{formatCurrency(totalAmount)}</p></div>
               {creditOverBy !== null && (
                 <div className="mt-2 p-2 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-700">
-                  Over the supplier's credit limit by {formatCurrency(creditOverBy)} — outstanding {formatCurrency(creditOutstanding)} + this order {formatCurrency(totalAmount)} vs limit {formatCurrency(creditLimit)}.
+                  Over the supplier&apos;s credit limit by {formatCurrency(creditOverBy)} — outstanding {formatCurrency(creditOutstanding)} + this order {formatCurrency(totalAmount)} vs limit {formatCurrency(creditLimit)}.
                 </div>
               )}
             </div>
