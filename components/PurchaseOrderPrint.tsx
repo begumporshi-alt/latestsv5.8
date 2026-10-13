@@ -426,9 +426,9 @@ export default function PurchaseOrderPrint({
                   <td style={{ padding: '3px 8px', textAlign: 'left',   fontSize: '11px', color: '#555' }}>{item.product_sku || '—'}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'left', fontSize: '11px', fontWeight: '500' }}>
                     {item.product_name}
-                    {item.unit_name && (
-                      <span style={{ color: '#3b82f6', fontWeight: '600' }}> · {item.unit_name}</span>
-                    )}
+                  </td>
+                  <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#3b82f6', fontWeight: '600' }}>
+                    {item.unit_name || '—'}
                   </td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px' }}>{item.quantity}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px' }}>{Number(item.unit_price).toFixed(2)}</td>
