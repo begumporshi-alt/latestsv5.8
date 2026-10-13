@@ -908,6 +908,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                 available_units: units,
                 base_quantity: baseQty,
                 cost_price: unitPrice,
+                sale_price: p.sale_price || 0,
                 warehouse_id: defaultWarehouseId,
               };
             });
@@ -965,6 +966,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
               quantity, unit_price: unitPrice, discount_percent: 0,
               selected_unit: selectedUnit, available_units: units,
               base_quantity: baseQty, cost_price: unitPrice,
+              sale_price: p.sale_price || 0,
               warehouse_id: warehouseId,
             };
           }).filter(Boolean);
@@ -1042,6 +1044,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
       available_units: units,
       base_quantity: baseQty,
       cost_price: unitPrice,
+      sale_price: product.sale_price || 0,
       warehouse_id: defaultWarehouseId,
     }]);
   }
@@ -1123,6 +1126,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
               unit_name: item.selected_unit?.unit_name || item.product_unit || null,
               unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
               base_quantity: item.base_quantity,
+              sale_price: item.sale_price ?? null,
               warehouse_id: item.warehouse_id || null,
             };
           }),
@@ -1180,6 +1184,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
         unit_name: item.selected_unit?.unit_name || item.product_unit || null,
         unit_conversion_factor: item.selected_unit?.conversion_factor || null,
         base_quantity: item.base_quantity,
+        sale_price: item.sale_price ?? null,
         warehouse_id: item.warehouse_id || null,
       };
     });
@@ -1296,6 +1301,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Sale Price</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
                       <th className="w-8"></th>
                     </tr>
@@ -1332,6 +1338,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                         <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
                       </tr>
@@ -1876,7 +1883,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
       const [itemsRes, whRes] = await Promise.all([
         supabase
           .from('purchase_order_items')
-          .select('*, product:products(name, sku, unit, base_unit, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order))')
+          .select('*, product:products(name, sku, unit, base_unit, enable_multi_unit, sale_price, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order))')
           .eq('purchase_order_id', order.id),
         supabase.from('warehouses').select('id, name, code, is_default').eq('is_active', true).order('name'),
       ]);
@@ -1899,6 +1906,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           available_units: units.filter((u: any) => u.is_active),
           base_quantity: Number(it.base_quantity) || Number(it.quantity),
           cost_price: selectedUnit?.cost_price || 0,
+          sale_price: it.sale_price != null ? Number(it.sale_price) : (prod?.sale_price ?? 0),
           warehouse_id: it.warehouse_id || '',
         };
       }));
@@ -1970,6 +1978,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
       available_units: units,
       base_quantity: baseQty,
       cost_price: unitPrice,
+      sale_price: product.sale_price || 0,
       warehouse_id: defaultWhId,
     }]);
   }
@@ -2012,6 +2021,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
               unit_name: item.selected_unit?.unit_name || item.product_unit || null,
               unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
               base_quantity: item.base_quantity,
+              sale_price: item.sale_price ?? null,
               warehouse_id: item.warehouse_id || null,
             };
           }),
@@ -2065,6 +2075,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
         unit_name: item.selected_unit?.unit_name || item.product_unit || null,
         unit_conversion_factor: item.selected_unit?.conversion_factor || null,
         base_quantity: item.base_quantity,
+        sale_price: item.sale_price ?? null,
         warehouse_id: item.warehouse_id || null,
       };
     });
@@ -2184,6 +2195,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Sale Price</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
                       <th className="w-8"></th>
                     </tr>
@@ -2220,6 +2232,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
                         <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
                       </tr>
