@@ -339,7 +339,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
     supplierName?: string;
     lines: { name: string; qty: number; cost: number }[];
     saleUpdates: { name: string; before: number; after: number }[];
-    costUpdates: { name: string; before: number; after: number }[];
+    costUpdates: { name: string; before: number; after: number; forced?: boolean }[];
   } | null>(null);
 
   async function selectPO(po: PurchaseOrder) {
@@ -487,7 +487,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
 
       const result = (data || {}) as {
         grn_number?: string;
-        cost_updates?: { name: string; before: number; after: number }[];
+        cost_updates?: { name: string; before: number; after: number; forced?: boolean }[];
         sale_price_updates?: { name: string; before: number; after: number }[];
       };
 
@@ -578,7 +578,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                   <p className="text-xs font-semibold text-amber-700 mb-1">Cost price updated on product</p>
                   <ul className="text-sm text-amber-900 space-y-0.5">
                     {savedResult.costUpdates.map((u, i) => (
-                      <li key={i}>{u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}</li>
+                      <li key={i}>{u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}{u.forced ? ' (forced)' : ''}</li>
                     ))}
                   </ul>
                 </div>
