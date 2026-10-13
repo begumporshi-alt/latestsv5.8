@@ -10,7 +10,7 @@
  * jsPDF built-in fonts have no ৳ glyph, so amounts are labelled "BDT".
  */
 import { jsPDF } from 'jspdf';
-import { formatDate } from '@/lib/format';
+import { formatDate, getCurrencyFormat } from '@/lib/format';
 
 const PRIMARY: [number, number, number] = [30, 58, 110]; // #1e3a6e
 const GREEN: [number, number, number] = [76, 175, 80];
@@ -75,7 +75,10 @@ export interface PdfDocSpec {
 }
 
 const fmt = (n: number) =>
-  Number(n).toLocaleString('en-BD', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  Number(n).toLocaleString(getCurrencyFormat().grouping === 'en' ? 'en-US' : 'en-BD', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 
 async function loadImage(url: string): Promise<{ dataUrl: string; ratio: number } | null> {
   return new Promise((resolve) => {

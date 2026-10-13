@@ -1,15 +1,70 @@
-export function formatCurrency(amount: number | null | undefined, symbol = '৳'): string {
+export interface CurrencyFormat {
+  symbol: string;
+  symbol_position: 'before' | 'after';
+  grouping: 'in' | 'en';
+  large_display: 'current' | 'full' | 'compact';
+  decimals: 0 | 1 | 2 | 3;
+}
+
+export const DEFAULT_CURRENCY_FORMAT: CurrencyFormat = {
+  symbol: '৳',
+  symbol_position: 'before',
+  grouping: 'in',
+  large_display: 'current',
+  decimals: 0,
+};
+
+let currencyFormat: CurrencyFormat = { ...DEFAULT_CURRENCY_FORMAT };
+
+export function getCurrencyFormat(): CurrencyFormat {
+  return currencyFormat;
+}
+
+export function setCurrencyFormat(value: Partial<CurrencyFormat>): void {
+  currencyFormat = {
+    ...currencyFormat,
+    ...value,
+    symbol: typeof value.symbol === 'string' && value.symbol.trim() ? value.symbol : currencyFormat.symbol,
+    decimals: ([0, 1, 2, 3] as const).includes(value.decimals as 0 | 1 | 2 | 3) ? (value.decimals as 0 | 1 | 2 | 3) : currencyFormat.decimals,
+  };
+}
+
+function grouped(value: number, fmt: CurrencyFormat): string {
+  const locale = fmt.grouping === 'en' ? 'en-US' : 'en-IN';
+  return value.toLocaleString(locale, {
+    minimumFractionDigits: fmt.decimals,
+    maximumFractionDigits: fmt.decimals,
+  });
+}
+
+export function formatCurrencyWith(amount: number | null | undefined, fmt: CurrencyFormat): string {
+  const symbol = fmt.symbol;
   if (amount === null || amount === undefined || isNaN(Number(amount))) {
-    return `${symbol}0`;
+    return fmt.symbol_position === 'after' ? `0${symbol}` : `${symbol}0`;
   }
   const num = Number(amount);
-  if (num >= 10000000) {
-    return `${symbol}${(num / 10000000).toFixed(2)}Cr`;
+  const abs = Math.abs(num);
+  let body: string;
+  if (fmt.large_display === 'compact') {
+    if (abs >= 10000000) body = `${(num / 10000000).toFixed(2)}Cr`;
+    else if (abs >= 100000) body = `${(num / 100000).toFixed(2)}L`;
+    else body = grouped(num, fmt);
+  } else if (fmt.large_display === 'full') {
+    body = grouped(num, fmt);
+  } else {
+    if (abs >= 10000000) body = `${(num / 10000000).toFixed(2)}Cr`;
+    else body = grouped(num, fmt);
   }
-  if (num >= 100000) {
-    return `${symbol}${(num / 100000).toFixed(2)}L`;
-  }
-  return `${symbol}${num.toLocaleString('en-IN')}`;
+  return fmt.symbol_position === 'after' ? `${body}${symbol}` : `${symbol}${body}`;
+}
+
+export function formatCurrency(amount: number | null | undefined): string {
+  return formatCurrencyWith(amount, currencyFormat);
+}
+
+/** Chart-axis ticks: same large-value rule as formatCurrency but without the symbol. */
+export function formatAxisCurrency(value: number): string {
+  return formatCurrencyWith(value, { ...currencyFormat, symbol: '' });
 }
 
 export function formatDate(dateStr: string): string {

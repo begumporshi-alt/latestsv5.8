@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
+import { formatCurrencyWith, setCurrencyFormat, DEFAULT_CURRENCY_FORMAT, type CurrencyFormat } from '@/lib/format';
 import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator, Zap } from 'lucide-react';
 
 type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'quick_sell' | 'tax' | 'estimates' | 'data';
@@ -112,6 +113,7 @@ export default function SettingsPage() {
   });
   const [plEstimates, setPlEstimates] = useState<PLEstimatesSettings>({ manual_cogs_percent: 90 });
   const [quickSell, setQuickSell] = useState<QuickSellSettingsState>({ show_qty: false, show_in_inventory: false });
+  const [currencySettings, setCurrencySettings] = useState<CurrencyFormat>(DEFAULT_CURRENCY_FORMAT);
   const [profile, setProfile] = useState<ProfileData>({
     full_name: '',
     email: '',
@@ -243,7 +245,7 @@ export default function SettingsPage() {
   async function loadSettings() {
     setLoading(true);
 
-    const [companyRes, notifRes, appearRes, invRes, vatRes, estRes, qsRes, profileRes] = await Promise.all([
+    const [companyRes, notifRes, appearRes, invRes, vatRes, estRes, qsRes, currencyRes, profileRes] = await Promise.all([
       supabase.from('app_settings').select('*').eq('setting_key', 'company').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'notifications').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'appearance').single(),
@@ -251,6 +253,7 @@ export default function SettingsPage() {
       supabase.from('app_settings').select('*').eq('setting_key', 'vat').maybeSingle(),
       supabase.from('app_settings').select('*').eq('setting_key', 'pl_estimates').maybeSingle(),
       supabase.from('app_settings').select('*').eq('setting_key', 'quick_sell').maybeSingle(),
+      supabase.from('app_settings').select('*').eq('setting_key', 'currency').maybeSingle(),
       supabase.from('profiles').select('*').limit(1).single(),
     ]);
 
@@ -274,6 +277,9 @@ export default function SettingsPage() {
     }
     if (qsRes.data?.setting_value) {
       setQuickSell(s => ({ ...s, ...qsRes.data.setting_value as QuickSellSettingsState }));
+    }
+    if (currencyRes.data?.setting_value) {
+      setCurrencySettings(s => ({ ...s, ...currencyRes.data.setting_value as CurrencyFormat }));
     }
     if (profileRes.data) {
       setProfile({
@@ -299,8 +305,10 @@ export default function SettingsPage() {
 
     if (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      return false;
     } else {
       toast({ title: 'Success', description: 'Settings saved successfully' });
+      return true;
     }
 
     setSaving(false);
@@ -527,6 +535,96 @@ export default function SettingsPage() {
                       <option>MM/DD/YYYY</option>
                       <option>YYYY-MM-DD</option>
                     </select>
+                  </div>
+                </div>
+                <div className="border border-border rounded-xl p-4 max-w-2xl">
+                  <div className="mb-4">
+                    <p className="text-sm font-medium text-foreground">Currency Format</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      How amounts appear across the app, invoices and PDFs — applies to all users.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium mb-1">Symbol</label>
+                      <input
+                        value={currencySettings.symbol}
+                        onChange={e => setCurrencySettings(s => ({ ...s, symbol: e.target.value }))}
+                        maxLength={3}
+                        className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1">Symbol Position</label>
+                      <select
+                        value={currencySettings.symbol_position}
+                        onChange={e => setCurrencySettings(s => ({ ...s, symbol_position: e.target.value as CurrencyFormat['symbol_position'] }))}
+                        className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                      >
+                        <option value="before">Before amount (৳500)</option>
+                        <option value="after">After amount (500৳)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1">Digit Grouping</label>
+                      <select
+                        value={currencySettings.grouping}
+                        onChange={e => setCurrencySettings(s => ({ ...s, grouping: e.target.value as CurrencyFormat['grouping'] }))}
+                        className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                      >
+                        <option value="in">Indian (11,47,000)</option>
+                        <option value="en">International (1,147,000)</option>
+                      </select>
+                    </div>
+                    <div className="col-span-2 sm:col-span-3">
+                      <label className="block text-xs font-medium mb-1">Large Values</label>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <button
+                          onClick={() => setCurrencySettings(s => ({ ...s, large_display: 'current' }))}
+                          className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition ${currencySettings.large_display === 'current' ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/10' : 'border-border hover:border-blue-200'}`}
+                        >
+                          <span className="text-sm font-bold text-foreground">Lakh full, Crore short</span>
+                          <span className="text-xs text-muted-foreground">৳11,47,000 and ৳1.10Cr</span>
+                        </button>
+                        <button
+                          onClick={() => setCurrencySettings(s => ({ ...s, large_display: 'full' }))}
+                          className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition ${currencySettings.large_display === 'full' ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/10' : 'border-border hover:border-blue-200'}`}
+                        >
+                          <span className="text-sm font-bold text-foreground">Always full digits</span>
+                          <span className="text-xs text-muted-foreground">৳11,470,000 — no short forms</span>
+                        </button>
+                        <button
+                          onClick={() => setCurrencySettings(s => ({ ...s, large_display: 'compact' }))}
+                          className={`flex flex-col items-start gap-1 p-3 rounded-xl border-2 text-left transition ${currencySettings.large_display === 'compact' ? 'border-blue-600 bg-blue-50/60 ring-2 ring-blue-500/10' : 'border-border hover:border-blue-200'}`}
+                        >
+                          <span className="text-sm font-bold text-foreground">Compact</span>
+                          <span className="text-xs text-muted-foreground">৳11.47L and ৳1.10Cr</span>
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium mb-1">Decimal Places</label>
+                      <select
+                        value={currencySettings.decimals}
+                        onChange={e => setCurrencySettings(s => ({ ...s, decimals: Number(e.target.value) as CurrencyFormat['decimals'] }))}
+                        className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                      >
+                        <option value={0}>0 — whole taka</option>
+                        <option value={1}>1</option>
+                        <option value={2}>2 — paisa precision</option>
+                        <option value={3}>3</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="mt-4 bg-muted/50 rounded-lg px-4 py-3">
+                    <p className="text-xs text-muted-foreground mb-1">Preview</p>
+                    <p className="text-lg font-bold text-foreground">
+                      {formatCurrencyWith(1147000, currencySettings)}
+                      <span className="mx-2 text-muted-foreground">·</span>
+                      {formatCurrencyWith(11470000, currencySettings)}
+                      <span className="mx-2 text-muted-foreground">·</span>
+                      {formatCurrencyWith(450, currencySettings)}
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1210,8 +1308,12 @@ export default function SettingsPage() {
 
           <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
             <button
-              onClick={() => {
-                if (activeTab === 'general') saveSettings('company', company);
+              onClick={async () => {
+                if (activeTab === 'general') {
+                  saveSettings('company', company);
+                  const ok = await saveSettings('currency', currencySettings);
+                  if (ok) setCurrencyFormat(currencySettings);
+                }
                 else if (activeTab === 'inventory') saveSettings('inventory', inventorySettings);
                 else if (activeTab === 'quick_sell') saveSettings('quick_sell', quickSell);
                 else if (activeTab === 'notifications') saveSettings('notifications', notifications);

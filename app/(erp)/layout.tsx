@@ -11,6 +11,7 @@ import { OfflineProvider } from '@/lib/offline/provider';
 import OfflineBanner from '@/components/offline/OfflineBanner';
 import OfflineDataNotice from '@/components/offline/OfflineDataNotice';
 import { getLastUser, rememberUser } from '@/lib/offline/session';
+import { setCurrencyFormat, type CurrencyFormat } from '@/lib/format';
 import { Menu, PanelLeftClose, PanelLeft, CloudOff } from 'lucide-react';
 
 /** Resolve with the promise's value, or null after `ms` — never rejects. */
@@ -58,6 +59,24 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const saved = localStorage.getItem('sidebarCollapsed');
     if (saved) setSidebarCollapsed(saved === 'true');
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await supabase.from('app_settings').select('*').eq('setting_key', 'currency').maybeSingle();
+        if (cancelled) return;
+        if (data?.setting_value) {
+          setCurrencyFormat(data.setting_value as Partial<CurrencyFormat>);
+          localStorage.setItem('currencyFormat', JSON.stringify(data.setting_value));
+        }
+      } catch {
+        const cached = localStorage.getItem('currencyFormat');
+        if (cached && !cancelled) setCurrencyFormat(JSON.parse(cached));
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
