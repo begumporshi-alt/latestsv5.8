@@ -15,6 +15,8 @@ import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
+import { printNode } from '@/lib/print';
+import PurchaseOrderPrint from '@/components/PurchaseOrderPrint';
 
 const statusConfig: Record<PurchaseOrderStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
@@ -1518,6 +1520,14 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
   const balance = isCancelled ? 0 : Number(order.total_amount) - Number(order.amount_paid);
   const canEdit = order.status === 'draft' || order.status === 'approved';
   const [returns, setReturns] = useState<{ return_number: string; total_amount: number; status: string; return_date: string }[]>([]);
+  const [showPrint, setShowPrint] = useState(false);
+  const printRef = useRef<HTMLDivElement>(null);
+  const [companySettings, setCompanySettings] = useState<any>({ name: '', address: '', phone: '', email: '', logo_url: '' });
+
+  useEffect(() => {
+    supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle()
+      .then(({ data }) => { if (data?.setting_value) setCompanySettings(data.setting_value); });
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1530,7 +1540,18 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
     })();
   }, [order.id]);
 
+  const printItems = items.map(it => ({
+    product_name: it.product?.name || '-',
+    product_sku: it.product?.sku,
+    quantity: Number(it.quantity),
+    unit_price: Number(it.unit_cost || it.unit_price),
+    discount_percent: Number(it.discount_percent) || 0,
+    subtotal: Number(it.subtotal),
+    unit_name: it.unit_name || it.product?.unit,
+  }));
+
   return (
+    <>
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="print-modal bg-white rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white">
@@ -1546,7 +1567,7 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
                 <Ban className="w-4 h-4" />Cancel
               </button>
             )}
-            <button onClick={() => window.print()} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-muted transition">
+            <button onClick={() => setShowPrint(true)} className="flex items-center gap-1 px-3 py-1.5 border border-border rounded-lg text-sm hover:bg-muted transition">
               <Printer className="w-4 h-4" />Print
             </button>
             <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
@@ -1710,6 +1731,46 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
         </div>
       </div>
     </div>
+
+    {showPrint && (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+          <div className="flex items-center justify-between px-6 py-3 border-b border-border sticky top-0 bg-white z-10">
+            <span className="text-sm font-semibold text-muted-foreground">Purchase Order Print Preview</span>
+            <div className="flex items-center gap-2">
+              <button onClick={() => printNode(printRef.current)} className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition">
+                <Printer className="w-3.5 h-3.5" />Print
+              </button>
+              <button onClick={() => setShowPrint(false)} className="text-muted-foreground hover:text-foreground p-1"><X className="w-5 h-5" /></button>
+            </div>
+          </div>
+          <div className="p-8" ref={printRef}>
+            <PurchaseOrderPrint
+              poNumber={order.po_number}
+              poDate={order.order_date}
+              expectedDate={(order as any).expected_date || undefined}
+              status={order.status}
+              reference={(order as any).reference || undefined}
+              company={companySettings}
+              supplier={{
+                name: order.supplier?.name || '-',
+                code: order.supplier?.code,
+                phone: order.supplier?.phone,
+              }}
+              items={printItems}
+              subtotal={Number(order.subtotal) || Number(order.total_amount)}
+              cartDiscount={Number(order.discount_amount) || 0}
+              extraDiscount={Number((order as any).extra_discount) || 0}
+              totalAmount={Number(order.total_amount)}
+              amountPaid={Number(order.amount_paid) || 0}
+              balance={isCancelled ? 0 : Number(order.total_amount) - Number(order.amount_paid)}
+              notes={(order as any).notes || undefined}
+            />
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 
