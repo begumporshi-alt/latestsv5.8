@@ -383,19 +383,19 @@ export default function CRMPage() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-7 gap-4">
         {[
-          { label: 'Total Customers', value: stats.total, color: 'text-blue-500' },
-          { label: 'Active', value: stats.active, color: 'text-green-500' },
-          { label: 'Total Revenue', value: formatCurrency(stats.totalRevenue), color: 'text-slate-600' },
-          { label: 'Invoice Outstanding', value: formatCurrency(stats.invoiceOutstanding), color: 'text-amber-600' },
-          { label: 'Manual Outstanding', value: formatCurrency(stats.manualOutstanding), color: 'text-purple-600' },
-          { label: 'Total Outstanding', value: formatCurrency(stats.outstanding), color: 'text-red-500' },
-          { label: 'Total Refunds', value: formatCurrency(stats.totalRefunds), color: 'text-orange-500' },
+          { label: 'Customers', value: String(stats.total), tone: 'text-blue-600' },
+          { label: 'Active', value: String(stats.active), tone: 'text-green-600' },
+          { label: 'Revenue', value: formatCurrency(stats.totalRevenue), tone: 'text-slate-600' },
+          { label: 'Invoice Due', value: formatCurrency(stats.invoiceOutstanding), tone: 'text-amber-600' },
+          { label: 'Manual Due', value: formatCurrency(stats.manualOutstanding), tone: 'text-purple-600' },
+          { label: 'Total Due', value: formatCurrency(stats.outstanding), tone: 'text-red-600' },
+          { label: 'Refunds', value: formatCurrency(stats.totalRefunds), tone: 'text-orange-600' },
         ].map(s => (
-          <div key={s.label} className="stat-card">
-            <p className="text-xs text-muted-foreground">{s.label}</p>
-            <p className={`text-xl font-bold mt-1 ${s.color}`}>{s.value}</p>
+          <div key={s.label} className="stat-card min-w-0">
+            <p className="text-xs text-muted-foreground truncate">{s.label}</p>
+            <p className={`text-base 2xl:text-lg font-bold tabular-nums tracking-tight whitespace-nowrap mt-1 ${s.tone}`}>{s.value}</p>
           </div>
         ))}
       </div>
