@@ -140,7 +140,10 @@ export default function PaySupplierModal({
 
       if (!networkMonitor.getState().online) {
         // Offline: one po.payment op per allocated PO — sync_po_payment
-        // re-validates against the live balance at replay time.
+        // re-validates against the live balance at replay time. All ops share
+        // one collection_id so the supplier statement prints the payment as a
+        // single combined row.
+        const collectionId = crypto.randomUUID();
         for (const row of allocRows) {
           const po = pos.find(x => x.id === row.po_id)!;
           await enqueueOp('po.payment', {
@@ -153,6 +156,7 @@ export default function PaySupplierModal({
             payment_date: paymentDate,
             reference_number: referenceNumber || null,
             notes: notes || null,
+            collection_id: collectionId,
           }, `PO payment ${formatCurrency(row.amount)} — ${po.po_number}`);
         }
         toast({
