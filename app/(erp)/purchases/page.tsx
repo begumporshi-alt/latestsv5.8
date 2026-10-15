@@ -44,12 +44,7 @@ export default function PurchasesPage() {
   const [stats, setStats] = useState({ total: 0, pending: 0, received: 0, outstanding: 0, returns: 0, returnAmount: 0, totalValue: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showAddProductModal, setShowAddProductModal] = useState(false);
-  const [productModalRefs, setProductModalRefs] = useState<{
-    categories: Category[];
-    brands: Brand[];
-    warehouses: WarehouseType[];
-    unitTypes: { id: string; unit_name: string; unit_short: string }[];
-  } | null>(null);
+  const productModalRefs = useProductModalRefs(showAddProductModal);
   const [viewingOrder, setViewingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
   const [orderItems, setOrderItems] = useState<any[]>([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -71,29 +66,6 @@ export default function PurchasesPage() {
   const pageSize = 10;
 
   useEffect(() => { loadData(); }, []);
-
-  // Reference data for the shared Add Product modal — fetched lazily the
-  // first time the modal opens rather than on every page load.
-  useEffect(() => {
-    if (!showAddProductModal || productModalRefs) return;
-    let cancelled = false;
-    (async () => {
-      const [catRes, brandRes, whRes, unitRes] = await Promise.all([
-        supabase.from('categories').select('*').eq('is_active', true),
-        supabase.from('brands').select('*').eq('is_active', true),
-        supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
-        supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
-      ]);
-      if (cancelled) return;
-      setProductModalRefs({
-        categories: (catRes.data || []) as Category[],
-        brands: (brandRes.data || []) as Brand[],
-        warehouses: (whRes.data || []) as WarehouseType[],
-        unitTypes: unitRes.data || [],
-      });
-    })();
-    return () => { cancelled = true; };
-  }, [showAddProductModal, productModalRefs]);
 
   // Deep-links from the supplier profile: /purchases?new=1&supplier=<id>
   // opens the create modal pre-filled; /purchases?view=<poId> is consumed in
@@ -888,6 +860,40 @@ export default function PurchasesPage() {
   );
 }
 
+type ProductModalRefs = {
+  categories: Category[];
+  brands: Brand[];
+  warehouses: WarehouseType[];
+  unitTypes: { id: string; unit_name: string; unit_short: string }[];
+};
+
+// Reference data for the shared Add Product modal — fetched lazily the first
+// time a caller opens it rather than on page load.
+function useProductModalRefs(open: boolean): ProductModalRefs | null {
+  const [refs, setRefs] = useState<ProductModalRefs | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      const [catRes, brandRes, whRes, unitRes] = await Promise.all([
+        supabase.from('categories').select('*').eq('is_active', true),
+        supabase.from('brands').select('*').eq('is_active', true),
+        supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
+        supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
+      ]);
+      if (cancelled) return;
+      setRefs({
+        categories: (catRes.data || []) as Category[],
+        brands: (brandRes.data || []) as Brand[],
+        warehouses: (whRes.data || []) as WarehouseType[],
+        unitTypes: unitRes.data || [],
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+  return refs;
+}
+
 function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSaved }: {
   suppliers: Supplier[];
   products: Product[];
@@ -916,6 +922,8 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default?: boolean }[]>([]);
   const [headerWarehouseId, setHeaderWarehouseId] = useState('');
+  const [showAddProduct, setShowAddProduct] = useState(false);
+  const productModalRefs = useProductModalRefs(showAddProduct);
 
   useEffect(() => {
     supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
@@ -1337,7 +1345,12 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
           </div>
 
           <div>
-            <label className="block text-xs font-medium mb-2">Add Products</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-medium">Add Products</label>
+              <button type="button" onClick={() => setShowAddProduct(true)} className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 transition">
+                <Plus className="w-3.5 h-3.5" />New Product
+              </button>
+            </div>
             <ProductSearchInput
               onSelect={addProductToItems}
               placeholder="Search product by name or SKU..."
@@ -1552,6 +1565,20 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
             />
           )}
         </form>
+
+        {/* Must stay outside the PO <form> — a nested <form> breaks React's
+            synthetic submit handling and the browser does a native GET reload. */}
+        {showAddProduct && productModalRefs && (
+          <ProductModal
+            categories={productModalRefs.categories}
+            brands={productModalRefs.brands}
+            warehouses={productModalRefs.warehouses}
+            unitTypes={productModalRefs.unitTypes}
+            onClose={() => setShowAddProduct(false)}
+            onSaved={() => { cacheDelete('purchases:refs'); }}
+            onCreated={addProductToItems}
+          />
+        )}
       </div>
     </div>
   );
@@ -2002,6 +2029,8 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
   const [supplierList, setSupplierList] = useState(suppliers);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default?: boolean }[]>([]);
   const [headerWarehouseId, setHeaderWarehouseId] = useState('');
+  const [showAddProduct, setShowAddProduct] = useState(false);
+  const productModalRefs = useProductModalRefs(showAddProduct);
 
   useEffect(() => {
     (async () => {
@@ -2301,7 +2330,12 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           </div>
 
           <div>
-            <label className="block text-xs font-medium mb-2">Add Products</label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-medium">Add Products</label>
+              <button type="button" onClick={() => setShowAddProduct(true)} className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 transition">
+                <Plus className="w-3.5 h-3.5" />New Product
+              </button>
+            </div>
             <ProductSearchInput
               onSelect={addProductToItems}
               placeholder="Search product by name or SKU..."
@@ -2427,6 +2461,19 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
             </button>
           </div>
         </form>
+
+        {/* Outside the PO <form> — nested <form> breaks React synthetic submit. */}
+        {showAddProduct && productModalRefs && (
+          <ProductModal
+            categories={productModalRefs.categories}
+            brands={productModalRefs.brands}
+            warehouses={productModalRefs.warehouses}
+            unitTypes={productModalRefs.unitTypes}
+            onClose={() => setShowAddProduct(false)}
+            onSaved={() => { cacheDelete('purchases:refs'); }}
+            onCreated={addProductToItems}
+          />
+        )}
       </div>
     </div>
   );
