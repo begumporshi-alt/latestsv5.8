@@ -380,6 +380,9 @@ export default function InvoicePreviewModal({
           notes,
           reference,
           paymentMethod: payments?.[0]?.payment_method?.replace(/_/g, ' '),
+          hideRate,
+          hideDiscountPercent,
+          hideItemDiscount,
         },
         `${docType}-${docNumber}.pdf`,
       );
