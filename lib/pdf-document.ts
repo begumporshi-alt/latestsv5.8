@@ -72,6 +72,10 @@ export interface PdfDocSpec {
   reference?: string;
   salesPerson?: string;
   paymentMethod?: string;
+  /** Print Options — mirror the print preview's toggles (default hidden). */
+  hideRate?: boolean;
+  hideDiscountPercent?: boolean;
+  hideItemDiscount?: boolean;
 }
 
 const fmt = (n: number) =>
@@ -403,27 +407,37 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
   y += 5;
 
   // ── Items table ──────────────────────────────────────────────────────
+  // Print Options: the raw RATE and DISC % columns only exist when the user
+  // made them visible in the print preview; hidden (the default) matches the
+  // printed sheet exactly.
+  const showRateCol = !(spec.hideRate ?? true);
+  const showDiscCol = !(spec.hideDiscountPercent ?? true);
   const col = {
     sl: 9,
     code: 26,
     unit: 16,
     warranty: 14,
     qty: 12,
-    rate: 22,
+    rate: 20,
+    disc: 12,
+    netRate: 22,
     amount: 26,
   };
-  col.unit = 16;
-  const detailsW = contentW - col.sl - col.code - col.unit - col.warranty - col.qty - col.rate - col.amount;
+  const detailsW = contentW - col.sl - col.code - col.unit - col.warranty - col.qty
+    - (showRateCol ? col.rate : 0) - (showDiscCol ? col.disc : 0) - col.netRate - col.amount;
 
+  let cx = M;
   const colX = {
-    sl: M,
-    code: M + col.sl,
-    details: M + col.sl + col.code,
-    warranty: M + col.sl + col.code + detailsW,
-    unit: M + col.sl + col.code + detailsW + col.warranty,
-    qty: M + col.sl + col.code + detailsW + col.warranty + col.unit,
-    rate: M + col.sl + col.code + detailsW + col.warranty + col.unit + col.qty,
-    amount: M + col.sl + col.code + detailsW + col.warranty + col.unit + col.qty + col.rate,
+    sl: cx,
+    code: (cx += col.sl),
+    details: (cx += col.code),
+    warranty: (cx += detailsW),
+    unit: (cx += col.warranty),
+    qty: (cx += col.unit),
+    rate: (cx += col.qty),
+    disc: (cx += showRateCol ? col.rate : 0),
+    netRate: (cx += showDiscCol ? col.disc : 0),
+    amount: (cx += col.netRate),
   };
 
   function drawTableHeader() {
@@ -442,7 +456,9 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
     mid(colX.warranty, col.warranty, 'WARR.');
     mid(colX.unit, col.unit, 'UNIT');
     mid(colX.qty, col.qty, 'QTY');
-    doc.text('NET RATE', colX.rate + col.rate, y, { align: 'right' });
+    if (showRateCol) doc.text('RATE', colX.rate + col.rate, y, { align: 'right' });
+    if (showDiscCol) mid(colX.disc, col.disc, 'DISC %');
+    doc.text('NET RATE', colX.netRate + col.netRate, y, { align: 'right' });
     doc.text('AMOUNT', colX.amount + col.amount, y, { align: 'right' });
     y += 7.2;
   }
@@ -482,8 +498,14 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
     doc.text(item.unit_name || '—', colX.unit + col.unit / 2, baseY, { align: 'center' });
     setText(TEXT);
     doc.text(String(item.quantity), colX.qty + col.qty / 2, baseY, { align: 'center' });
+    if (showRateCol) doc.text(Number(item.unit_price).toFixed(2), colX.rate + col.rate, baseY, { align: 'right' });
+    if (showDiscCol) {
+      setText(MUTED);
+      doc.text((item.discount_percent || 0) > 0 ? `${item.discount_percent}%` : '—', colX.disc + col.disc / 2, baseY, { align: 'center' });
+      setText(TEXT);
+    }
     const netRate = Number(item.unit_price) * (1 - (item.discount_percent || 0) / 100);
-    doc.text(netRate.toFixed(2), colX.rate + col.rate, baseY, { align: 'right' });
+    doc.text(netRate.toFixed(2), colX.netRate + col.netRate, baseY, { align: 'right' });
     doc.setFont('helvetica', 'bold');
     doc.text(Number(item.subtotal).toFixed(2), colX.amount + col.amount, baseY, { align: 'right' });
     doc.setFont('helvetica', 'normal');
@@ -500,15 +522,18 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
   // ── Totals + QR band (kept together) ─────────────────────────────────
   const isInvoice = spec.docType === 'INVOICE';
   const discountTotal = spec.discountTotal || 0;
+  const hideItemDiscount = spec.hideItemDiscount ?? true;
   const showInvoiceDueBreakdown = isInvoice && spec.previousDue !== undefined;
   const previousDueAmount = Math.max(0, Number(spec.previousDue || 0));
   const totalDueAmount = Number(spec.totalAmount) + previousDueAmount;
   const currentDueAmount = previousDueAmount + Number(spec.balanceDue || 0);
-  const displayedSubtotal = Number(spec.subtotal) + discountTotal;
+  // Same math as the print template: when the Item Discount row is hidden
+  // the discount is folded into the Subtotal so the rows still reconcile.
+  const displayedSubtotal = Number(spec.subtotal) + (hideItemDiscount ? 0 : discountTotal);
 
   const totalsRows: { label: string; value: string; color?: [number, number, number]; bold?: boolean; size?: number; border?: 'strong' | 'light' }[] = [
     { label: 'Subtotal', value: fmt(displayedSubtotal) },
-    ...(discountTotal > 0 ? [{ label: 'Item Discount', value: `-${fmt(discountTotal)}` }] : []),
+    ...(discountTotal > 0 && !hideItemDiscount ? [{ label: 'Item Discount', value: `-${fmt(discountTotal)}` }] : []),
     ...(spec.cartDiscount && spec.cartDiscount > 0
       ? [{ label: `Cart Discount${spec.cartDiscountPercent ? ` (${spec.cartDiscountPercent}%)` : ''}`, value: `-${fmt(spec.cartDiscount)}` }]
       : []),

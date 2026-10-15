@@ -2514,6 +2514,9 @@ function ViewQuotationModal({ quotation, items, onClose, onConvert, onEdit, onDe
           totalAmount: Number(quotation.total_amount),
           notes: (quotation as any).notes,
           reference: (quotation as any).reference,
+          hideRate,
+          hideDiscountPercent,
+          hideItemDiscount,
         },
         `QUOTATION-${quotation.quote_number}.pdf`,
       );
