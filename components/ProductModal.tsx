@@ -18,7 +18,7 @@ export type ProductModalProduct = Omit<Product, 'category' | 'brand'> & {
   brand?: { name: string };
 };
 
-export default function ProductModal({ categories, brands, warehouses, unitTypes, product, onClose, onSaved }: {
+export default function ProductModal({ categories, brands, warehouses, unitTypes, product, onClose, onSaved, onCreated }: {
   categories: Category[];
   brands: Brand[];
   warehouses: WarehouseType[];
@@ -26,6 +26,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   product?: ProductModalProduct | null;
   onClose: () => void;
   onSaved: () => void;
+  onCreated?: (product: Record<string, any>) => void;
 }) {
   const isEdit = !!product;
   const [form, setForm] = useState({
@@ -431,6 +432,17 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
             }
           }
         }
+      }
+
+      // Let embedders (e.g. the PO form) add the fresh row as a line item.
+      // Offline-queued creates skip this — the row doesn't exist server-side
+      // yet, so referencing it in a PO would break the FK on sync.
+      if (!isEdit && onCreated) {
+        onCreated({
+          id: productId,
+          ...data,
+          units: form.enable_multi_unit ? units.filter(u => u.unit_name.trim()) : [],
+        });
       }
 
       toast({ title: 'Success', description: isEdit ? 'Product updated successfully' : 'Product created successfully' });
