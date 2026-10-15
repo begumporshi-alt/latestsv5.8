@@ -1551,6 +1551,9 @@ export default function POSPage() {
     // settled by another device in the meantime parks as a Sync Center
     // conflict instead of a silent overpay.
     let queuedDue = 0;
+    // One collection_id across all due ops so the statement shows a single
+    // combined Payment row when they replay.
+    const duesCollectionId = crypto.randomUUID();
     for (const row of settle.duesAlloc) {
       try {
         await enqueueOp('payment.create', {
@@ -1567,6 +1570,7 @@ export default function POSPage() {
             : `Collected with POS sale ${tempNumber}`,
           payment_for: 'outstanding_invoice_pay',
           collected_with_invoice_id: invoiceId,
+          collection_id: duesCollectionId,
         }, `Due collection ${formatCurrency(row.amount)} — ${row.invoice_number}`);
       } catch (err: any) {
         // The sale itself is already queued — keep it; dues queued so far

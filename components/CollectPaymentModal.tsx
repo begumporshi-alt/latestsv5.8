@@ -181,6 +181,9 @@ export default function CollectPaymentModal({
       // Offline: one payment.create op per allocated invoice (the existing
       // sync_payment_create re-validates against the live balance at replay
       // time), plus an advance.receive op when the overpayment is routed.
+      // All ops share one collection_id so the customer statement prints the
+      // collection as a single combined Payment row.
+      const collectionId = crypto.randomUUID();
       for (const row of allocRows) {
         const inv = invoices.find(i => i.id === row.invoice_id)!;
         await enqueueOp('payment.create', {
@@ -193,6 +196,7 @@ export default function CollectPaymentModal({
           payment_date: form.payment_date,
           reference_number: form.reference_number || null,
           notes: form.notes || null,
+          collection_id: collectionId,
         }, `Payment ${formatCurrency(row.amount)} — ${inv.invoice_number}`);
       }
       if (overpayment > 0 && overpaymentMode === 'advance') {
