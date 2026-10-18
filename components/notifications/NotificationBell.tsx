@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bell, Package, Truck, Receipt, ShoppingBag, ClipboardCheck, CheckCheck } from 'lucide-react';
+import { Bell, Package, Truck, Receipt, ShoppingBag, ClipboardCheck, CheckCheck, TriangleAlert } from 'lucide-react';
 import { useNotifications, type AppNotification } from '@/hooks/use-notifications';
 import { formatRelativeTime } from '@/lib/format';
 
@@ -12,6 +12,7 @@ const typeStyles: Record<string, { icon: React.ElementType; color: string }> = {
   payment_received: { icon: Receipt, color: 'text-green-600 bg-green-50' },
   delivery_update: { icon: Truck, color: 'text-pink-600 bg-pink-50' },
   po_approval: { icon: ClipboardCheck, color: 'text-purple-600 bg-purple-50' },
+  overdue_digest: { icon: TriangleAlert, color: 'text-red-600 bg-red-50' },
 };
 
 function NotificationRow({ n, unread, onOpen }: { n: AppNotification; unread: boolean; onOpen: (n: AppNotification) => void }) {
