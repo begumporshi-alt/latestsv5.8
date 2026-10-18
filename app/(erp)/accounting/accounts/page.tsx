@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { Plus, X, Pencil, Trash2, ExternalLink, Search, AlertTriangle, ToggleLeft, ToggleRight, Info, Lock } from 'lucide-react';
 import type { Account } from '@/lib/types';
 import Link from 'next/link';
@@ -405,12 +406,12 @@ function CreateAccountModal({ onClose, onSaved }: { onClose: () => void; onSaved
 
           <div>
             <label className="block text-xs font-medium mb-1">Opening Balance</label>
-            <input
-              type="number"
+            <UnitInput
+              prefix="৳"
               value={form.balance}
               onChange={e => setForm({ ...form, balance: e.target.value })}
               placeholder="0"
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              className="rounded-lg"
             />
             <p className="text-[11px] text-muted-foreground mt-1">
               A journal entry will be posted to Opening Balance Equity (3900) to record this amount.

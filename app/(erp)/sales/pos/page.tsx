@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap, Keyboard } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
@@ -2485,7 +2486,7 @@ export default function POSPage() {
                     value={item.unit_price}
                     onChange={e => updateCartPrice(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-20 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right bg-white"
+                    className="w-20 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right tabular-nums bg-white"
                   />
                 </div>
                 {item.selected_unit && <span className="text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
@@ -2499,7 +2500,7 @@ export default function POSPage() {
                     value={item.discount_percent || 0}
                     onChange={e => updateCartItemDiscount(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-16 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-center bg-amber-50/30"
+                    className="w-16 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-right tabular-nums bg-amber-50/30"
                     placeholder="0"
                   />
                 </div>
@@ -2515,7 +2516,7 @@ export default function POSPage() {
                     value={item.quantity}
                     onChange={e => updateCartQuantity(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-20 text-sm font-bold border border-border rounded px-1.5 py-1 text-center focus:outline-none focus:border-blue-400 bg-white"
+                    className="w-20 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white"
                   />
                 </div>
               </div>
@@ -2681,15 +2682,21 @@ export default function POSPage() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-medium text-muted-foreground">Cart Discount %</span>
-                    <input type="number" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                    <div className="w-28">
+                      <UnitInput unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="rounded-lg text-xs" />
+                    </div>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-medium text-muted-foreground">Extra Discount ৳</span>
-                    <input type="number" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                    <div className="w-28">
+                      <UnitInput prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                    </div>
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-medium text-muted-foreground">Shipping /Service Fee ৳</span>
-                    <input type="number" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="w-28 border border-border rounded-lg px-2 py-1 text-xs text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                    <div className="w-28">
+                      <UnitInput prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                    </div>
                   </div>
                 </div>
 
@@ -3056,7 +3063,7 @@ export default function POSPage() {
                     step="0.01"
                     value={unitSelectorQty}
                     onChange={e => setUnitSelectorQty(e.target.value)}
-                    className="w-16 text-center text-sm font-bold border border-border rounded-lg px-1 py-1.5 focus:outline-none focus:border-blue-400 bg-white"
+                    className="w-24 text-right tabular-nums text-sm font-bold border border-border rounded-lg px-1 py-1.5 focus:outline-none focus:border-blue-400 bg-white"
                   />
                   <button
                     onClick={() => setUnitSelectorQty(q => String((parseFloat(q) || 0) + 1))}
@@ -3571,15 +3578,15 @@ function CheckoutModal({
               {mode === 'cash' && paymentTerm === 'partial' && (
                 <div>
                   <label className="block text-xs font-semibold text-muted-foreground mb-1.5">PARTIAL PAYMENT AMOUNT</label>
-                  <input
-                    type="number"
+                  <UnitInput
+                    prefix="৳"
                     min="0.01"
                     max={total - 0.01}
                     step="0.01"
                     value={partialAmount}
                     onChange={e => setPartialAmount(e.target.value)}
                     placeholder={`Enter amount (Max: ${formatCurrency(total)})`}
-                    className="w-full border border-amber-300 bg-amber-50/30 rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                    className="border-amber-300 bg-amber-50/30 rounded-lg text-base font-semibold focus:ring-amber-500/20"
                   />
                   <p className="text-xs text-amber-700 mt-1 font-medium">
                     Balance Due After Payment: {formatCurrency(total - partialNum)}
@@ -3633,15 +3640,15 @@ function CheckoutModal({
                     <p className="text-xs font-semibold text-amber-800">Previous Due: {formatCurrency(previousDueTotal)}</p>
                     <p className="text-[11px] text-amber-700">{customerOutstanding.length} invoice(s)</p>
                   </div>
-                  <input
-                    type="number"
+                  <UnitInput
+                    prefix="৳"
                     min="0"
                     max={previousDueTotal}
                     step="0.01"
                     value={dueCollectInput}
                     onChange={e => setDueCollectInput(e.target.value)}
                     placeholder={`Collect previous due now (max ${formatCurrency(previousDueTotal)})`}
-                    className="w-full border border-amber-300 bg-white rounded-lg px-3 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+                    className="border-amber-300 bg-white rounded-lg font-semibold focus:ring-amber-500/20"
                   />
                   {dueCollectNum > 0 && (
                     <div className="space-y-0.5">
@@ -3663,14 +3670,14 @@ function CheckoutModal({
               {mode === 'cash' && paymentTerm !== 'credit' && (
                 <div>
                   <label className="block text-xs font-semibold text-muted-foreground mb-1.5">AMOUNT PAID</label>
-                  <input
-                    type="number"
+                  <UnitInput
+                    prefix="৳"
                     min="0"
                     step="0.01"
                     value={amountPaid}
                     onChange={e => setAmountPaid(e.target.value)}
                     placeholder={total.toFixed(2)}
-                    className="w-full border border-border rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    className="rounded-lg text-base font-semibold"
                   />
                   {paid > 0 && (
                     <p className={`text-xs mt-1 ${effectiveChange >= 0 ? 'text-green-600' : 'text-red-500'}`}>
@@ -3687,14 +3694,14 @@ function CheckoutModal({
                     <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
                       CASH RECEIVED
                     </label>
-                    <input
-                      type="number"
+                    <UnitInput
+                      prefix="৳"
                       min="0"
                       step="0.01"
                       value={amountPaid}
                       onChange={e => setAmountPaid(e.target.value)}
                       placeholder={accountModeNeeds.toFixed(2)}
-                      className="w-full border border-border rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      className="rounded-lg text-base font-semibold"
                     />
                   </div>
                   {mode === 'dues_first' ? (

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { Plus, Search, List, LayoutGrid, X, Trash2, Edit, MapPin } from 'lucide-react';
@@ -362,7 +363,7 @@ function ProjectModal({ customers, project, onClose, onSaved }: {
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Progress %</label>
-              <input type="number" min="0" max="100" value={form.progress_percent} onChange={e => setForm({ ...form, progress_percent: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <UnitInput unit="%" min="0" max="100" value={form.progress_percent} onChange={e => setForm({ ...form, progress_percent: e.target.value })} className="rounded-lg" />
             </div>
           </div>
 
@@ -380,7 +381,7 @@ function ProjectModal({ customers, project, onClose, onSaved }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Budget</label>
-              <input type="number" min="0" value={form.estimated_budget} onChange={e => setForm({ ...form, estimated_budget: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <UnitInput prefix="৳" min="0" value={form.estimated_budget} onChange={e => setForm({ ...form, estimated_budget: e.target.value })} className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Location</label>

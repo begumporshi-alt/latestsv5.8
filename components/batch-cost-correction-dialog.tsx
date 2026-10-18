@@ -11,6 +11,7 @@ import { AlertTriangle, Loader2, Pencil } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { fmtQty } from '@/lib/batch-allocation';
+import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 
 export interface BatchCostCorrectionTarget {
@@ -114,13 +115,13 @@ export function BatchCostCorrectionDialog({ target, onClose, onCorrected }: {
 
           <div>
             <label className="block text-xs font-semibold text-muted-foreground mb-1">NEW UNIT COST (per {target.baseUnit})</label>
-            <input
-              type="number"
+            <UnitInput
+              prefix="৳"
               min="0"
               step="0.01"
               value={newCost}
               onChange={(e) => setNewCost(e.target.value)}
-              className="w-full text-sm border border-border rounded-lg px-3 py-2 focus:outline-none focus:border-blue-400 bg-white"
+              className="rounded-lg bg-white focus:border-blue-400"
             />
             {target.productCost && target.productCost > 0 && (
               <p className="text-[11px] text-muted-foreground mt-1">

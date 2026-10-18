@@ -7,6 +7,7 @@ import { Package, Plus, Trash2, X, Warehouse, Palette, Ruler, ChevronDown, Chevr
 import type { Product, Category, Brand, Warehouse as WarehouseType, ProductColor, ProductSize, ProductUnit } from '@/lib/types';
 import { LABEL_SIZES, type LabelSize } from '@/lib/label-sizes';
 import SearchableSelect from '@/components/ui/SearchableSelect';
+import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { patchInventoryAggregateAfterProductOp, patchPosSnapshotAfterProductOp } from '@/lib/offline/optimistic';
@@ -531,12 +532,12 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1">Cost Price *</label>
-                <input type="number" required min="0" step="0.01" value={form.cost_price} onChange={e => setForm({ ...form, cost_price: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                <UnitInput prefix="৳" required min="0" step="0.01" value={form.cost_price} onChange={e => setForm({ ...form, cost_price: e.target.value })} className="rounded-lg" />
                 <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Auto-updates only when a purchase price is higher than this; cheaper purchases keep the current cost.</p>
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1">Sale Price *</label>
-                <input type="number" required min="0" step="0.01" value={form.sale_price} onChange={e => setForm({ ...form, sale_price: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                <UnitInput prefix="৳" required min="0" step="0.01" value={form.sale_price} onChange={e => setForm({ ...form, sale_price: e.target.value })} className="rounded-lg" />
               </div>
               <div>
                 <label className="block text-xs font-medium mb-1">Warranty (months)</label>
@@ -616,13 +617,13 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                         />
                       </div>
                       <div className="col-span-1">
-                        <input type="number" min="1" placeholder="1" value={unit.conversion_factor} onChange={e => updateUnit(index, 'conversion_factor', parseFloat(e.target.value) || 1)} className="w-full border border-border rounded px-2 py-1 text-sm text-right" />
+                        <input type="number" min="1" placeholder="1" value={unit.conversion_factor} onChange={e => updateUnit(index, 'conversion_factor', parseFloat(e.target.value) || 1)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
                       </div>
                       <div className="col-span-2">
-                        <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.price} onChange={e => updateUnit(index, 'price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right" />
+                        <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.price} onChange={e => updateUnit(index, 'price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
                       </div>
                       <div className="col-span-2">
-                        <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.cost_price} onChange={e => updateUnit(index, 'cost_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right" />
+                        <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.cost_price} onChange={e => updateUnit(index, 'cost_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
                       </div>
                       <div className="col-span-1 flex justify-center">
                         <button type="button" onClick={() => updateUnit(index, 'is_base_unit', !unit.is_base_unit)} className={`w-full px-1 py-1 rounded text-[10px] font-medium transition ${unit.is_base_unit ? 'bg-green-500 text-white' : 'bg-muted text-muted-foreground hover:bg-green-100 hover:text-green-700'}`} title="Base unit — stock tracked in this unit">B</button>

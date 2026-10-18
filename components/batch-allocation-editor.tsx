@@ -122,7 +122,7 @@ export function BatchAllocationEditor({
                           step="0.01"
                           value={values[batch.id] ?? ''}
                           onChange={e => setValues(prev => ({ ...prev, [batch.id]: e.target.value }))}
-                          className={`w-20 text-xs border rounded px-1.5 py-1 text-right focus:outline-none bg-white ${overBatch ? 'border-red-400 focus:border-red-500' : 'border-border focus:border-blue-400'}`}
+                          className={`w-24 text-xs border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none bg-white ${overBatch ? 'border-red-400 focus:border-red-500' : 'border-border focus:border-blue-400'}`}
                           placeholder="0"
                         />
                       </td>

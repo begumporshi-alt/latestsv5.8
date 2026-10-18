@@ -798,7 +798,8 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                               max={remaining}
                               value={receiveItems[item.id] || 0}
                               onChange={e => setReceiveItems({ ...receiveItems, [item.id]: Number(e.target.value) })}
-                              className="w-full border border-border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                              placeholder="0"
+                              className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                             />
                           </div>
                           <div className="w-40">

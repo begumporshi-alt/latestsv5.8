@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { useToast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
@@ -599,7 +600,7 @@ function CashRefundModal({ credit, onClose, onSaved }: { credit: StoreCredit; on
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required min="0.01" max={credit.balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <UnitInput prefix="৳" required min="0.01" max={credit.balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="rounded-lg" />
               {credit.balance > 0 && (
                 <button type="button" onClick={() => setForm({ ...form, amount: String(credit.balance) })} className="text-[11px] text-blue-600 hover:underline mt-1">Full balance ({formatCurrency(credit.balance)})</button>
               )}
@@ -745,7 +746,7 @@ function IssueCreditModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
             )}
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="block text-xs font-medium mb-1">Amount *</label><input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Amount *</label><UnitInput prefix="৳" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="rounded-lg" /></div>
             <div><label className="block text-xs font-medium mb-1">Expires On</label><input type="date" value={form.expires_at} onChange={e => setForm({ ...form, expires_at: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
           </div>
           <div>

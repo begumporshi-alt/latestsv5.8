@@ -9,6 +9,7 @@ import Link from 'next/link';
 import type { Customer, CustomerType } from '@/lib/types';
 import CollectPaymentModal from '@/components/CollectPaymentModal';
 import RecordButton from '@/components/RecordButton';
+import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheGet, cachePut, cacheDelete } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
@@ -468,17 +469,17 @@ export default function CRMPage() {
                 Outstanding Range{filterOutstandingType === 'invoice' ? ' (Invoice)' : filterOutstandingType === 'manual' ? ' (Manual)' : ''}
               </label>
               <div className="flex gap-2">
-                <input
-                  type="number" min="0" value={outstandingMin}
+                <UnitInput
+                  prefix="৳" min="0" value={outstandingMin}
                   onChange={e => setOutstandingMin(e.target.value)}
                   placeholder="Min"
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                  className="rounded-lg bg-white"
                 />
-                <input
-                  type="number" min="0" value={outstandingMax}
+                <UnitInput
+                  prefix="৳" min="0" value={outstandingMax}
                   onChange={e => setOutstandingMax(e.target.value)}
                   placeholder="Max"
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                  className="rounded-lg bg-white"
                 />
               </div>
             </div>
@@ -487,17 +488,17 @@ export default function CRMPage() {
             <div>
               <label className="block text-xs font-semibold text-muted-foreground mb-1.5">Credit Limit Range</label>
               <div className="flex gap-2">
-                <input
-                  type="number" min="0" value={creditMin}
+                <UnitInput
+                  prefix="৳" min="0" value={creditMin}
                   onChange={e => setCreditMin(e.target.value)}
                   placeholder="Min"
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                  className="rounded-lg bg-white"
                 />
-                <input
-                  type="number" min="0" value={creditMax}
+                <UnitInput
+                  prefix="৳" min="0" value={creditMax}
                   onChange={e => setCreditMax(e.target.value)}
                   placeholder="Max"
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none"
+                  className="rounded-lg bg-white"
                 />
               </div>
             </div>
@@ -787,15 +788,15 @@ function CustomerModal({ customer, onClose, onSaved }: { customer?: Customer | n
           <div><label className="block text-xs font-medium mb-1">Address</label><textarea value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-xs font-medium mb-1">Tags <span className="text-muted-foreground font-normal">(comma separated)</span></label><input value={form.tags} onChange={e => setForm({ ...form, tags: e.target.value })} placeholder="vip, dealer, project-x" className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
-            <div><label className="block text-xs font-medium mb-1">Loyalty Points {isEdit ? '' : <span className="text-muted-foreground font-normal">(start at 0)</span>}</label><input type="number" min="0" value={form.loyalty_points} readOnly={!isEdit} onChange={e => isEdit && setForm({ ...form, loyalty_points: e.target.value })} className={`w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none ${!isEdit ? 'bg-gray-50 text-gray-500 cursor-default' : 'focus:ring-2 focus:ring-blue-500/20'}`} /></div>
+            <div><label className="block text-xs font-medium mb-1">Loyalty Points {isEdit ? '' : <span className="text-muted-foreground font-normal">(start at 0)</span>}</label><UnitInput min="0" inputMode="numeric" value={form.loyalty_points} readOnly={!isEdit} onChange={e => isEdit && setForm({ ...form, loyalty_points: e.target.value })} className={`rounded-lg ${!isEdit ? 'bg-gray-50 text-gray-500 cursor-default' : ''}`} /></div>
           </div>
           {isEdit && (
-            <div><label className="block text-xs font-medium mb-1">Standing Discount %</label><input type="number" min="0" max="100" step="0.01" value={form.discount_percent} onChange={e => setForm({ ...form, discount_percent: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Standing Discount %</label><UnitInput unit="%" min="0" max="100" step="0.01" value={form.discount_percent} onChange={e => setForm({ ...form, discount_percent: e.target.value })} className="rounded-lg" /></div>
           )}
           <div><label className="block text-xs font-medium mb-1">Notes</label><textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} placeholder="Internal notes about this customer..." className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="block text-xs font-medium mb-1">Credit Limit</label><input type="number" min="0" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
-            <div><label className="block text-xs font-medium mb-1">Credit Days</label><input type="number" min="0" value={form.credit_days} onChange={e => setForm({ ...form, credit_days: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Credit Limit</label><UnitInput prefix="৳" min="0" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} className="rounded-lg" /></div>
+            <div><label className="block text-xs font-medium mb-1">Credit Days</label><UnitInput min="0" inputMode="numeric" value={form.credit_days} onChange={e => setForm({ ...form, credit_days: e.target.value })} className="rounded-lg" /></div>
           </div>
           {isEdit && (
             <label className="flex items-center gap-2">

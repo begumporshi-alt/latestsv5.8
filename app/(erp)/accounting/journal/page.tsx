@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { Plus, ChevronDown, ChevronRight, FileText, Receipt, CreditCard, Package, PackagePlus, Boxes, ArrowRightLeft, ShoppingBag, X, Trash2, Lightbulb, Banknote, Building2, Zap, Truck, Users, RotateCcw, Search, Filter, Pencil as Edit2, TriangleAlert as AlertTriangle, Info, User, Calendar, Link as LinkIcon, Ban, Scale, Download, Printer, HandCoins, Wallet, Undo2, Wrench, FlaskConical, SlidersHorizontal, Eraser } from 'lucide-react';
 import type { Account } from '@/lib/types';
 import AppPagination from '@/components/ui/AppPagination';
@@ -1597,14 +1598,14 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
                     </div>
                     <div>
                       <label className="block text-xs font-medium mb-1">Amount (৳)</label>
-                      <input
-                        type="number"
+                      <UnitInput
+                        prefix="৳"
                         min="0.01"
                         step="0.01"
                         value={amount}
                         onChange={e => setAmount(e.target.value)}
                         placeholder="0.00"
-                        className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                        className="rounded-lg"
                       />
                     </div>
                   </div>
@@ -1730,10 +1731,10 @@ function JournalEntryModal({ accounts, onClose, onSaved }: { accounts: Account[]
                             </select>
                           </td>
                           <td className="px-2 py-1.5">
-                            <input type="number" min="0" step="0.01" placeholder="0.00" value={line.debit} onChange={e => updateLine(i, 'debit', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-xs text-right focus:outline-none" />
+                            <UnitInput prefix="৳" min="0" step="0.01" placeholder="0.00" value={line.debit} onChange={e => updateLine(i, 'debit', e.target.value)} className="text-xs" />
                           </td>
                           <td className="px-2 py-1.5">
-                            <input type="number" min="0" step="0.01" placeholder="0.00" value={line.credit} onChange={e => updateLine(i, 'credit', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-xs text-right focus:outline-none" />
+                            <UnitInput prefix="৳" min="0" step="0.01" placeholder="0.00" value={line.credit} onChange={e => updateLine(i, 'credit', e.target.value)} className="text-xs" />
                           </td>
                           <td className="px-2 py-1.5">
                             <input placeholder="Optional" value={line.description} onChange={e => updateLine(i, 'description', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-xs focus:outline-none" />
@@ -2074,10 +2075,10 @@ function EditJournalEntryModal({ entry, accounts, onClose, onSaved }: {
                             </select>
                           </td>
                           <td className="px-2 py-1.5">
-                            <input type="number" min="0" step="0.01" placeholder="0.00" value={line.debit} onChange={e => updateLine(i, 'debit', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-xs text-right focus:outline-none" />
+                            <UnitInput prefix="৳" min="0" step="0.01" placeholder="0.00" value={line.debit} onChange={e => updateLine(i, 'debit', e.target.value)} className="text-xs" />
                           </td>
                           <td className="px-2 py-1.5">
-                            <input type="number" min="0" step="0.01" placeholder="0.00" value={line.credit} onChange={e => updateLine(i, 'credit', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-xs text-right focus:outline-none" />
+                            <UnitInput prefix="৳" min="0" step="0.01" placeholder="0.00" value={line.credit} onChange={e => updateLine(i, 'credit', e.target.value)} className="text-xs" />
                           </td>
                           <td className="px-2 py-1.5">
                             <input placeholder="Optional" value={line.description} onChange={e => updateLine(i, 'description', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-xs focus:outline-none" />

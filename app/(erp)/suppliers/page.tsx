@@ -10,6 +10,7 @@ import type { Supplier } from '@/lib/types';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import RecordButton from '@/components/RecordButton';
+import { UnitInput } from '@/components/ui/unit-input';
 
 export default function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -364,9 +365,9 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
           </div>
           <div><label className="block text-xs font-medium mb-1">Address</label><textarea value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
           <div className="grid grid-cols-3 gap-4">
-            <div><label className="block text-xs font-medium mb-1">Credit Limit</label><input type="number" min="0" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
-            <div><label className="block text-xs font-medium mb-1">Credit Days</label><input type="number" min="0" value={form.credit_days} onChange={e => setForm({ ...form, credit_days: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
-            <div><label className="block text-xs font-medium mb-1">Rating (1-5)</label><input type="number" min="0" max="5" value={form.rating} onChange={e => setForm({ ...form, rating: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
+            <div><label className="block text-xs font-medium mb-1">Credit Limit</label><UnitInput prefix="৳" min="0" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} className="rounded-lg" /></div>
+            <div><label className="block text-xs font-medium mb-1">Credit Days</label><UnitInput min="0" inputMode="numeric" value={form.credit_days} onChange={e => setForm({ ...form, credit_days: e.target.value })} className="rounded-lg" /></div>
+            <div><label className="block text-xs font-medium mb-1">Rating (1-5)</label><UnitInput min="0" max="5" inputMode="numeric" value={form.rating} onChange={e => setForm({ ...form, rating: e.target.value })} className="rounded-lg" /></div>
           </div>
           {isEdit && (
             <label className="flex items-center gap-2">

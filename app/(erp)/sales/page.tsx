@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator, Zap } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
@@ -1934,16 +1935,16 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
+                          <input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
                           {item.available_units && item.selected_unit && (
                             <p className="text-[10px] text-muted-foreground text-center mt-0.5">= {item.base_quantity} {item.product_base_unit || 'base'}</p>
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" />
+                          <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="0" max="100" step="0.5" value={item.discount_percent || 0} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:border-amber-400" placeholder="0" />
+                          <input type="number" min="0" max="100" step="0.5" value={item.discount_percent || 0} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:border-amber-400" placeholder="0" />
                         </td>
                         <td className="px-3 py-2 text-right text-sm font-semibold text-blue-600">
                           {formatCurrency(item.unit_price * (1 - (item.discount_percent || 0) / 100))}
@@ -2039,15 +2040,17 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
               </div>
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Cart Discount %</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.5"
-                  value={form.cart_discount_percent || 0}
-                  onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })}
-                  className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
+                <div className="w-24">
+                  <UnitInput
+                    unit="%"
+                    min="0"
+                    max="100"
+                    step="0.5"
+                    value={form.cart_discount_percent || 0}
+                    onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })}
+                    className="rounded-lg"
+                  />
+                </div>
               </div>
               {(form.cart_discount_percent || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500">
@@ -2057,14 +2060,16 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
               )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Extra Discount ৳</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.extra_discount || 0}
-                  onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })}
-                  className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
+                <div className="w-24">
+                  <UnitInput
+                    prefix="৳"
+                    min="0"
+                    step="0.01"
+                    value={form.extra_discount || 0}
+                    onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })}
+                    className="rounded-lg"
+                  />
+                </div>
               </div>
               {(form.extra_discount || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500">
@@ -2074,14 +2079,16 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
               )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Shipping /Service Fee ৳</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.shipping_cost || 0}
-                  onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })}
-                  className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
+                <div className="w-24">
+                  <UnitInput
+                    prefix="৳"
+                    min="0"
+                    step="0.01"
+                    value={form.shipping_cost || 0}
+                    onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })}
+                    className="rounded-lg"
+                  />
+                </div>
               </div>
               {(form.shipping_cost || 0) > 0 && (
                 <div className="flex justify-between text-xs text-blue-700">
@@ -2183,14 +2190,14 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                 {form.payment_type === 'partial' && (
                   <div>
                     <label className="block text-xs font-medium mb-1 text-green-800">Payment Amount *</label>
-                    <input
-                      type="number"
+                    <UnitInput
+                      prefix="৳"
                       min="0.01"
                       max={grandTotal - 0.01}
                       step="0.01"
                       value={form.amount_paid}
                       onChange={e => setForm({ ...form, amount_paid: parseFloat(e.target.value) || 0 })}
-                      className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
+                      className="border-green-300 bg-white rounded-lg focus:ring-green-500/20"
                       placeholder={`Enter amount (Max: ${formatCurrency(grandTotal)})`}
                     />
                     <p className="text-xs text-green-700 mt-1 font-medium">
@@ -2369,7 +2376,7 @@ function RecordPaymentModal({ invoice, onClose, onSaved }: { invoice: InvoiceWit
 
           <div>
             <label className="block text-xs font-medium mb-1">Payment Amount *</label>
-            <input type="number" min="0" max={balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            <UnitInput prefix="৳" min="0" max={balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="rounded-lg" />
           </div>
 
           <div>
@@ -2377,7 +2384,7 @@ function RecordPaymentModal({ invoice, onClose, onSaved }: { invoice: InvoiceWit
               Bad Debt Write-off
               <span className="text-[10px] text-muted-foreground font-normal">(amount customer won&apos;t pay)</span>
             </label>
-            <input type="number" min="0" max={balance} step="0.01" value={form.bad_debt_amount} onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
+            <UnitInput prefix="৳" min="0" max={balance} step="0.01" value={form.bad_debt_amount} onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })} className="rounded-lg focus:ring-orange-500/20" />
             {form.bad_debt_amount > 0 && (
               <p className="text-[11px] text-orange-600 mt-1">
                 {formatCurrency(form.bad_debt_amount)} will be written off as bad debt. Outstanding will be reduced to {formatCurrency(Math.max(0, remainingAfterPayment))}.

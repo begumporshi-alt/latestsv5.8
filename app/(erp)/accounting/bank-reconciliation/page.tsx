@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { RefreshCw, CircleCheck as CheckCircle2, Circle as CheckCircle, Banknote, BadgeCheck, TriangleAlert as AlertTriangle, Download } from 'lucide-react';
 
 interface AccountOption {
@@ -208,13 +209,13 @@ export default function BankReconciliationPage() {
         <div className="stat-card">
           <p className="text-xs text-muted-foreground mb-1">Statement balance</p>
           <div className="flex items-center gap-2">
-            <input
-              type="number" step="0.01"
+            <UnitInput
+              prefix="৳" step="0.01"
               value={statementBalance}
               onChange={e => setStatementBalance(e.target.value)}
               onBlur={saveStatementBalance}
               placeholder="from statement"
-              className="w-full border border-border rounded-lg px-2 py-1 text-sm"
+              className="rounded-lg"
             />
           </div>
         </div>

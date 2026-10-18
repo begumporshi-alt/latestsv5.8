@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { UserRound, Plus, Search, Edit, Users, DollarSign, Briefcase, X, Trash2, TriangleAlert as AlertTriangle } from 'lucide-react';
 import type { Employee } from '@/lib/types';
 import { networkMonitor } from '@/lib/offline/network';
@@ -327,7 +328,7 @@ function EmployeeModal({ employee, onClose, onSaved }: { employee?: Employee | n
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Salary *</label>
-              <input type="number" required min="0" value={form.salary} onChange={e => setForm({ ...form, salary: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <UnitInput required prefix="৳" min="0" value={form.salary} onChange={e => setForm({ ...form, salary: e.target.value })} className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Join Date</label>

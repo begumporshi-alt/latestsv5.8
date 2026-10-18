@@ -6,6 +6,7 @@ import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
+import { UnitInput } from '@/components/ui/unit-input';
 import { X, HandCoins, CircleCheck as CheckCircle2, TriangleAlert as AlertTriangle } from 'lucide-react';
 
 interface DuePO {
@@ -231,15 +232,16 @@ export default function PaySupplierModal({
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium mb-1">Amount Paid *</label>
-                <input
-                  type="number" min="0" step="0.01"
+                <UnitInput
+                  prefix="৳"
+                  min="0" step="0.01"
                   value={totalPaid || ''}
                   onChange={e => {
                     const total = parseFloat(e.target.value) || 0;
                     setTotalPaid(total);
                     autoAllocate(total);
                   }}
-                  className="w-full border border-border rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  className="text-base font-semibold"
                 />
                 {pos.length > 1 && (
                   <p className="text-[10px] text-muted-foreground mt-1">Auto-allocated to the oldest received PO first — edit any row below to change the split.</p>
@@ -250,11 +252,12 @@ export default function PaySupplierModal({
                   Withholding deducted
                   <span className="text-[10px] text-muted-foreground font-normal">(applied FIFO, capped per PO)</span>
                 </label>
-                <input
-                  type="number" min="0" step="0.01"
+                <UnitInput
+                  prefix="৳"
+                  min="0" step="0.01"
                   value={wht || ''}
                   onChange={e => setWht(parseFloat(e.target.value) || 0)}
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+                  className="focus:ring-orange-500/20"
                 />
                 <p className="text-[10px] text-muted-foreground mt-1">Cash out: {formatCurrency(cashOut)}</p>
               </div>
@@ -286,7 +289,7 @@ export default function PaySupplierModal({
                               setAllocations(a => ({ ...a, [po.id]: v }));
                             }}
                             placeholder="0"
-                            className="w-full border border-border rounded-md px-2 py-1 text-right text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                            className="w-full border border-border rounded-md px-2 py-1 text-right text-xs tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                           />
                         </td>
                       </tr>

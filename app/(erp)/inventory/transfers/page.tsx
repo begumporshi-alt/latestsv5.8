@@ -502,7 +502,7 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
                   <input type="number" required min="1" max={availableQty || undefined}
                     value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })}
                     placeholder={`Max: ${availableQty}`}
-                    className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    className="w-full border border-border rounded-lg px-3 py-2 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   />
                 </div>
                 <div>
