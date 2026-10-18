@@ -1288,7 +1288,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl w-full max-w-5xl shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
           <h2 className="text-base font-bold">Create Purchase Order</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
@@ -1370,18 +1370,18 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                   <thead className="bg-muted/40">
                     <tr>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
-                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Warehouse</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-40">Warehouse</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Cost</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Sale Price</th>
-                      <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-16">
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Sale Price</th>
+                      <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-20">
                         <label className="flex flex-col items-center gap-1 cursor-pointer" title="On GRN, set the product cost price to this line's cost even if it is lower than the current cost">
                           <span>Cost Upd</span>
                           <input type="checkbox" checked={items.length > 0 && items.every(it => it.force_cost_update)} onChange={e => setItems(items.map(it => ({ ...it, force_cost_update: e.target.checked })))} className="accent-blue-600" />
                         </label>
                       </th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Total</th>
                       <th className="w-8"></th>
                     </tr>
                   </thead>
@@ -1417,7 +1417,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                         <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} placeholder="optional" className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2 text-center"><input type="checkbox" checked={!!item.force_cost_update} onChange={e => updateItem(index, 'force_cost_update', e.target.checked)} className="accent-blue-600" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
@@ -2273,7 +2273,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl w-full max-w-5xl shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
           <div>
             <h2 className="text-base font-bold">Edit Purchase Order</h2>
@@ -2355,18 +2355,18 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
                   <thead className="bg-muted/40">
                     <tr>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
-                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Warehouse</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Cost</th>
+                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-40">Warehouse</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Cost</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Sale Price</th>
-                      <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-16">
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Sale Price</th>
+                      <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-20">
                         <label className="flex flex-col items-center gap-1 cursor-pointer" title="On GRN, set the product cost price to this line's cost even if it is lower than the current cost">
                           <span>Cost Upd</span>
                           <input type="checkbox" checked={items.length > 0 && items.every(it => it.force_cost_update)} onChange={e => setItems(items.map(it => ({ ...it, force_cost_update: e.target.checked })))} className="accent-blue-600" />
                         </label>
                       </th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Total</th>
                       <th className="w-8"></th>
                     </tr>
                   </thead>
@@ -2402,7 +2402,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
                         <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} placeholder="optional" className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2 text-center"><input type="checkbox" checked={!!item.force_cost_update} onChange={e => updateItem(index, 'force_cost_update', e.target.checked)} className="accent-blue-600" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
