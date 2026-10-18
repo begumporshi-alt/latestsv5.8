@@ -6,11 +6,12 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { getInitials } from '@/lib/format';
 import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
-import { Search, Bell, MessageSquare, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart } from 'lucide-react';
+import { Search, MessageSquare, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart } from 'lucide-react';
 import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import OfflineStatusPill from '@/components/offline/OfflineStatusPill';
+import NotificationBell from '@/components/notifications/NotificationBell';
 import InstallButton from '@/components/pwa/InstallButton';
 import { clearLocalData } from '@/lib/offline/db';
 import { clearLastUser } from '@/lib/offline/session';
@@ -186,18 +187,6 @@ export default function Header({ onMenuToggle }: HeaderProps) {
         ))}
       </div>
 
-      {/* Date range badge */}
-      <div className="hidden lg:flex items-center gap-1.5 text-xs text-muted-foreground bg-muted/60 border border-border px-2.5 py-1.5 rounded-lg">
-        <span>
-          {new Date(new Date().getFullYear(), new Date().getMonth(), 1).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-        </span>
-        <span>–</span>
-        <span>
-          {new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-        </span>
-        <ChevronDown className="w-3 h-3" />
-      </div>
-
       {/* Global Search */}
       <div className="flex-1 max-w-md relative" ref={searchRef}>
         <div className="relative">
@@ -258,6 +247,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
       <div className="flex items-center gap-1 ml-auto">
         <InstallButton />
         <OfflineStatusPill />
+        <NotificationBell />
         <button
           onClick={() => setShowScanner(true)}
           title="Scan Barcode"
@@ -275,10 +265,6 @@ export default function Header({ onMenuToggle }: HeaderProps) {
             <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 bg-blue-600 text-white text-[9px] font-bold rounded-full flex items-center justify-center">{cartCount > 99 ? '99+' : cartCount}</span>
           )}
         </Link>
-        <button className="relative w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors">
-          <Bell className="w-4 h-4 text-muted-foreground" />
-          <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center">8</span>
-        </button>
         <button className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors">
           <MessageSquare className="w-4 h-4 text-muted-foreground" />
         </button>
