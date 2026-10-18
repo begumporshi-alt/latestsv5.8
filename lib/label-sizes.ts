@@ -28,6 +28,11 @@ export interface ProductLabelOverride {
   barcode_label_size?: string | null;
   barcode_label_width?: number | null;
   barcode_label_height?: number | null;
+  barcode_symbol_width?: number | null;
+  barcode_symbol_height?: number | null;
+  barcode_name_font_size?: number | null;
+  barcode_sku_font_size?: number | null;
+  barcode_price_font_size?: number | null;
 }
 
 // Page-level settings the print page exposes. Font sizes are explicit
@@ -80,37 +85,53 @@ export function resolveLabelConfig(page: PageLabelSettings, product?: ProductLab
     }
   }
 
+  // A positive per-product value wins; otherwise page settings; otherwise
+  // the label preset.
+  const pos = (v: number | null | undefined) => (v != null && v > 0 ? v : null);
+  const symbolWidth = pos(product?.barcode_symbol_width);
+  const symbolHeight = pos(product?.barcode_symbol_height);
+  const pName = pos(product?.barcode_name_font_size);
+  const pSku = pos(product?.barcode_sku_font_size);
+  const pPrice = pos(product?.barcode_price_font_size);
+
   return {
     sizeKey,
-    fromProductOverride: fromProduct,
+    fromProductOverride: fromProduct || !!(symbolWidth || symbolHeight || pName || pSku || pPrice),
     width: `${widthIn}in`,
     height: `${heightIn}in`,
-    barcodeWidth: cfg.barcodeWidth,
-    barcodeHeight: cfg.barcodeHeight,
+    barcodeWidth: symbolWidth ?? cfg.barcodeWidth,
+    barcodeHeight: symbolHeight ?? cfg.barcodeHeight,
     qrSize: cfg.qrSize,
-    nameFontSize: page.nameFontSize && page.nameFontSize > 0 ? `${page.nameFontSize}px` : cfg.fontSize,
-    skuFontSize: page.skuFontSize && page.skuFontSize > 0 ? `${page.skuFontSize}px` : cfg.skuFontSize,
-    priceFontSize: page.priceFontSize && page.priceFontSize > 0 ? `${page.priceFontSize}px` : '12px',
+    nameFontSize: pName
+      ? `${pName}px`
+      : page.nameFontSize && page.nameFontSize > 0 ? `${page.nameFontSize}px` : cfg.fontSize,
+    skuFontSize: pSku
+      ? `${pSku}px`
+      : page.skuFontSize && page.skuFontSize > 0 ? `${page.skuFontSize}px` : cfg.skuFontSize,
+    priceFontSize: pPrice
+      ? `${pPrice}px`
+      : page.priceFontSize && page.priceFontSize > 0 ? `${page.priceFontSize}px` : '12px',
     mrpLabelFontSize: page.mrpLabelFontSize && page.mrpLabelFontSize > 0 ? `${page.mrpLabelFontSize}px` : '6px',
   };
 }
 
 // Bold Helvetica/Arial averages ~0.67em per glyph for mixed-case product
 // names — calibrated from a real 2" label where a 30-char name filled the
-// printable width at 9px. Shrink the name font until the full text fits
-// one line, floored at a readable minimum — below the floor the label CSS
-// wraps to 2 lines instead.
+// printable width at 9px. Names that fit 2 lines at the base size keep it;
+// only longer names shrink, floored at a readable minimum (whatever still
+// overflows is truncated by the label CSS line-clamp).
 const NAME_CHAR_WIDTH_EM = 0.67;
-const NAME_MIN_FONT_PX = 5;
+const NAME_MIN_FONT_PX = 7;
+const NAME_MAX_LINES = 2;
 const NAME_HORIZONTAL_PADDING_PX = 16;
 
 export function fitNameFontSize(baseFontSize: string, name: string, labelWidth: string): string {
   const basePx = parseFloat(baseFontSize);
   const availPx = parseFloat(labelWidth) * 96 - NAME_HORIZONTAL_PADDING_PX;
   if (!(basePx > 0) || !(availPx > 0) || !name) return baseFontSize;
-  const textPx = name.length * NAME_CHAR_WIDTH_EM * basePx;
-  if (textPx <= availPx) return baseFontSize;
-  const fitted = Math.floor((availPx / textPx) * basePx * 10) / 10;
+  const charsPerLine = availPx / (NAME_CHAR_WIDTH_EM * basePx);
+  if (name.length <= charsPerLine * NAME_MAX_LINES) return baseFontSize;
+  const fitted = Math.floor((NAME_MAX_LINES * availPx) / (NAME_CHAR_WIDTH_EM * name.length) * 10) / 10;
   return `${Math.max(NAME_MIN_FONT_PX, fitted)}px`;
 }
 
