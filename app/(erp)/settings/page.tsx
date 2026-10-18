@@ -45,6 +45,7 @@ interface AppearanceSettings {
 interface InventorySettings {
   batch_allocation_method: 'fifo' | 'fefo';
   allow_partial_add: boolean;
+  allow_oversell: boolean;
 }
 
 interface VatSettingsState {
@@ -110,6 +111,7 @@ export default function SettingsPage() {
   const [inventorySettings, setInventorySettings] = useState<InventorySettings>({
     batch_allocation_method: 'fifo',
     allow_partial_add: true,
+    allow_oversell: true,
   });
   const [plEstimates, setPlEstimates] = useState<PLEstimatesSettings>({ manual_cogs_percent: 90 });
   const [quickSell, setQuickSell] = useState<QuickSellSettingsState>({ show_qty: false, show_in_inventory: false });
@@ -676,6 +678,24 @@ export default function SettingsPage() {
                     title={inventorySettings.allow_partial_add ? 'Partial adds allowed' : 'Partial adds blocked'}
                   >
                     <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${inventorySettings.allow_partial_add ? 'left-5' : 'left-0.5'}`} />
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-6 max-w-2xl border border-border rounded-xl p-4">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Allow selling beyond stock</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      When on, a sale larger than the recorded stock still goes through and the shortage is tracked as a
+                      negative inventory layer (an IOU) until new stock is received — needed for offline selling. When
+                      off, the database blocks any sale beyond stock with an error. The on-hand counter never shows
+                      negative either way.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setInventorySettings(s => ({ ...s, allow_oversell: !s.allow_oversell }))}
+                    className={`w-10 h-5 rounded-full transition relative shrink-0 ${inventorySettings.allow_oversell ? 'bg-blue-600' : 'bg-gray-300'}`}
+                    title={inventorySettings.allow_oversell ? 'Overselling allowed' : 'Overselling blocked'}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-all ${inventorySettings.allow_oversell ? 'left-5' : 'left-0.5'}`} />
                   </button>
                 </div>
               </div>

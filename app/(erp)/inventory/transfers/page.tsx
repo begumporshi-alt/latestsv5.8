@@ -298,7 +298,7 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
 
       // Offline: queue the transfer; sync_stock_transfer_create replays it
       // atomically (both movements + transfer_fifo_batches so true cost
-      // layers move, + counter updates).
+      // layers move, + counter updates — floored at 0 server-side).
       if (!networkMonitor.getState().online) {
         try {
           await enqueueOp('stock_transfer.create', {
@@ -318,6 +318,23 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
         } catch (err: any) {
           setError(err?.message || 'Could not queue the transfer offline');
         }
+        return;
+      }
+
+      // availableQty comes from a page-load snapshot that goes stale the
+      // moment anyone else sells; re-check against the live counter before
+      // writing anything, or the absolute counter update below can drive the
+      // source warehouse negative.
+      const { data: liveSrcRows } = await supabase
+        .from('inventory_items')
+        .select('id, quantity_on_hand')
+        .eq('product_id', form.product_id)
+        .eq('warehouse_id', form.from_warehouse_id)
+        .limit(1);
+      const liveSrc = liveSrcRows?.[0] ?? null;
+      const liveSrcQty = Number(liveSrc?.quantity_on_hand ?? 0);
+      if (liveSrcQty < qty) {
+        setError(`Insufficient stock — only ${liveSrcQty} available now in ${warehouses.find(w => w.id === form.from_warehouse_id)?.name || 'the source warehouse'} (the list showed ${availableQty})`);
         return;
       }
 
@@ -349,13 +366,19 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
         p_reference_number: transferNumber,
       });
 
-      const sourceItem = inventory.find(i => i.product_id === form.product_id && i.warehouse_id === form.from_warehouse_id);
+      const sourceItem = liveSrc ?? inventory.find(i => i.product_id === form.product_id && i.warehouse_id === form.from_warehouse_id);
       if (sourceItem) {
-        await supabase.from('inventory_items').update({ quantity_on_hand: sourceItem.quantity_on_hand - qty, updated_at: new Date().toISOString() }).eq('id', sourceItem.id);
+        await supabase.from('inventory_items').update({ quantity_on_hand: Math.max(0, liveSrcQty - qty), updated_at: new Date().toISOString() }).eq('id', sourceItem.id);
       }
-      const destItem = inventory.find(i => i.product_id === form.product_id && i.warehouse_id === form.to_warehouse_id);
-      if (destItem) {
-        await supabase.from('inventory_items').update({ quantity_on_hand: destItem.quantity_on_hand + qty, updated_at: new Date().toISOString() }).eq('id', destItem.id);
+      const { data: liveDestRows } = await supabase
+        .from('inventory_items')
+        .select('id, quantity_on_hand')
+        .eq('product_id', form.product_id)
+        .eq('warehouse_id', form.to_warehouse_id)
+        .limit(1);
+      const liveDest = liveDestRows?.[0] ?? null;
+      if (liveDest) {
+        await supabase.from('inventory_items').update({ quantity_on_hand: Number(liveDest.quantity_on_hand) + qty, updated_at: new Date().toISOString() }).eq('id', liveDest.id);
       } else {
         await supabase.from('inventory_items').insert({ tenant_id: '00000000-0000-0000-0000-000000000001', product_id: form.product_id, warehouse_id: form.to_warehouse_id, quantity_on_hand: qty });
       }
