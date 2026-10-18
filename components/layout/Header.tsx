@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { getInitials } from '@/lib/format';
 import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
-import { Search, MessageSquare, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart } from 'lucide-react';
+import { Search, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart } from 'lucide-react';
 import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
@@ -265,10 +265,6 @@ export default function Header({ onMenuToggle }: HeaderProps) {
             <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 bg-blue-600 text-white text-[9px] font-bold rounded-full flex items-center justify-center">{cartCount > 99 ? '99+' : cartCount}</span>
           )}
         </Link>
-        <button className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-muted transition-colors">
-          <MessageSquare className="w-4 h-4 text-muted-foreground" />
-        </button>
-
         <div className="relative ml-1">
           <button
             onClick={() => setShowUserMenu(!showUserMenu)}
