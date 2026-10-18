@@ -13,6 +13,7 @@ import {
   LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
+import Pagination from '@/components/ui/AppPagination';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280', '#0ea5e9', '#d946ef', '#14b8a6', '#f97316'];
 
@@ -57,6 +58,8 @@ export default function SalesReportPage() {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('revenue');
   const [sortAsc, setSortAsc] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   const [drill, setDrill] = useState<{ dim: Dimension; id: string | null; name: string } | null>(null);
   const [drillRows, setDrillRows] = useState<DetailRow[]>([]);
@@ -103,12 +106,17 @@ export default function SalesReportPage() {
 
   async function loadSummary() {
     setLoading(true);
-    const [invoicesRes, accountsRes] = await Promise.all([
+    // Round 1: everything that doesn't depend on account IDs. Round 2 below
+    // runs the two ledger RPCs in parallel once account 5000/4050 are known.
+    const [invoicesRes, accountsRes, monthlyRes, prodRes, catRes] = await Promise.all([
       fetchAll(() => supabase.from('invoices').select('total_amount, tax_amount, shipping_cost')
         .neq('status', 'cancelled').neq('status', 'draft')
         .gte('invoice_date', effectiveStart).lte('invoice_date', effectiveEnd)
         .order('invoice_date').order('id')),
       supabase.from('accounts').select('id, code').in('code', ['5000', '4050']),
+      supabase.rpc('sales_monthly', { p_start_date: effectiveStart, p_end_date: effectiveEnd }),
+      supabase.rpc('sales_breakdown', { p_dimension: 'product', p_start_date: effectiveStart, p_end_date: effectiveEnd }),
+      supabase.rpc('sales_breakdown', { p_dimension: 'category', p_start_date: effectiveStart, p_end_date: effectiveEnd }),
     ]);
 
     const revenue = (invoicesRes || []).reduce((s: number, i: any) => s + Number(i.total_amount) - Number(i.tax_amount || 0) - Number(i.shipping_cost || 0), 0);
@@ -124,15 +132,9 @@ export default function SalesReportPage() {
 
     setKpis({ revenue, orders: invoicesRes?.length || 0, returns, cogs, grossProfit: revenue - returns - cogs });
 
-    const { data: monthlyData } = await supabase.rpc('sales_monthly', { p_start_date: effectiveStart, p_end_date: effectiveEnd });
-    setMonthly(fillMonths((monthlyData || []) as MonthlyRow[]));
-
+    setMonthly(fillMonths((monthlyRes.data || []) as MonthlyRow[]));
     // Summary shows the top-products table and category pie — fetch those
     // dimensions up front too (By Brand / By Customer still load on demand).
-    const [prodRes, catRes] = await Promise.all([
-      supabase.rpc('sales_breakdown', { p_dimension: 'product', p_start_date: effectiveStart, p_end_date: effectiveEnd }),
-      supabase.rpc('sales_breakdown', { p_dimension: 'category', p_start_date: effectiveStart, p_end_date: effectiveEnd }),
-    ]);
     setBreakdown(prev => ({
       ...prev,
       product: (prodRes.data || []) as BreakdownRow[],
@@ -161,13 +163,17 @@ export default function SalesReportPage() {
 
   async function loadBreakdown(dim: Dimension) {
     setDimLoading(dim);
-    const { data, error } = await supabase.rpc('sales_breakdown', {
-      p_dimension: dim, p_start_date: effectiveStart, p_end_date: effectiveEnd,
-    });
-    if (!error) {
-      setBreakdown(prev => ({ ...prev, [dim]: (data || []) as BreakdownRow[] }));
+    // PostgREST caps any single request at 1000 rows — once products-with-sales
+    // passes that, the tail would be silently dropped. Page past the cap like
+    // the table queries do (revenue desc, then name, keeps pages stable).
+    try {
+      const rows = await fetchAll(() => supabase.rpc('sales_breakdown', {
+        p_dimension: dim, p_start_date: effectiveStart, p_end_date: effectiveEnd,
+      }).order('revenue', { ascending: false }).order('name'));
+      setBreakdown(prev => ({ ...prev, [dim]: rows as BreakdownRow[] }));
+    } finally {
+      setDimLoading(null);
     }
-    setDimLoading(null);
   }
 
   const rows = view === 'summary' ? (breakdown.product || []).slice(0, 10) : (breakdown[view as Dimension] || []);
@@ -182,6 +188,12 @@ export default function SalesReportPage() {
     return sorted;
   }, [rows, search, sortKey, sortAsc]);
 
+  const safePage = Math.min(page, Math.max(1, Math.ceil(filteredRows.length / pageSize)));
+  const pagedRows = useMemo(
+    () => filteredRows.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filteredRows, safePage, pageSize]
+  );
+
   const totals = useMemo(() => filteredRows.reduce((acc, r) => ({
     quantity: acc.quantity + r.quantity,
     invoice_count: acc.invoice_count + r.invoice_count,
@@ -194,6 +206,8 @@ export default function SalesReportPage() {
     if (sortKey === key) setSortAsc(!sortAsc);
     else { setSortKey(key); setSortAsc(key === 'name'); }
   }
+
+  useEffect(() => { setPage(1); }, [view, search, period, dateFrom, dateTo]);
 
   function openDrill(dim: Dimension, row: BreakdownRow) {
     setDrill({ dim, id: row.id, name: row.name });
@@ -460,7 +474,7 @@ export default function SalesReportPage() {
                     ))}
                   </tr></thead>
                   <tbody className="divide-y divide-border">
-                    {filteredRows.length > 0 ? filteredRows.map((r, i) => {
+                    {pagedRows.length > 0 ? pagedRows.map((r, i) => {
                       return (
                         <tr
                           key={r.id || `idx-${i}`}
@@ -468,7 +482,7 @@ export default function SalesReportPage() {
                           className="hover:bg-muted/30 transition-colors cursor-pointer"
                           title="Click to see invoices"
                         >
-                          <td className="px-4 py-2.5 text-sm text-muted-foreground">{i + 1}</td>
+                          <td className="px-4 py-2.5 text-sm text-muted-foreground">{(safePage - 1) * pageSize + i + 1}</td>
                           <td className="px-4 py-2.5 text-sm font-semibold text-foreground">{r.name}</td>
                           <td className="px-4 py-2.5 text-sm text-foreground">
                             {r.quantity}{r.unit ? <span className="text-muted-foreground text-xs ml-1">{r.unit}</span> : null}
@@ -508,6 +522,15 @@ export default function SalesReportPage() {
                     </tfoot>
                   )}
                 </table>
+              )}
+              {dimLoading !== view && filteredRows.length > 0 && (
+                <Pagination
+                  page={safePage}
+                  pageSize={pageSize}
+                  total={filteredRows.length}
+                  onPageChange={setPage}
+                  onPageSizeChange={size => { setPageSize(size); }}
+                />
               )}
             </div>
           )}

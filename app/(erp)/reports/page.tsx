@@ -86,29 +86,12 @@ export default function ReportsPage() {
     const totalRevenue = (invoicesRes || []).reduce((s: number, i: any) => s + Number(i.total_amount) - Number(i.tax_amount || 0) - Number(i.shipping_cost || 0), 0);
     const totalPurchases = (purchasesRes || []).reduce((s: number, p: any) => s + Number(p.total_amount), 0);
 
-    // COGS from Chart of Accounts — use RPC for reliable DB-side date filtering
+    // COGS (5000) and Sales Returns (4050) from Chart of Accounts, operating
+    // expenses, the year-to-date monthly series and the category pie all
+    // depend only on data from the batch above — fire them as ONE parallel
+    // wave instead of four sequential rounds (this block used to take ~10s).
     const cogsAccount = (accountsRes.data || []).find((a: any) => a.code === '5000');
-    let cogsActual = 0;
-    if (cogsAccount) {
-      const { data } = await supabase.rpc('period_net_debit', {
-        p_account_id: cogsAccount.id,
-        p_start_date: effectiveStart,
-        p_end_date: effectiveEnd,
-      });
-      cogsActual = Number(data || 0);
-    }
-
-    // Sales Returns & Allowances from Chart of Accounts
     const salesReturnsAccount = (accountsRes.data || []).find((a: any) => a.code === '4050');
-    let salesReturnsTotal = 0;
-    if (salesReturnsAccount) {
-      const { data } = await supabase.rpc('period_net_debit', {
-        p_account_id: salesReturnsAccount.id,
-        p_start_date: effectiveStart,
-        p_end_date: effectiveEnd,
-      });
-      salesReturnsTotal = Number(data || 0);
-    }
 
     // Operating Expenses from Chart of Accounts (exclude COGS, Sales Returns, Discount Given)
     const OPEX_EXCLUDED = new Set(['5000', '4050', '4200']);
@@ -118,16 +101,24 @@ export default function ReportsPage() {
       !a.name.toLowerCase().includes('cost of goods') &&
       !a.name.toLowerCase().includes('sales return')
     );
-    let totalOperatingExpenses = 0;
-    for (const acc of opexAccounts) {
-      const { data } = await supabase.rpc('period_net_debit', {
-        p_account_id: acc.id,
-        p_start_date: effectiveStart,
-        p_end_date: effectiveEnd,
-      });
-      // no clamp: credit balances on expense accounts are contras that net the section
-      totalOperatingExpenses += Number(data || 0);
-    }
+
+    const [cogsRes, returnsRes, opexResults, monthly, catData] = await Promise.all([
+      cogsAccount
+        ? supabase.rpc('period_net_debit', { p_account_id: cogsAccount.id, p_start_date: effectiveStart, p_end_date: effectiveEnd })
+        : Promise.resolve({ data: 0 }),
+      salesReturnsAccount
+        ? supabase.rpc('period_net_debit', { p_account_id: salesReturnsAccount.id, p_start_date: effectiveStart, p_end_date: effectiveEnd })
+        : Promise.resolve({ data: 0 }),
+      Promise.all(opexAccounts.map((acc: any) =>
+        supabase.rpc('period_net_debit', { p_account_id: acc.id, p_start_date: effectiveStart, p_end_date: effectiveEnd })
+      )),
+      getMonthlyData(cogsAccount?.id ?? null),
+      getCategoryRevenue(effectiveStart, effectiveEnd || null),
+    ]);
+    const cogsActual = Number(cogsRes.data || 0);
+    const salesReturnsTotal = Number(returnsRes.data || 0);
+    // no clamp: credit balances on expense accounts are contras that net the section
+    const totalOperatingExpenses = opexResults.reduce((s, r) => s + Number(r.data || 0), 0);
 
     const grossProfit = totalRevenue - salesReturnsTotal - cogsActual;
     const netProfit = grossProfit - Math.max(0, totalOperatingExpenses);
@@ -165,10 +156,7 @@ export default function ReportsPage() {
       revenue: c.total_purchases,
     })));
 
-    const monthly = await getMonthlyData(cogsAccount?.id ?? null);
     setMonthlyData(monthly);
-
-    const catData = await getCategoryRevenue(effectiveStart, effectiveEnd || null);
     setCategoryData(catData);
 
     setLoading(false);
@@ -206,27 +194,44 @@ export default function ReportsPage() {
     const result: { month: string; sales: number; purchases: number; profit: number }[] = [];
 
     const currentMonth = new Date().getMonth();
+    const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0];
+    const yearEnd = new Date(new Date().getFullYear(), 11, 31).toISOString().split('T')[0];
+
+    // COGS comes from the ledger, not stock_movements (multi-unit costs make
+    // quantity × unit_cost wrong) — same basis as every COGS figure above.
+    // The old version looped month-by-month with 3 queries each (36 sequential
+    // round trips, ~10s); these three calls cover the same rows in parallel.
+    const [invRes, poRes, cogsRes] = await Promise.all([
+      fetchAll(() => supabase.from('invoices').select('total_amount, tax_amount, shipping_cost, invoice_date')
+        .gte('invoice_date', yearStart).lte('invoice_date', yearEnd).neq('status', 'cancelled')
+        .order('invoice_date').order('id')),
+      fetchAll(() => supabase.from('purchase_orders').select('total_amount, order_date')
+        .gte('order_date', yearStart).lte('order_date', yearEnd)
+        .order('order_date').order('id')),
+      cogsAccountId
+        ? supabase.rpc('account_monthly_net', { p_account_id: cogsAccountId, p_start_date: yearStart, p_end_date: yearEnd })
+        : Promise.resolve({ data: [] as { month: string; net: number }[] }),
+    ]);
+
+    const monthKey = (d: string) => d.slice(0, 7);
+    const salesByMonth: Record<string, number> = {};
+    (invRes || []).forEach((inv: any) => {
+      const k = monthKey(inv.invoice_date);
+      salesByMonth[k] = (salesByMonth[k] || 0) + Number(inv.total_amount) - Number(inv.tax_amount || 0) - Number(inv.shipping_cost || 0);
+    });
+    const purchasesByMonth: Record<string, number> = {};
+    (poRes || []).forEach((po: any) => {
+      const k = monthKey(po.order_date);
+      purchasesByMonth[k] = (purchasesByMonth[k] || 0) + Number(po.total_amount);
+    });
+    const cogsByMonth: Record<string, number> = {};
+    ((cogsRes.data || []) as any[]).forEach(r => { cogsByMonth[r.month] = Number(r.net); });
+
     for (let i = 0; i <= currentMonth; i++) {
-      const startDate = new Date(new Date().getFullYear(), i, 1).toISOString().split('T')[0];
-      const endDate = new Date(new Date().getFullYear(), i + 1, 0).toISOString().split('T')[0];
-
-      // COGS comes from the ledger, not stock_movements. stock_movements.unit_cost
-      // mixes base-unit and sale-unit costs while quantity is in sale units, so
-      // quantity * unit_cost cannot be made correct for multi-unit products. The
-      // ledger is also what every other COGS figure on this page reports, so the
-      // chart no longer contradicts the stat cards above it.
-      const [invRes, poRes, cogsRes] = await Promise.all([
-        supabase.from('invoices').select('total_amount, tax_amount, shipping_cost').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled'),
-        supabase.from('purchase_orders').select('total_amount').gte('order_date', startDate).lte('order_date', endDate),
-        cogsAccountId
-          ? supabase.rpc('period_net_debit', { p_account_id: cogsAccountId, p_start_date: startDate, p_end_date: endDate })
-          : Promise.resolve({ data: 0 }),
-      ]);
-
-      const sales = (invRes.data || []).reduce((s: number, inv: any) => s + Number(inv.total_amount) - Number(inv.tax_amount || 0) - Number(inv.shipping_cost || 0), 0);
-      const purchases = (poRes.data || []).reduce((s: number, po: any) => s + Number(po.total_amount), 0);
-      const cogs = Number(cogsRes.data || 0);
-
+      const key = `${new Date().getFullYear()}-${String(i + 1).padStart(2, '0')}`;
+      const sales = salesByMonth[key] || 0;
+      const purchases = purchasesByMonth[key] || 0;
+      const cogs = cogsByMonth[key] || 0;
       result.push({ month: months[i], sales, purchases, profit: sales - cogs });
     }
 
