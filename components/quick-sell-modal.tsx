@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Zap, Plus, Trash2, X, TriangleAlert as AlertTriangle, PackageOpen, UserPlus } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { loadQuickSellSettings, DEFAULT_QUICK_SELL_SETTINGS, type QuickSellSettings } from '@/lib/quick-sell-settings';
@@ -379,7 +380,7 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
                         <label className="block text-[11px] text-muted-foreground mb-1">Qty</label>
                         <input
                           type="number" min="0" step="any"
-                          className="w-full border border-border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="w-full border border-border rounded-lg px-2.5 py-1.5 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500"
                           value={r.quantity}
                           onChange={(e) => updateRow(r.key, { quantity: e.target.value })}
                         />
@@ -387,18 +388,18 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
                     )}
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">Cost ৳ (paid to shop)</label>
-                      <input
-                        type="number" min="0" step="any"
-                        className="w-full border border-border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      <UnitInput
+                        prefix="৳" min="0" step="any"
+                        className="rounded-lg"
                         value={r.cost_price}
                         onChange={(e) => updateRow(r.key, { cost_price: e.target.value })}
                       />
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">Sell price ৳</label>
-                      <input
-                        type="number" min="0" step="any"
-                        className="w-full border border-border rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      <UnitInput
+                        prefix="৳" min="0" step="any"
+                        className="rounded-lg"
                         value={r.sale_price}
                         onChange={(e) => updateRow(r.key, { sale_price: e.target.value })}
                       />
@@ -505,9 +506,9 @@ export function QuickSellModal({ open, onClose, isPos, onCreated }: Props) {
                   <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
                     {paymentTerm === 'partial' ? 'Amount now ৳' : 'Amount now'}
                   </label>
-                  <input
-                    type="number" min="0" step="any" disabled={paymentTerm !== 'partial'}
-                    className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-muted disabled:text-muted-foreground"
+                  <UnitInput
+                    prefix="৳" min="0" step="any" disabled={paymentTerm !== 'partial'}
+                    className="rounded-lg disabled:bg-muted disabled:text-muted-foreground"
                     value={paymentTerm === 'partial' ? partialAmount : paymentTerm === 'full' ? grandTotal.toFixed(2) : '0.00'}
                     onChange={(e) => setPartialAmount(e.target.value)}
                     readOnly={paymentTerm !== 'partial'}

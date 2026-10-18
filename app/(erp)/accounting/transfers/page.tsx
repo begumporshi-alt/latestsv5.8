@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowRight, ArrowDownToLine, ArrowUpFromLine, ArrowRightLeft, Search, Wallet } from 'lucide-react';
@@ -328,15 +329,15 @@ export default function TransfersPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input
-                type="number"
+              <UnitInput
                 required
+                prefix="৳"
                 min="0"
                 step="0.01"
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder="0"
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+                className="rounded-lg"
               />
             </div>
             <div>

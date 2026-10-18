@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { X, Save, TriangleAlert as AlertTriangle, History, Package, Trash2, Info } from 'lucide-react';
 import type { Invoice, InvoiceStatus, Customer, Product, ProductUnit } from '@/lib/types';
@@ -499,17 +500,17 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                         <td className="px-3 py-2">
                           <input type="number" min="1" value={item.quantity}
                             onChange={e => updateItem(index, 'quantity', e.target.value)}
-                            className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                            className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                         </td>
                         <td className="px-3 py-2">
                           <input type="number" min="0" step="0.01" value={item.unit_price}
                             onChange={e => updateItem(index, 'unit_price', e.target.value)}
-                            className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                            className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                         </td>
                         <td className="px-3 py-2">
                           <input type="number" min="0" max="100" step="0.5" value={item.discount_percent || 0}
                             onChange={e => updateItem(index, 'discount_percent', e.target.value)}
-                            className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="0" />
+                            className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="0" />
                         </td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">
                           {formatCurrency(item.subtotal)}
@@ -547,15 +548,17 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
               )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Cart Discount %</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.5"
-                  value={form.cart_discount_percent || 0}
-                  onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })}
-                  className="w-20 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
+                <div className="w-20">
+                  <UnitInput
+                    unit="%"
+                    min="0"
+                    max="100"
+                    step="0.5"
+                    value={form.cart_discount_percent || 0}
+                    onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })}
+                    className="rounded-lg"
+                  />
+                </div>
               </div>
               {cartDiscountAmount > 0 && (
                 <div className="flex justify-between text-xs text-red-500">
@@ -565,14 +568,16 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
               )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Extra Discount ৳</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.extra_discount || 0}
-                  onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })}
-                  className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
+                <div className="w-24">
+                  <UnitInput
+                    prefix="৳"
+                    min="0"
+                    step="0.01"
+                    value={form.extra_discount || 0}
+                    onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })}
+                    className="rounded-lg"
+                  />
+                </div>
               </div>
               {(form.extra_discount || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500">
@@ -582,14 +587,16 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
               )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Shipping /Service Fee ৳</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.shipping_cost || 0}
-                  onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })}
-                  className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                />
+                <div className="w-24">
+                  <UnitInput
+                    prefix="৳"
+                    min="0"
+                    step="0.01"
+                    value={form.shipping_cost || 0}
+                    onChange={e => setForm({ ...form, shipping_cost: parseFloat(e.target.value) || 0 })}
+                    className="rounded-lg"
+                  />
+                </div>
               </div>
               {(form.shipping_cost || 0) > 0 && (
                 <div className="flex justify-between text-xs text-blue-700">
@@ -674,14 +681,14 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
             {form.payment_term === 'partial' && (
               <div>
                 <label className="block text-xs font-medium mb-1">Partial Amount</label>
-                <input
-                  type="number"
+                <UnitInput
+                  prefix="৳"
                   min="0"
                   max={grandTotal}
                   step="0.01"
                   value={form.partial_amount}
                   onChange={e => setForm({ ...form, partial_amount: Math.min(grandTotal, Math.max(0, parseFloat(e.target.value) || 0)) })}
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  className="rounded-lg"
                 />
               </div>
             )}

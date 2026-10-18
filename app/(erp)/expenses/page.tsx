@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { Plus, X, Receipt, TrendingDown, Calendar, Filter, Pencil, Trash2, ChevronDown } from 'lucide-react';
@@ -555,7 +556,7 @@ function ExpenseModal({ expenseAccounts, cashBankAccounts, editingExpense, onClo
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+              <UnitInput required prefix="৳" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="rounded-lg" />
             </div>
           </div>
 

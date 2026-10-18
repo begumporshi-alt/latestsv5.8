@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
 import { useToast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
@@ -587,13 +588,13 @@ function RecordAdvanceModal({ paymentMethods, onClose, onSaved }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input
-                type="number"
+              <UnitInput
+                prefix="৳"
                 min="0.01"
                 step="0.01"
                 value={form.amount}
                 onChange={e => setForm({ ...form, amount: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                className="rounded-lg"
                 required
               />
             </div>
@@ -817,15 +818,15 @@ function ApplyAdvanceModal({ advance, onClose, onApplied }: {
               {selectedInv && (
                 <div>
                   <label className="block text-xs font-medium mb-1">Amount to Apply *</label>
-                  <input
-                    type="number"
+                  <UnitInput
+                    prefix="৳"
                     min="0.01"
                     step="0.01"
                     max={maxApply}
                     value={applyAmount}
                     onChange={e => setApplyAmount(e.target.value)}
                     placeholder={`Max: ${formatCurrency(maxApply)}`}
-                    className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    className="rounded-lg"
                     required
                   />
                   <div className="flex gap-2 mt-2">
@@ -1012,14 +1013,14 @@ function RefundAdvanceModal({ advance, paymentMethods, onClose, onRefunded }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Refund Amount *</label>
-              <input
-                type="number"
+              <UnitInput
+                prefix="৳"
                 min="0.01"
                 step="0.01"
                 max={advance.balance}
                 value={form.amount}
                 onChange={e => setForm({ ...form, amount: e.target.value })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                className="rounded-lg"
                 required
               />
               <button type="button" onClick={() => setForm({ ...form, amount: advance.balance.toString() })} className="mt-1.5 px-3 py-1 text-xs bg-amber-50 text-amber-600 rounded-md hover:bg-amber-100 transition">

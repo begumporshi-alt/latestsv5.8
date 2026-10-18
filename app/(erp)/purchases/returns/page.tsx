@@ -539,7 +539,7 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
                               ...returnItems,
                               [item.id]: { qty: Number(e.target.value), reason: returnItems[item.id]?.reason || '' }
                             })}
-                            className="w-full border border-border rounded px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                            className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                           />
                         </div>
                         <div className="flex-[2]">

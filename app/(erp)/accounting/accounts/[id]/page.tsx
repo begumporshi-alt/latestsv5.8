@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import Link from 'next/link';
 import { ArrowLeft, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownLeft, Calendar, Filter, ExternalLink, ChevronLeft, ChevronRight, Wallet, ChartBar as BarChart3, Users, Building2, FileText, Receipt, Activity, BookOpen, Layers, ArrowRightLeft, CircleDot, Plus, X, AlertTriangle } from 'lucide-react';
 import {
@@ -1085,13 +1086,13 @@ function BalanceAdjustmentPanel({ account, onAdjusted }: { account: Account; onA
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-medium mb-1">Adjustment Amount *</label>
-            <input
-              type="number"
+            <UnitInput
+              prefix="৳"
               step="0.01"
               required
               value={form.amount}
               onChange={e => setForm({ ...form, amount: e.target.value })}
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+              className="rounded-lg"
               placeholder="Enter amount (+ or -)"
             />
             <p className="text-[11px] text-muted-foreground mt-1">

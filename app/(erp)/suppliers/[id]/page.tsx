@@ -8,6 +8,7 @@ import { fetchAll } from '@/lib/fetch-all';
 import { printNode } from '@/lib/print';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt, Printer, BookOpen, HandCoins, X } from 'lucide-react';
@@ -845,15 +846,15 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required min="0.01" step="0.01" max={target.balance} value={form.amount}
+              <UnitInput required prefix="৳" min="0.01" step="0.01" max={target.balance} value={form.amount}
                 onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1" title="Tax deducted at source — posted to WHT Payable (2110)">Withholding</label>
-              <input type="number" min="0" step="0.01" value={form.wht || ''} placeholder="0"
+              <UnitInput prefix="৳" min="0" step="0.01" value={form.wht || ''} placeholder="0"
                 onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Date *</label>

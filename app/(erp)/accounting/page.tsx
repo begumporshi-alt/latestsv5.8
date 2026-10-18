@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { UnitInput } from '@/components/ui/unit-input';
 import { DollarSign, CreditCard, TrendingUp, TrendingDown, ChartBar as BarChart3, Plus, X, ArrowUpRight, ArrowDownLeft, ExternalLink, User, Building2, HandCoins, CircleCheck as CheckCircle2, ChevronDown, Receipt, Calendar } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import Link from 'next/link';
@@ -929,7 +930,7 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+              <UnitInput required prefix="৳" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="rounded-lg" />
             </div>
           </div>
           <div>
@@ -1048,7 +1049,7 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+              <UnitInput required prefix="৳" min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Date</label>
@@ -1173,7 +1174,7 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+              <UnitInput required prefix="৳" min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Date</label>
@@ -1273,11 +1274,11 @@ function RecordReceivablePaymentModal({ receivable, accounts, onClose, onSaved }
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required min="0" max={receivable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+              <UnitInput required prefix="৳" min="0" max={receivable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="rounded-lg" />
             </div>
             <div>
               <label className="flex items-center gap-1 text-xs font-medium mb-1">Bad Debt<span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay)</span></label>
-              <input type="number" min="0" max={receivable.outstanding_balance} step="0.01" value={form.bad_debt_amount} onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20" />
+              <UnitInput prefix="৳" min="0" max={receivable.outstanding_balance} step="0.01" value={form.bad_debt_amount} onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })} className="rounded-lg focus:ring-orange-500/20" />
             </div>
           </div>
           {form.bad_debt_amount > 0 && (
@@ -1395,11 +1396,11 @@ function RecordPayablePaymentModal({ payable, accounts, onClose, onSaved }: { pa
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Amount *</label>
-              <input type="number" required min="0.01" max={payable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+              <UnitInput required prefix="৳" min="0.01" max={payable.outstanding_balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1" title="Tax deducted at source — posted to WHT Payable (2110)">Withholding</label>
-              <input type="number" min="0" step="0.01" value={form.wht || ''} placeholder="0" onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" />
+              <UnitInput prefix="৳" min="0" step="0.01" value={form.wht || ''} placeholder="0" onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })} className="rounded-lg" />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1">Date</label>

@@ -14,6 +14,7 @@ import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMeth
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
+import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { printNode } from '@/lib/print';
@@ -1413,10 +1414,10 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                             {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                           </select>
                         </td>
-                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2 text-center"><input type="checkbox" checked={!!item.force_cost_update} onChange={e => updateItem(index, 'force_cost_update', e.target.checked)} className="accent-blue-600" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
@@ -1437,14 +1438,14 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
               <div className="flex justify-between items-center"><p className="text-xs text-muted-foreground">Subtotal</p><p className="text-sm font-semibold text-foreground">{formatCurrency(subtotal)}</p></div>
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Cart Discount %</label>
-                <input type="number" min="0" max="100" step="0.5" value={form.cart_discount_percent || 0} onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+                <div className="w-24"><UnitInput unit="%" min="0" max="100" step="0.5" value={form.cart_discount_percent || 0} onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })} /></div>
               </div>
               {(form.cart_discount_percent || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500"><span>Cart Discount ({form.cart_discount_percent}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>
               )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Extra Discount ৳</label>
-                <input type="number" min="0" step="0.01" value={form.extra_discount || 0} onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+                <div className="w-24"><UnitInput prefix="৳" min="0" step="0.01" value={form.extra_discount || 0} onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })} /></div>
               </div>
               {(form.extra_discount || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>
@@ -1532,14 +1533,14 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                 {form.payment_type === 'partial' && (
                   <div>
                     <label className="block text-xs font-medium mb-1 text-green-800">Payment Amount *</label>
-                    <input
-                      type="number"
+                    <UnitInput
+                      prefix="৳"
                       min="0.01"
                       max={totalAmount - 0.01}
                       step="0.01"
                       value={form.amount_paid}
                       onChange={e => setForm({ ...form, amount_paid: parseFloat(e.target.value) || 0 })}
-                      className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
+                      className="border-green-300 bg-white focus:ring-green-500/20"
                       placeholder={`Enter amount (Max: ${formatCurrency(totalAmount)})`}
                     />
                     <p className="text-xs text-green-700 mt-1 font-medium">
@@ -1952,11 +1953,11 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Payment Amount *</label>
-              <input type="number" min="0.01" max={balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <UnitInput prefix="৳" min="0.01" max={balance} step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} />
             </div>
             <div>
               <label className="block text-xs font-medium mb-1" title="Tax deducted at source — posted to WHT Payable (2110)">Withholding deducted</label>
-              <input type="number" min="0" step="0.01" value={form.wht || ''} placeholder="0" onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <UnitInput prefix="৳" min="0" step="0.01" value={form.wht || ''} placeholder="0" onChange={e => setForm({ ...form, wht: parseFloat(e.target.value) || 0 })} />
               {(form.wht || 0) > 0 && <p className="text-[11px] text-muted-foreground mt-1">Cash out: {formatCurrency(form.amount - (form.wht || 0))}</p>}
             </div>
           </div>
@@ -2398,10 +2399,10 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
                             {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                           </select>
                         </td>
-                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
-                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2 text-center"><input type="checkbox" checked={!!item.force_cost_update} onChange={e => updateItem(index, 'force_cost_update', e.target.checked)} className="accent-blue-600" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
@@ -2422,14 +2423,14 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
               <div className="flex justify-between items-center"><p className="text-xs text-muted-foreground">Subtotal</p><p className="text-sm font-semibold text-foreground">{formatCurrency(subtotal)}</p></div>
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Cart Discount %</label>
-                <input type="number" min="0" max="100" step="0.5" value={form.cart_discount_percent || 0} onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+                <div className="w-24"><UnitInput unit="%" min="0" max="100" step="0.5" value={form.cart_discount_percent || 0} onChange={e => setForm({ ...form, cart_discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })} /></div>
               </div>
               {(form.cart_discount_percent || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500"><span>Cart Discount ({form.cart_discount_percent}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>
               )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Extra Discount ৳</label>
-                <input type="number" min="0" step="0.01" value={form.extra_discount || 0} onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })} className="w-24 border border-border rounded-lg px-2 py-1 text-sm text-right focus:outline-none" />
+                <div className="w-24"><UnitInput prefix="৳" min="0" step="0.01" value={form.extra_discount || 0} onChange={e => setForm({ ...form, extra_discount: parseFloat(e.target.value) || 0 })} /></div>
               </div>
               {(form.extra_discount || 0) > 0 && (
                 <div className="flex justify-between text-xs text-red-500"><span>Extra Discount</span><span>-{formatCurrency(form.extra_discount || 0)}</span></div>

@@ -7,6 +7,7 @@ import { toast } from '@/hooks/use-toast';
 import { Plus, ChevronDown, Receipt, User, Building2, X, Search } from 'lucide-react';
 import CustomerSearchInput, { type CustomerResult } from '@/components/ui/CustomerSearchInput';
 import SupplierSearchInput, { type SupplierResult } from '@/components/ui/SupplierSearchInput';
+import { UnitInput } from '@/components/ui/unit-input';
 
 interface Account {
   id: string;
@@ -132,7 +133,7 @@ function QuickExpenseModal({ accounts, onSaved, onClose }: { accounts: Account[]
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-xs font-medium mb-1">Date</label><input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
-            <div><label className="block text-xs font-medium mb-1">Amount *</label><input type="number" required value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs font-medium mb-1">Amount *</label><UnitInput required prefix="৳" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0" className="rounded-lg" /></div>
           </div>
           <div><label className="block text-xs font-medium mb-1">Expense Type *</label><select required value={form.expense_account} onChange={e => setForm({ ...form, expense_account: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm"><option value="">Select expense category</option>{expenseAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}</select></div>
           <div><label className="block text-xs font-medium mb-1">Paid From *</label><select required value={form.paid_from} onChange={e => setForm({ ...form, paid_from: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm"><option value="">Select cash/bank account</option>{cashBankAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}</select></div>
@@ -207,7 +208,7 @@ function RecordReceivableModal({ accounts, onSaved, onClose }: { accounts: Accou
             )}
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="block text-xs font-medium mb-1">Amount *</label><input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs font-medium mb-1">Amount *</label><UnitInput required prefix="৳" min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="rounded-lg" /></div>
             <div><label className="block text-xs font-medium mb-1">Date</label><input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
           </div>
           <div><label className="block text-xs font-medium mb-1">Offset Account (Credit) *</label><select required value={form.offset_account_id} onChange={e => setForm({ ...form, offset_account_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm"><option value="">Select offset account</option>{offsetAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}</select><p className="text-[11px] text-muted-foreground mt-1">Choose where the credit goes: Sales Revenue for credit sales, Service Revenue for services, Opening Balance Equity for opening balances, Other Income for miscellaneous.</p></div>
@@ -291,7 +292,7 @@ function RecordPayableModal({ accounts, onSaved, onClose }: { accounts: Account[
             )}
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="block text-xs font-medium mb-1">Amount *</label><input type="number" required min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
+            <div><label className="block text-xs font-medium mb-1">Amount *</label><UnitInput required prefix="৳" min="0.01" step="0.01" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="0.00" className="rounded-lg" /></div>
             <div><label className="block text-xs font-medium mb-1">Date</label><input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm" /></div>
           </div>
           <div><label className="block text-xs font-medium mb-1">Debit Account (What you received) *</label><select required value={form.debit_account_id} onChange={e => setForm({ ...form, debit_account_id: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm"><option value="">Select account</option>{debitAccounts.map(a => <option key={a.id} value={a.id}>{a.code} - {a.name}</option>)}</select><p className="text-[11px] text-muted-foreground mt-1">Inventory (1200) for goods, or an expense account for services like rent, repairs, etc.</p></div>

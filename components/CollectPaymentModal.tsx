@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
@@ -422,15 +423,15 @@ export default function CollectPaymentModal({
             {activeTab === 'invoice' && (
               <div>
                 <label className="block text-xs font-medium mb-1">Amount Received *</label>
-                <input
-                  type="number" min="0" step="0.01"
+                <UnitInput
+                  prefix="৳" min="0" step="0.01"
                   value={totalReceived || ''}
                   onChange={e => {
                     const total = parseFloat(e.target.value) || 0;
                     setTotalReceived(total);
                     autoAllocate(total);
                   }}
-                  className="w-full border border-border rounded-lg px-3 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  className="rounded-lg text-base font-semibold"
                 />
                 {invoices.length > 1 && (
                   <p className="text-[10px] text-muted-foreground mt-1">Auto-allocated oldest due first — edit any row below to change the split.</p>
@@ -460,7 +461,7 @@ export default function CollectPaymentModal({
                                 setAllocations(a => ({ ...a, [inv.id]: v }));
                               }}
                               placeholder="0"
-                              className="w-full border border-border rounded-md px-2 py-1 text-right text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                              className="w-full border border-border rounded-md px-2 py-1 text-right tabular-nums text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                             />
                           </td>
                         </tr>
@@ -477,11 +478,11 @@ export default function CollectPaymentModal({
                 Bad Debt
                 <span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay — written off, applied oldest first)</span>
               </label>
-              <input
-                type="number" min="0" step="0.01"
+              <UnitInput
+                prefix="৳" min="0" step="0.01"
                 value={form.bad_debt_amount || ''}
                 onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })}
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+                className="rounded-lg focus:ring-orange-500/20"
               />
             </div>
 
@@ -539,11 +540,11 @@ export default function CollectPaymentModal({
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-medium mb-1">Payment Amount *</label>
-                    <input
-                      type="number" min="0" max={currentBalance} step="0.01"
+                    <UnitInput
+                      prefix="৳" min="0" max={currentBalance} step="0.01"
                       value={form.amount}
                       onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })}
-                      className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                      className="rounded-lg"
                     />
                   </div>
                   <div>
@@ -551,11 +552,11 @@ export default function CollectPaymentModal({
                       Bad Debt
                       <span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay)</span>
                     </label>
-                    <input
-                      type="number" min="0" max={currentBalance} step="0.01"
+                    <UnitInput
+                      prefix="৳" min="0" max={currentBalance} step="0.01"
                       value={form.bad_debt_amount}
                       onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })}
-                      className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+                      className="rounded-lg focus:ring-orange-500/20"
                     />
                   </div>
                 </div>
