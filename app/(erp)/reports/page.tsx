@@ -14,7 +14,7 @@ import {
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280'];
 
-type ReportTab = 'overview' | 'sales' | 'inventory' | 'customers' | 'pl';
+type ReportTab = 'overview' | 'inventory' | 'customers' | 'pl';
 
 export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<ReportTab>('overview');
@@ -263,10 +263,6 @@ export default function ReportsPage() {
     let filename = '';
 
     switch (activeTab) {
-      case 'sales':
-        csv = 'Month,Sales,Purchases,Gross Profit\n' + monthlyData.map(m => `${m.month},${m.sales},${m.purchases},${m.profit}`).join('\n');
-        filename = 'sales_report.csv';
-        break;
       case 'inventory':
         csv = 'Product,Units Sold,Revenue,Cost,Profit\n' + topProducts.map(p => `"${p.name}",${p.sales},${p.revenue},${p.cost},${p.profit}`).join('\n');
         filename = 'inventory_report.csv';
@@ -295,7 +291,6 @@ export default function ReportsPage() {
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: BarChart3 },
-    { id: 'sales', label: 'Sales', icon: TrendingUp },
     { id: 'inventory', label: 'Inventory', icon: Package },
     { id: 'customers', label: 'Customers', icon: Users },
     { id: 'pl', label: 'P&L', icon: FileSpreadsheet },
@@ -469,35 +464,6 @@ export default function ReportsPage() {
                 </table>
               </div>
             </>
-          )}
-
-          {activeTab === 'sales' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
-                <h3 className="text-sm font-semibold text-foreground mb-4">Monthly Sales Trend</h3>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={monthlyData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                    <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => `${(v/1000).toFixed(0)}K`} />
-                    <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-                    <Bar dataKey="sales" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Sales" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
-                <h3 className="text-sm font-semibold text-foreground mb-4">Profit Margin Trend</h3>
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart data={monthlyData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                    <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => `${(v/1000).toFixed(0)}K`} />
-                    <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-                    <Bar dataKey="profit" fill="#10b981" radius={[4, 4, 0, 0]} name="Gross Profit" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
           )}
 
           {activeTab === 'inventory' && (

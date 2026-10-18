@@ -98,7 +98,8 @@ const navItems: NavItem[] = [
     title: 'Reports',
     icon: BarChart3,
     children: [
-      { title: 'Sales Report', href: '/reports' },
+      { title: 'Reports & Analytics', href: '/reports' },
+      { title: 'Sales Report', href: '/reports/sales' },
       { title: 'Inventory Report', href: '/reports/inventory' },
       { title: 'P&L Statement', href: '/reports/pl' },
       { title: 'Edit History', href: '/reports/edit-history' },
