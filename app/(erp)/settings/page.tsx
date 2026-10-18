@@ -4,9 +4,10 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
 import { formatCurrencyWith, setCurrencyFormat, DEFAULT_CURRENCY_FORMAT, type CurrencyFormat } from '@/lib/format';
-import { Settings, User, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator, Zap } from 'lucide-react';
+import { Settings, User, Users, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator, Zap } from 'lucide-react';
+import UsersRolesTab from '@/components/settings/UsersRolesTab';
 
-type SettingsTab = 'general' | 'profile' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'quick_sell' | 'tax' | 'estimates' | 'data';
+type SettingsTab = 'general' | 'profile' | 'users' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'quick_sell' | 'tax' | 'estimates' | 'data';
 
 interface DeleteTarget {
   key: string;
@@ -247,7 +248,8 @@ export default function SettingsPage() {
   async function loadSettings() {
     setLoading(true);
 
-    const [companyRes, notifRes, appearRes, invRes, vatRes, estRes, qsRes, currencyRes, profileRes] = await Promise.all([
+    const [{ data: { user } }, companyRes, notifRes, appearRes, invRes, vatRes, estRes, qsRes, currencyRes] = await Promise.all([
+      supabase.auth.getUser(),
       supabase.from('app_settings').select('*').eq('setting_key', 'company').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'notifications').single(),
       supabase.from('app_settings').select('*').eq('setting_key', 'appearance').single(),
@@ -256,8 +258,9 @@ export default function SettingsPage() {
       supabase.from('app_settings').select('*').eq('setting_key', 'pl_estimates').maybeSingle(),
       supabase.from('app_settings').select('*').eq('setting_key', 'quick_sell').maybeSingle(),
       supabase.from('app_settings').select('*').eq('setting_key', 'currency').maybeSingle(),
-      supabase.from('profiles').select('*').limit(1).single(),
     ]);
+
+    const profileRes = await supabase.from('profiles').select('*').eq('id', user?.id ?? 'none').single();
 
     if (companyRes.data?.setting_value) {
       setCompany({ ...company, ...companyRes.data.setting_value as CompanySettings });
@@ -363,6 +366,8 @@ export default function SettingsPage() {
     setSaving(false);
   }
 
+  const canManageUsers = profile.role === 'super_admin' || profile.role === 'manager';
+
   const tabs = [
     { id: 'general', label: 'General', icon: Settings },
     { id: 'inventory', label: 'Inventory', icon: Package },
@@ -370,6 +375,7 @@ export default function SettingsPage() {
     { id: 'tax', label: 'Tax / VAT', icon: Receipt },
     { id: 'estimates', label: 'P&L Estimates', icon: Calculator },
     { id: 'profile', label: 'Profile', icon: User },
+    ...(canManageUsers ? [{ id: 'users', label: 'Users & Roles', icon: Users }] : []),
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'security', label: 'Security', icon: Shield },
     { id: 'appearance', label: 'Appearance', icon: Palette },
@@ -1312,6 +1318,8 @@ export default function SettingsPage() {
             </div>
           )}
 
+          {activeTab === 'users' && <UsersRolesTab canManage={profile.role === 'super_admin'} />}
+
           {deleteTarget && (
             <DeleteConfirmModal
               target={deleteTarget}
@@ -1326,7 +1334,8 @@ export default function SettingsPage() {
             />
           )}
 
-          <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
+          {activeTab !== 'users' && (
+            <div className="px-6 py-4 border-t border-border flex items-center justify-end gap-3">
             <button
               onClick={async () => {
                 if (activeTab === 'general') {
@@ -1347,6 +1356,7 @@ export default function SettingsPage() {
               {saving ? 'Saving...' : 'Save Changes'}
             </button>
           </div>
+          )}
         </div>
       </div>
     </div>
