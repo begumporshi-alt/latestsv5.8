@@ -72,6 +72,11 @@ export interface Product {
   barcode_label_size?: string | null;
   barcode_label_width?: number | null;
   barcode_label_height?: number | null;
+  barcode_symbol_width?: number | null;
+  barcode_symbol_height?: number | null;
+  barcode_name_font_size?: number | null;
+  barcode_sku_font_size?: number | null;
+  barcode_price_font_size?: number | null;
   created_at: string;
   updated_at: string;
   category?: Category;

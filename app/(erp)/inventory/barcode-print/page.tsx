@@ -24,6 +24,11 @@ interface SelectedProduct {
   barcode_label_size?: string | null;
   barcode_label_width?: number | null;
   barcode_label_height?: number | null;
+  barcode_symbol_width?: number | null;
+  barcode_symbol_height?: number | null;
+  barcode_name_font_size?: number | null;
+  barcode_sku_font_size?: number | null;
+  barcode_price_font_size?: number | null;
 }
 
 interface SelectedInvoice {
@@ -72,6 +77,8 @@ export default function BarcodePrintPage() {
   const [selectedProducts, setSelectedProducts] = useState<Map<string, SelectedProduct>>(new Map());
   const [selectedInvoices, setSelectedInvoices] = useState<Map<string, SelectedInvoice>>(new Map());
   const [labelSizeProduct, setLabelSizeProduct] = useState<Product | null>(null);
+  // Which product the live preview shows; null = first filtered product.
+  const [previewProductId, setPreviewProductId] = useState<string | null>(null);
 
   const previewSvgRef = useRef<SVGSVGElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -121,8 +128,7 @@ export default function BarcodePrintPage() {
     if (next.has(product.id)) {
       next.delete(product.id);
     } else {
-      next.set(product.id, {
-        id: product.id,
+      next.set(product.id, {        id: product.id,
         name: product.name,
         sku: product.sku,
         sale_price: product.sale_price,
@@ -131,7 +137,13 @@ export default function BarcodePrintPage() {
         barcode_label_size: product.barcode_label_size,
         barcode_label_width: product.barcode_label_width,
         barcode_label_height: product.barcode_label_height,
+        barcode_symbol_width: product.barcode_symbol_width,
+        barcode_symbol_height: product.barcode_symbol_height,
+        barcode_name_font_size: product.barcode_name_font_size,
+        barcode_sku_font_size: product.barcode_sku_font_size,
+        barcode_price_font_size: product.barcode_price_font_size,
       });
+      setPreviewProductId(product.id);
     }
     setSelectedProducts(next);
   }
@@ -172,7 +184,7 @@ export default function BarcodePrintPage() {
     const next = new Map(selectedProducts);
     filteredProducts.forEach(p => {
       if (!next.has(p.id)) {
-        next.set(p.id, { id: p.id, name: p.name, sku: p.sku, sale_price: p.sale_price, barcode: p.barcode, quantity: 1, barcode_label_size: p.barcode_label_size, barcode_label_width: p.barcode_label_width, barcode_label_height: p.barcode_label_height });
+        next.set(p.id, { id: p.id, name: p.name, sku: p.sku, sale_price: p.sale_price, barcode: p.barcode, quantity: 1, barcode_label_size: p.barcode_label_size, barcode_label_width: p.barcode_label_width, barcode_label_height: p.barcode_label_height, barcode_symbol_width: p.barcode_symbol_width, barcode_symbol_height: p.barcode_symbol_height, barcode_name_font_size: p.barcode_name_font_size, barcode_sku_font_size: p.barcode_sku_font_size, barcode_price_font_size: p.barcode_price_font_size });
       }
     });
     setSelectedProducts(next);
@@ -190,7 +202,7 @@ export default function BarcodePrintPage() {
   }
   function clearAllInvoices() { setSelectedInvoices(new Map()); }
 
-  function handleLabelSizeSaved(id: string, override: { barcode_label_size: string | null; barcode_label_width: number | null; barcode_label_height: number | null }) {
+  function handleLabelSizeSaved(id: string, override: ProductLabelOverride) {
     setProducts(prev => prev.map(p => (p.id === id ? { ...p, ...override } : p)));
     setSelectedProducts(prev => {
       const item = prev.get(id);
@@ -205,14 +217,17 @@ export default function BarcodePrintPage() {
     ? Array.from(selectedProducts.values()).reduce((s, p) => s + p.quantity, 0)
     : Array.from(selectedInvoices.values()).reduce((s, i) => s + i.quantity, 0);
 
-  // Preview mirrors what would print for the first filtered product —
-  // including that product's saved size override, when it has one.
-  const previewCfg = resolveLabelConfig(pageSettings, mode === 'products' ? filteredProducts[0] : null);
+  // Preview mirrors what would print for the chosen product — including that
+  // product's saved overrides. Defaults to the first filtered product.
+  const previewProduct = mode === 'products'
+    ? (filteredProducts.find(p => p.id === previewProductId) || filteredProducts[0])
+    : null;
+  const previewCfg = resolveLabelConfig(pageSettings, previewProduct);
 
   // Generate preview
   useEffect(() => {
     const sampleData = mode === 'products'
-      ? (filteredProducts[0]?.sku || 'SAMPLE-001')
+      ? (previewProduct?.barcode || previewProduct?.sku || 'SAMPLE-001')
       : (filteredInvoices[0]?.invoice_number || 'INV-0001');
 
     if (codeType === 'barcode' && previewSvgRef.current) {
@@ -234,7 +249,7 @@ export default function BarcodePrintPage() {
         color: { dark: '#000000', light: '#ffffff' },
       }, () => {});
     }
-  }, [codeType, mode, filteredProducts, filteredInvoices, previewCfg.barcodeWidth, previewCfg.barcodeHeight, previewCfg.qrSize]);
+  }, [codeType, mode, filteredProducts, filteredInvoices, previewProduct, previewCfg.barcodeWidth, previewCfg.barcodeHeight, previewCfg.qrSize]);
 
   function generateBarcodeSVG(data: string, barcodeWidth: number, barcodeHeight: number): string {
     const canvas = document.createElement('canvas');
@@ -668,18 +683,33 @@ export default function BarcodePrintPage() {
 
           {/* Live Preview */}
           <div className="bg-white rounded-xl border border-border p-4 shadow-sm space-y-3">
-            <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-              <Eye className="w-4 h-4 text-muted-foreground" />
-              Live Preview
-            </h3>
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-foreground flex items-center gap-2 shrink-0">
+                <Eye className="w-4 h-4 text-muted-foreground" />
+                Live Preview
+              </h3>
+              {mode === 'products' && (
+                <select
+                  value={previewProduct?.id || ''}
+                  onChange={e => setPreviewProductId(e.target.value || null)}
+                  title="Choose which product the preview shows"
+                  className="max-w-[180px] text-xs border border-border rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 truncate"
+                >
+                  {filteredProducts.length === 0 && <option value="">No products</option>}
+                  {filteredProducts.map(p => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              )}
+            </div>
             <div className="flex justify-center">
               <div
                 className="border border-gray-200 rounded-lg bg-white flex flex-col items-center justify-between gap-1 p-2"
                 style={{ width: previewCfg.width, minHeight: previewCfg.height }}
               >
                 {mode === 'products' && showProductName && (
-                  <p className="text-center font-semibold text-foreground leading-tight line-clamp-2" style={{ fontSize: fitNameFontSize(previewCfg.nameFontSize, filteredProducts[0]?.name || 'Sample Product', previewCfg.width) }}>
-                    {filteredProducts[0]?.name || 'Sample Product'}
+                  <p className="text-center font-semibold text-foreground leading-tight line-clamp-2" style={{ fontSize: fitNameFontSize(previewCfg.nameFontSize, previewProduct?.name || 'Sample Product', previewCfg.width) }}>
+                    {previewProduct?.name || 'Sample Product'}
                   </p>
                 )}
                 {mode === 'invoices' && showInvoiceNumber && (
@@ -694,7 +724,7 @@ export default function BarcodePrintPage() {
                 )}
                 {mode === 'products' && showSku && (
                   <p className="font-mono text-foreground tracking-wide" style={{ fontSize: previewCfg.skuFontSize }}>
-                    {filteredProducts[0]?.sku || 'SAMPLE-001'}
+                    {previewProduct?.sku || 'SAMPLE-001'}
                   </p>
                 )}
                 {mode === 'invoices' && showCustomer && (
@@ -705,7 +735,7 @@ export default function BarcodePrintPage() {
                 {mode === 'products' && showPrice && (
                   <div className="flex items-baseline gap-1 pt-0.5 border-t border-gray-100 w-full justify-center">
                     <span className="font-semibold text-foreground uppercase tracking-wider" style={{ fontSize: previewCfg.mrpLabelFontSize }}>MRP</span>
-                    <span className="font-bold text-foreground" style={{ fontSize: previewCfg.priceFontSize }}>{formatCurrency(filteredProducts[0]?.sale_price || 0)}</span>
+                    <span className="font-bold text-foreground" style={{ fontSize: previewCfg.priceFontSize }}>{formatCurrency(previewProduct?.sale_price || 0)}</span>
                   </div>
                 )}
                 {mode === 'invoices' && showAmount && (
@@ -718,7 +748,7 @@ export default function BarcodePrintPage() {
             </div>
             <p className="text-xs text-center text-muted-foreground">
               {codeType === 'barcode' ? 'CODE128' : 'QR Code'} · {previewCfg.sizeKey === 'custom' ? `${parseFloat(previewCfg.width)}"×${parseFloat(previewCfg.height)}"` : LABEL_SIZES[previewCfg.sizeKey].label} · {columnsPerPage} cols
-              {previewCfg.fromProductOverride && <span className="text-blue-600 font-medium"> · saved size</span>}
+              {previewCfg.fromProductOverride && <span className="text-blue-600 font-medium"> · saved overrides</span>}
             </p>
           </div>
 
@@ -769,24 +799,38 @@ export default function BarcodePrintPage() {
 function ProductLabelSizeModal({ product, onClose, onSaved }: {
   product: Product;
   onClose: () => void;
-  onSaved: (id: string, override: { barcode_label_size: string | null; barcode_label_width: number | null; barcode_label_height: number | null }) => void;
+  onSaved: (id: string, override: ProductLabelOverride) => void;
 }) {
   const [size, setSize] = useState<string>(product.barcode_label_size || '');
   const [customWidth, setCustomWidth] = useState(product.barcode_label_width != null ? String(product.barcode_label_width) : '2');
   const [customHeight, setCustomHeight] = useState(product.barcode_label_height != null ? String(product.barcode_label_height) : '1');
+  const [symbolWidth, setSymbolWidth] = useState(product.barcode_symbol_width != null ? String(product.barcode_symbol_width) : '');
+  const [symbolHeight, setSymbolHeight] = useState(product.barcode_symbol_height != null ? String(product.barcode_symbol_height) : '');
+  const [nameFont, setNameFont] = useState(product.barcode_name_font_size != null ? String(product.barcode_name_font_size) : '');
+  const [skuFont, setSkuFont] = useState(product.barcode_sku_font_size != null ? String(product.barcode_sku_font_size) : '');
+  const [priceFont, setPriceFont] = useState(product.barcode_price_font_size != null ? String(product.barcode_price_font_size) : '');
   const [saving, setSaving] = useState(false);
 
   async function save() {
     setSaving(true);
-    const patch = !size
-      ? { barcode_label_size: null, barcode_label_width: null, barcode_label_height: null }
-      : size === 'custom'
-        ? { barcode_label_size: 'custom', barcode_label_width: Number(customWidth) || 2, barcode_label_height: Number(customHeight) || 1 }
-        : { barcode_label_size: size, barcode_label_width: null, barcode_label_height: null };
+    const posNum = (v: string) => {
+      const n = parseFloat(v);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    const patch: ProductLabelOverride = {
+      barcode_label_size: size || null,
+      barcode_label_width: size === 'custom' ? (Number(customWidth) || null) : null,
+      barcode_label_height: size === 'custom' ? (Number(customHeight) || null) : null,
+      barcode_symbol_width: posNum(symbolWidth),
+      barcode_symbol_height: posNum(symbolHeight),
+      barcode_name_font_size: posNum(nameFont),
+      barcode_sku_font_size: posNum(skuFont),
+      barcode_price_font_size: posNum(priceFont),
+    };
     const { error } = await supabase.from('products').update(patch).eq('id', product.id);
     setSaving(false);
     if (error) {
-      toast({ title: 'Failed to save label size', description: error.message, variant: 'destructive' });
+      toast({ title: 'Failed to save label settings', description: error.message, variant: 'destructive' });
       return;
     }
     onSaved(product.id, patch);
@@ -795,18 +839,18 @@ function ProductLabelSizeModal({ product, onClose, onSaved }: {
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl">
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <div>
-            <h2 className="text-base font-bold flex items-center gap-2"><Ruler className="w-4 h-4 text-blue-600" /> Label Size</h2>
-            <p className="text-xs text-muted-foreground break-words max-w-[240px]">{product.name}</p>
+            <h2 className="text-base font-bold flex items-center gap-2"><Ruler className="w-4 h-4 text-blue-600" /> Label Settings</h2>
+            <p className="text-xs text-muted-foreground break-words max-w-[300px]">{product.name}</p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <div className="p-5 space-y-4">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1.5">Saved size for this product</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <button
                 type="button"
                 onClick={() => setSize('')}
@@ -838,14 +882,47 @@ function ProductLabelSizeModal({ product, onClose, onSaved }: {
               </div>
             )}
           </div>
+
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">Barcode Bar Size <span className="text-[10px] font-normal">· empty = default</span></label>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[10px] font-medium text-muted-foreground mb-1">Bar Width (0.5–4)</label>
+                <input type="number" min="0.5" max="4" step="0.25" placeholder="default" value={symbolWidth} onChange={e => setSymbolWidth(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-muted-foreground mb-1">Bar Height (px, 10–120)</label>
+                <input type="number" min="10" max="120" step="5" placeholder="default" value={symbolHeight} onChange={e => setSymbolHeight(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-muted-foreground mb-1.5">Text Font Sizes (px) <span className="text-[10px] font-normal">· empty = default</span></label>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-[10px] font-medium text-muted-foreground mb-1">Name</label>
+                <input type="number" min="4" max="30" step="0.5" placeholder="auto" value={nameFont} onChange={e => setNameFont(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-muted-foreground mb-1">SKU</label>
+                <input type="number" min="4" max="30" step="0.5" placeholder="auto" value={skuFont} onChange={e => setSkuFont(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-muted-foreground mb-1">Price</label>
+                <input type="number" min="4" max="30" step="0.5" placeholder="auto" value={priceFont} onChange={e => setPriceFont(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              </div>
+            </div>
+          </div>
+
           <p className="text-xs text-muted-foreground">
-            The saved size is used whenever this product's barcode/QR label is printed — from this page and from the product's barcode in inventory — instead of the page settings.
+            These settings are used whenever this product's barcode/QR label is printed — from this page and from the product's barcode in inventory — instead of the page settings. Long product names wrap to 2 lines at the set size, shrinking only to 7px if needed.
           </p>
         </div>
         <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-border">
           <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
           <button type="button" onClick={save} disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
-            {saving ? 'Saving...' : 'Save Size'}
+            {saving ? 'Saving...' : 'Save Settings'}
           </button>
         </div>
       </div>
