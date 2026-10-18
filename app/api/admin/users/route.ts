@@ -157,5 +157,14 @@ export async function PATCH(req: Request) {
     .single();
   if (error) return jsonError(error.message, 500);
 
+  // Ban/unban at the auth layer so a deactivated user can't sign in or
+  // refresh tokens (profile.is_active alone only helps once RLS sees it).
+  if (body.is_active !== undefined) {
+    const { error: banErr } = await ctx.admin.auth.admin.updateUserById(id, {
+      ban_duration: body.is_active ? 'none' : '876000h',
+    });
+    if (banErr) return jsonError(`Profile updated, but auth ban failed: ${banErr.message}`, 500);
+  }
+
   return NextResponse.json({ ok: true, user: updated });
 }

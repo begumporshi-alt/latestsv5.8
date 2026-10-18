@@ -7,6 +7,7 @@ import Sidebar from '@/components/layout/Sidebar';
 import Header from '@/components/layout/Header';
 import QuickActionDrawer from '@/components/ui/QuickActionDrawer';
 import RoleRouteGuard from '@/components/layout/RoleRouteGuard';
+import SessionGate from '@/components/layout/SessionGate';
 import { Toaster } from '@/components/ui/toaster';
 import { OfflineProvider } from '@/lib/offline/provider';
 import OfflineBanner from '@/components/offline/OfflineBanner';
@@ -224,6 +225,7 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
 
       {/* Global Quick Action Drawer */}
       <QuickActionDrawer />
+      <SessionGate />
       <Toaster />
     </div>
     </OfflineProvider>

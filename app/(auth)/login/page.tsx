@@ -1,9 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Building2, Eye, EyeOff, Lock, Mail } from 'lucide-react';
+
+const BANNED_RE = /banned|disabled|removed/i;
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,14 +14,27 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [deactivated, setDeactivated] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem('deactivatedNotice')) {
+      setDeactivated(true);
+      sessionStorage.removeItem('deactivatedNotice');
+    }
+  }, []);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setDeactivated(false);
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
-      setError(error.message);
+      setError(
+        BANNED_RE.test(error.message)
+          ? 'Your account has been deactivated. Please contact an administrator.'
+          : error.message,
+      );
       setLoading(false);
     } else {
       router.push('/dashboard');
@@ -46,6 +61,12 @@ export default function LoginPage() {
             <h1 className="text-2xl font-bold text-slate-900">Welcome back</h1>
             <p className="text-slate-500 text-sm mt-1">Sign in to your ERP account</p>
           </div>
+
+          {deactivated && !error && (
+            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg text-sm">
+              Your account has been deactivated. Please contact an administrator.
+            </div>
+          )}
 
           {error && (
             <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">

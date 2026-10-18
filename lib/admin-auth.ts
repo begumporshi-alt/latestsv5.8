@@ -28,11 +28,13 @@ export async function assertRole(
 
   const { data: profile } = await admin
     .from('profiles')
-    .select('role')
+    .select('role, is_active')
     .eq('id', userData.user.id)
     .single();
 
-  if (!profile || !roles.includes(profile.role)) return null;
+  // Deactivated accounts keep a valid token for up to the JWT expiry, so the
+  // role check alone isn't enough — their admin-API calls must also fail.
+  if (!profile || profile.is_active === false || !roles.includes(profile.role)) return null;
   return { user: userData.user, admin };
 }
 
