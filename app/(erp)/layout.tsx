@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import Sidebar from '@/components/layout/Sidebar';
 import Header from '@/components/layout/Header';
 import QuickActionDrawer from '@/components/ui/QuickActionDrawer';
+import RoleRouteGuard from '@/components/layout/RoleRouteGuard';
 import { Toaster } from '@/components/ui/toaster';
 import { OfflineProvider } from '@/lib/offline/provider';
 import OfflineBanner from '@/components/offline/OfflineBanner';
@@ -215,7 +216,9 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
         <OfflineDataNotice />
 
         <main className="flex-1 overflow-auto p-4 md:p-6 animate-fade-in">
-          {children}
+          <RoleRouteGuard>
+            {children}
+          </RoleRouteGuard>
         </main>
       </div>
 

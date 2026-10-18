@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
+import { canAccessRoute } from '@/lib/permissions';
+import { useProfile } from '@/hooks/use-profile';
 import { LayoutDashboard, Package, ShoppingCart, ShoppingBag, Users, Truck, Calculator, Store, UserRound, ChartBar as BarChart3, Settings, Building2, ChevronDown, ChevronRight, FileText, Receipt, TrendingUp, Boxes, Shield, ArrowRightLeft, BookOpen, Wallet, RotateCcw, BookOpen as GuideIcon, QrCode } from 'lucide-react';
 
 interface NavItem {
@@ -120,8 +122,14 @@ const navItems: NavItem[] = [
 
 export default function Sidebar({ collapsed }: SidebarProps) {
   const pathname = usePathname();
+  const { profile } = useProfile();
   const [openMenus, setOpenMenus] = useState<string[]>(['Inventory', 'Sales', 'Purchases', 'CRM', 'Accounting', 'HR Management']);
   const [reminderCount, setReminderCount] = useState(0);
+
+  const visibleItems = navItems.filter((item) => {
+    if (item.href) return canAccessRoute(profile?.role, item.href);
+    return item.children?.some((c) => canAccessRoute(profile?.role, c.href)) ?? false;
+  });
 
   useEffect(() => {
     async function fetchReminderCount() {
@@ -168,7 +176,7 @@ export default function Sidebar({ collapsed }: SidebarProps) {
 
       {/* Nav */}
       <nav className="flex-1 py-3 overflow-y-auto sidebar-scroll px-2 space-y-0.5">
-        {navItems.map((item) => {
+        {visibleItems.map((item) => {
           if (item.children) {
             const open = openMenus.includes(item.title) && !collapsed;
             const parentActive = isParentActive(item);
