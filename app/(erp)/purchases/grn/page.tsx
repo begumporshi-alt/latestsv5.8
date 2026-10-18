@@ -28,6 +28,13 @@ interface PurchaseOrderItem {
   quantity: number;
   received_quantity: number;
   unit_cost: number;
+  discount_percent: number;
+}
+
+// What the buyer actually pays per unit: PO unit cost minus the line discount.
+// receive_grn posts batches and movements at this figure for PO-based receipts.
+function effectiveUnitCost(item: PurchaseOrderItem): number {
+  return Number(item.unit_cost) * (1 - (Number(item.discount_percent) || 0) / 100);
 }
 
 interface GRN {
@@ -500,7 +507,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
             po_item_id: directMode ? null : itemId,
             product_id: item.product_id,
             quantity: Number(qty),
-            unit_cost: Number(item.unit_cost),
+            unit_cost: effectiveUnitCost(item),
             expiry_date: expiryDates[itemId] || null,
           };
         })
@@ -553,7 +560,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         return {
           name: item?.product?.name || 'Unknown product',
           qty: Number(qty),
-          cost: Number(item?.unit_cost || 0),
+          cost: item ? effectiveUnitCost(item) : 0,
         };
       });
 
@@ -776,7 +783,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                             <p className="font-medium text-foreground text-sm">{item.product?.name}</p>
                             <p className="text-xs text-muted-foreground">SKU: {item.product?.sku}</p>
                           </div>
-                          <p className="font-semibold">{formatCurrency(item.unit_cost)}/unit</p>
+                          <p className="font-semibold">{formatCurrency(effectiveUnitCost(item))}/unit</p>
                         </div>
                         <div className="flex items-center gap-4">
                           <div className="flex-1">
