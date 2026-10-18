@@ -47,7 +47,7 @@ server-computed modules (accounting, purchasing) remain online-only — see §4.
 │  │ Sync engine: drain when online (event + 30s)  │ (encr.)│ │
 │  │ supabase.rpc('sync_apply', item_id, op, data) └────────┘ │
 │  └──────────────────────────┬──────────────────  Replicator│
-│  Network monitor: events +  │/api/ping probe     (15 min)   │
+│  Network monitor: events +  │/api/ping probe     (1 hour)   │
 └─────────────────────────────┼───────────────────────────────┘
                               │ HTTPS (TLS), authenticated
 ┌─────────────────────────────▼───────────────────────────────┐
@@ -101,8 +101,12 @@ server-computed modules (accounting, purchasing) remain online-only — see §4.
    refunds + applications, customer notes, store-credit redemptions, cost
    price history, product sizes/colors, unit types, projects, activity logs,
    profiles, online orders, bank reconciliation items, reconciliation log).
-   Refreshed fully on login, on reconnection and every 15 minutes while
-   online. Each table's clear+rewrite is a single transaction, so concurrent
+   Refreshed on login, on reconnection, hourly while online, and after every
+   applied outbox change. Tables with a timestamp cursor (created_at for
+   append-only ledgers, trigger-maintained updated_at for editable tables)
+   download only rows changed since the last refresh; the rest — small
+   reference tables — are re-downloaded whole. Each table's clear+rewrite is
+   a single transaction, so concurrent
    readers always see the old or the new rows, never an empty store; a run
    that completed within the last minute is skipped unless forced (the app
    start fires several triggers).
@@ -230,7 +234,7 @@ journals, correct FIFO batch, payment, idempotency).
   sign-out wipes the local database and the remembered user.
 - **Known behavior**: the local database is a point-in-time snapshot; rows
   created on the server after the last refresh appear after the next refresh
-  (≤ 15 min online, or on reconnection). Pre-warmed report views re-run when
+  (≤ 1 hour online, or on reconnection). Pre-warmed report views re-run when
   the day changes (date-based defaults move with the calendar).
 - **Deploys**: `npm run build` generates `public/precache-manifest.json`
   (route list + build id + the full asset list) and the service worker warms

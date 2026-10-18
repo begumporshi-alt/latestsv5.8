@@ -265,7 +265,7 @@ export default function SyncCenterPage() {
           <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
             <Database className="w-4 h-4 text-indigo-500" /> Local Database
             <span className="text-xs font-normal text-muted-foreground">
-              — full encrypted copies of all core tables, refreshed every 15 minutes while online
+              — full encrypted copies of all core tables, refreshed hourly while online (only changed rows are downloaded)
             </span>
           </h2>
           <button
