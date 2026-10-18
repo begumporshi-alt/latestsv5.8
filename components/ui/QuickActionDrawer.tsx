@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { canAccessRoute } from '@/lib/permissions';
+import { useProfile } from '@/hooks/use-profile';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
@@ -103,6 +105,15 @@ export default function QuickActionDrawer() {
   const drawerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const pathname = usePathname();
+  const { profile } = useProfile();
+
+  // Same access matrix as the sidebar/route guard; catalog is a modal, not a route.
+  const visibleGroupedActions = Object.fromEntries(
+    Object.entries(groupedActions).map(([category, actions]) => [
+      category,
+      actions.filter(a => a.kind === 'catalog' || canAccessRoute(profile?.role, a.href)),
+    ]),
+  );
 
   // Product Catalog: load the full catalog (with units + inventory) when the
   // slide-over opens. fetchAll pages past Supabase's 1,000-row default cap;
@@ -278,7 +289,7 @@ export default function QuickActionDrawer() {
         {/* Actions Grid */}
         <div className="overflow-y-auto p-4 space-y-5" style={{ maxHeight: isMobile ? 'calc(85vh - 80px)' : 'calc(100vh - 100px)' }}>
           {categoryOrder.map((category) => {
-            const actions = groupedActions[category];
+            const actions = visibleGroupedActions[category];
             if (!actions || actions.length === 0) return null;
 
             return (

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { assertSuperAdmin, SERVICE_URL, SERVICE_ROLE_KEY } from '@/lib/admin-auth';
 
 // Server-side proxy for the db-backup / db-restore Supabase Edge Functions.
 //
@@ -10,37 +10,8 @@ import { createClient } from '@supabase/supabase-js';
 // The edge functions run with the service-role key, so this route MUST NOT be
 // reachable by anyone who is not a super_admin.
 
-const SERVICE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; // server-only
-
-function unauthorized(message: string) {
-  return NextResponse.json({ error: message }, { status: 401 });
-}
-
 function forbidden(message: string) {
   return NextResponse.json({ error: message }, { status: 403 });
-}
-
-async function assertSuperAdmin(authHeader: string | null) {
-  const token = authHeader?.startsWith('Bearer ')
-    ? authHeader.slice('Bearer '.length)
-    : null;
-  if (!token) return null;
-
-  if (!SERVICE_URL || !SERVICE_ROLE_KEY) return null;
-
-  const admin = createClient(SERVICE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-  const { data: userData, error: userErr } = await admin.auth.getUser(token);
-  if (userErr || !userData?.user) return null;
-
-  const { data: profile } = await admin
-    .from('profiles')
-    .select('role')
-    .eq('id', userData.user.id)
-    .single();
-
-  if (!profile || profile.role !== 'super_admin') return null;
-  return userData.user;
 }
 
 async function handler(req: Request) {
