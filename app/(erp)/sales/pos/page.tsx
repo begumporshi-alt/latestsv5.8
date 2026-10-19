@@ -37,7 +37,7 @@ import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
 import { QuickSellModal } from '@/components/quick-sell-modal';
-import { tokenizeSearch, applyIlikeTokens, matchesTokens } from '@/lib/search';
+import { tokenizeSearch, applyIlikeTokens, matchesTokens, rankRows } from '@/lib/search';
 import {
   buildPosSettlement, round2, type PosCollectMode, type PosSettlement,
   type PosOutstandingRow, type PosAdvanceRow,
@@ -137,6 +137,14 @@ interface ProductData {
  */
 const POS_SEARCH_COLUMNS = ['name', 'sku', 'barcode'];
 
+/** Relevance key for ranking search results (boundary hits outrank mid-word). */
+function posRankColumns(p: ProductData): string[] {
+  return [p.name, p.sku || '', p.barcode || ''];
+}
+
+/** Grid cap; the exact match count is shown separately when more exist. */
+const POS_GRID_LIMIT = 60;
+
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
 
 // Payment application ("Collect From") — the mode types, the settlement shape
@@ -227,6 +235,7 @@ export default function POSPage() {
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Monotonic sequence for product searches — drops out-of-order responses.
   const searchSeqRef = useRef(0);
+  const [matchCount, setMatchCount] = useState<number | null>(null);
   const { items: globalCartItems, clearCart: clearGlobalCart } = useGlobalCart();
   const globalCartConsumed = useRef(false);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default: boolean }[]>([]);
@@ -603,9 +612,13 @@ export default function POSPage() {
         // Quick-sell (non-stock) items never enter the POS grid; snapshots
         // from before the flag existed simply lack the field.
         list = list.filter(p => (p as any).track_inventory !== false);
-        if (seq === searchSeqRef.current) setProducts(list.slice(0, 60));
+        if (seq === searchSeqRef.current) {
+          setProducts(rankRows(list, posRankColumns, tokens).slice(0, POS_GRID_LIMIT) as ProductData[]);
+          setMatchCount(list.length);
+        }
       } else {
         setProducts([]);
+        setMatchCount(null);
         toast({
           title: 'Offline — no product cache yet',
           description: 'Open the POS once while online so this device builds its offline product list.',
@@ -636,7 +649,7 @@ export default function POSPage() {
       query = query.eq('category_id', selectedCategory);
     }
 
-    const { data, error: loadError } = await query.limit(60);
+    const { data, count: exactCount, error: loadError } = await query.limit(POS_GRID_LIMIT);
 
     // Silent network drop (or a monitor race at mount): fall back to the
     // cached snapshot with the same client-side filters as the offline path.
@@ -659,9 +672,13 @@ export default function POSPage() {
         // Quick-sell (non-stock) items never enter the POS grid; snapshots
         // from before the flag existed simply lack the field.
         list = list.filter(p => (p as any).track_inventory !== false);
-        if (seq === searchSeqRef.current) setProducts(list.slice(0, 60));
+        if (seq === searchSeqRef.current) {
+          setProducts(rankRows(list, posRankColumns, tokens).slice(0, POS_GRID_LIMIT) as ProductData[]);
+          setMatchCount(list.length);
+        }
       } else {
         setProducts([]);
+        setMatchCount(null);
         toast({
           title: 'Offline — no product cache yet',
           description: 'Open the POS once while online so this device builds its offline product list.',
@@ -672,7 +689,10 @@ export default function POSPage() {
       return;
     }
 
-    if (seq === searchSeqRef.current) setProducts((data || []) as ProductData[]);
+    if (seq === searchSeqRef.current) {
+      setProducts(rankRows((data || []) as ProductData[], posRankColumns, tokens).slice(0, POS_GRID_LIMIT));
+      setMatchCount(exactCount ?? null);
+    }
     // Keep the offline snapshot warm (no-op while fresh).
     void refreshProductSnapshot();
     setLoading(false);
@@ -2266,6 +2286,12 @@ export default function POSPage() {
             </button>
           </div>
         </div>
+
+        {search && matchCount !== null && matchCount > POS_GRID_LIMIT && (
+          <p className="text-xs text-muted-foreground -mt-1">
+            Showing first {products.length} of {matchCount} matches — refine your search to narrow the list
+          </p>
+        )}
 
         {/* Product grid — natural flow on mobile, overflow-y-auto on desktop */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">

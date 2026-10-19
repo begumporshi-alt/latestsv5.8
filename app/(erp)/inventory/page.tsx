@@ -5,6 +5,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { fetchAll, fetchAllParallel } from '@/lib/fetch-all';
+import { tokenizeSearch, matchesTokens, rankRows } from '@/lib/search';
 import type { InventoryAggregates } from '@/lib/inventory-value';
 import { loadQuickSellSettings } from '@/lib/quick-sell-settings';
 import { toast } from '@/hooks/use-toast';
@@ -245,24 +246,32 @@ export default function InventoryPage() {
   }
 
   // Memoized: these run over all 2,700+ products on every keystroke otherwise.
-  const filtered = useMemo(() => products.filter(p => {
-    const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());
-    const matchCat = !filterCategory || p.category_id === filterCategory;
-    const matchBrand = !filterBrand || p.brand_id === filterBrand;
-    const matchWarehouse = !filterWarehouse || (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0) > 0;
-    const matchStockTracking = !filterNonStockOnly ? true : (p as any).track_inventory === false;
-    const matchStatus = !filterStatus || (
-      filterStatus === 'low' ? (p.total_stock || 0) <= p.min_stock_level && (p.total_stock || 0) > 0 :
-      filterStatus === 'out' ? (p.total_stock || 0) === 0 :
-      filterStatus === 'sold_out' ? (p.total_stock || 0) === 0 && (p.total_sold || 0) > 0 :
-      filterStatus === 'ok' ? (p.total_stock || 0) > p.min_stock_level :
-      filterStatus === 'has_stock' ? (p.total_stock || 0) > 0 : true
-    );
-    const matchColor = !filterColor || p.product_colors?.some(c => c.name === filterColor);
-    const matchSize = !filterSize || p.product_sizes?.some(s => s.name === filterSize);
-    const matchUnit = !filterUnit || (p.unit && p.unit.toLowerCase() === filterUnit.toLowerCase());
-    return matchSearch && matchCat && matchBrand && matchWarehouse && matchStockTracking && matchStatus && matchColor && matchSize && matchUnit;
-  }), [products, search, filterCategory, filterBrand, filterWarehouse, filterStatus, filterColor, filterSize, filterUnit, filterNonStockOnly, inventoryByWarehouse]);
+  // Search semantics match the POS grid: sanitised order-independent tokens
+  // across name, SKU and barcode, with word-boundary hits ranked first.
+  const filtered = useMemo(() => {
+    const tokens = tokenizeSearch(search);
+    const searchCols = ['name', 'sku', 'barcode'];
+    const list = products.filter(p => {
+      const matchSearch = !search || matchesTokens(p, searchCols, tokens);
+      const matchCat = !filterCategory || p.category_id === filterCategory;
+      const matchBrand = !filterBrand || p.brand_id === filterBrand;
+      const matchWarehouse = !filterWarehouse || (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0) > 0;
+      const matchStockTracking = !filterNonStockOnly ? true : (p as any).track_inventory === false;
+      const matchStatus = !filterStatus || (
+        filterStatus === 'low' ? (p.total_stock || 0) <= p.min_stock_level && (p.total_stock || 0) > 0 :
+        filterStatus === 'out' ? (p.total_stock || 0) === 0 :
+        filterStatus === 'sold_out' ? (p.total_stock || 0) === 0 && (p.total_sold || 0) > 0 :
+        filterStatus === 'ok' ? (p.total_stock || 0) > p.min_stock_level :
+        filterStatus === 'has_stock' ? (p.total_stock || 0) > 0 : true
+      );
+      const matchColor = !filterColor || p.product_colors?.some(c => c.name === filterColor);
+      const matchSize = !filterSize || p.product_sizes?.some(s => s.name === filterSize);
+      const matchUnit = !filterUnit || (p.unit && p.unit.toLowerCase() === filterUnit.toLowerCase());
+      return matchSearch && matchCat && matchBrand && matchWarehouse && matchStockTracking && matchStatus && matchColor && matchSize && matchUnit;
+    });
+    if (!search || tokens.length === 0) return list;
+    return rankRows(list, p => [p.name, p.sku || '', p.barcode || ''], tokens);
+  }, [products, search, filterCategory, filterBrand, filterWarehouse, filterStatus, filterColor, filterSize, filterUnit, filterNonStockOnly, inventoryByWarehouse]);
   const pagedFiltered = useMemo(() => filtered.slice((page - 1) * pageSize, page * pageSize), [filtered, page, pageSize]);
   // Reset to page 1 when filters change
   useEffect(() => { setPage(1); }, [search, filterCategory, filterBrand, filterStatus, filterWarehouse, filterColor, filterSize, filterUnit, filterNonStockOnly]);
@@ -418,7 +427,7 @@ export default function InventoryPage() {
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Search by name or SKU..."
+            placeholder="Search by name, SKU or barcode..."
             className="w-full pl-8 pr-4 py-2 text-sm border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20"
           />
         </div>
