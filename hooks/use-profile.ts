@@ -2,10 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import type { ModuleOverrides } from '@/lib/permissions';
 
 export interface ProfileInfo {
   role: string;
   full_name: string;
+  /** Per-user module overrides (user_module_access). Absent = role defaults. */
+  moduleOverrides?: ModuleOverrides;
 }
 
 // Module-level dedupe: several components (sidebar, route guard, settings)
@@ -31,13 +34,20 @@ async function loadProfile(): Promise<ProfileInfo | null> {
           .select('role, full_name')
           .eq('id', user.id)
           .single();
-        if (data) {
-          const profile = { role: data.role, full_name: data.full_name };
-          fetched = { uid: user.id, profile };
-          try { localStorage.setItem(cacheKey(user.id), JSON.stringify(profile)); } catch { /* private mode */ }
-          return profile;
-        }
-        return null;
+        if (!data) return null;
+        // Overrides are optional enrichment: on failure the role defaults
+        // apply (fail-open, same contract as the role itself).
+        const { data: overrides } = await supabase
+          .from('user_module_access')
+          .select('module_prefix, allowed')
+          .eq('user_id', user.id);
+        const moduleOverrides: ModuleOverrides | undefined = overrides?.length
+          ? Object.fromEntries(overrides.map(o => [o.module_prefix, o.allowed]))
+          : undefined;
+        const profile: ProfileInfo = { role: data.role, full_name: data.full_name, moduleOverrides };
+        fetched = { uid: user.id, profile };
+        try { localStorage.setItem(cacheKey(user.id), JSON.stringify(profile)); } catch { /* private mode */ }
+        return profile;
       } finally {
         inflight = null;
       }

@@ -11,7 +11,7 @@ export default function RoleRouteGuard({ children }: { children: React.ReactNode
   const pathname = usePathname();
   const { profile, loading } = useProfile();
 
-  if (loading || !profile || canAccessRoute(profile.role, pathname)) {
+  if (loading || !profile || canAccessRoute(profile.role, pathname, profile.moduleOverrides)) {
     return <>{children}</>;
   }
 
