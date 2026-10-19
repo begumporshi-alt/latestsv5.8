@@ -10,6 +10,7 @@
 import { useMemo, useState } from 'react';
 import { Layers, RotateCcw, X } from 'lucide-react';
 import { fmtQty, type AllocatableBatch, type AllocationStrategy } from '@/lib/batch-allocation';
+import { formatCurrency } from '@/lib/format';
 
 export interface EditorBatch {
   batch: AllocatableBatch;
@@ -111,7 +112,7 @@ export function BatchAllocationEditor({
                       <td className="py-1.5 pr-2">
                         <p className="text-xs font-medium text-foreground truncate max-w-[140px]">{batch.batch_number || batch.id.slice(0, 8)}</p>
                         <p className="text-[10px] text-muted-foreground">
-                          @ ৳{fmtQty(batch.unit_cost)}{batch.expiry_date ? ` · exp ${batch.expiry_date}` : ''}
+                          @ {formatCurrency(batch.unit_cost)}{batch.expiry_date ? ` · exp ${batch.expiry_date}` : ''}
                         </p>
                       </td>
                       <td className="py-1.5 pr-2 text-right text-xs text-muted-foreground">{fmtQty(available)}</td>

@@ -1,6 +1,6 @@
 'use client';
 
-import { formatDate } from '@/lib/format';
+import { formatDate, formatAmount } from '@/lib/format';
 
 export interface GrnPrintItem {
   product_name: string;
@@ -45,12 +45,7 @@ const statusConfig: Record<string, { bg: string; color: string }> = {
   cancelled: { bg: '#6b7280', color: '#fff' },
 };
 
-const fmt = (n: number) =>
-  '৳' +
-  Number(n).toLocaleString('en-BD', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+const fmt = (n: number) => '৳' + formatAmount(n);
 
 export default function GrnPrint({
   grnNumber,
@@ -418,9 +413,9 @@ export default function GrnPrint({
                     {item.unit_name || '—'}
                   </td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px' }}>{item.quantity}</td>
-                  <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px' }}>{Number(item.unit_cost).toFixed(2)}</td>
+                  <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px' }}>{formatAmount(Number(item.unit_cost))}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px', fontWeight: '600' }}>
-                    {(Number(item.quantity) * Number(item.unit_cost)).toFixed(2)}
+                    {formatAmount(Number(item.quantity) * Number(item.unit_cost))}
                   </td>
                 </tr>
               ))
@@ -466,7 +461,7 @@ export default function GrnPrint({
                 </div>
                 {costUpdates.map((u, i) => (
                   <div key={i} style={{ fontSize: '10px', color: '#92400e' }}>
-                    {u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}{u.forced ? ' (forced)' : ''}
+                    {u.name}: {fmt(Number(u.before))} → {fmt(Number(u.after))}{u.forced ? ' (forced)' : ''}
                   </div>
                 ))}
               </div>
@@ -478,7 +473,7 @@ export default function GrnPrint({
                 </div>
                 {saleUpdates.map((u, i) => (
                   <div key={i} style={{ fontSize: '10px', color: '#1e40af' }}>
-                    {u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}
+                    {u.name}: {fmt(Number(u.before))} → {fmt(Number(u.after))}
                   </div>
                 ))}
               </div>

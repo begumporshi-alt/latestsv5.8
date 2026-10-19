@@ -2576,7 +2576,7 @@ export default function POSPage() {
                           <span className="text-muted-foreground shrink-0">
                             {fmtQty(a.qty)}{item.selected_unit && item.selected_unit.conversion_factor !== 1 ? ` (${fmtQty(a.qty / item.selected_unit.conversion_factor)} ${item.selected_unit.unit_short || item.selected_unit.unit_name})` : ''}
                           </span>
-                          <span className="text-muted-foreground shrink-0">@ ৳{fmtQty(a.batch.unit_cost)}</span>
+                          <span className="text-muted-foreground shrink-0">@ {formatCurrency(a.batch.unit_cost)}</span>
                         </div>
                       ))}
                       <div className="flex items-center justify-between text-[11px] pt-1 border-t border-border/60">

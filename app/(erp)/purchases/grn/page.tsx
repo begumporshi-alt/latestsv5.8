@@ -632,7 +632,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                   <p className="text-xs font-semibold text-blue-700 mb-1">Sale price updated on product</p>
                   <ul className="text-sm text-blue-900 space-y-0.5">
                     {savedResult.saleUpdates.map((u, i) => (
-                      <li key={i}>{u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}</li>
+                      <li key={i}>{u.name}: {formatCurrency(Number(u.before))} → {formatCurrency(Number(u.after))}</li>
                     ))}
                   </ul>
                 </div>
@@ -642,7 +642,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                   <p className="text-xs font-semibold text-amber-700 mb-1">Cost price updated on product</p>
                   <ul className="text-sm text-amber-900 space-y-0.5">
                     {savedResult.costUpdates.map((u, i) => (
-                      <li key={i}>{u.name}: ৳{Number(u.before).toFixed(2)} → ৳{Number(u.after).toFixed(2)}{u.forced ? ' (forced)' : ''}</li>
+                      <li key={i}>{u.name}: {formatCurrency(Number(u.before))} → {formatCurrency(Number(u.after))}{u.forced ? ' (forced)' : ''}</li>
                     ))}
                   </ul>
                 </div>

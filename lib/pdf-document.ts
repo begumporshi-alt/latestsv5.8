@@ -10,7 +10,7 @@
  * jsPDF built-in fonts have no ৳ glyph, so amounts are labelled "BDT".
  */
 import { jsPDF } from 'jspdf';
-import { formatDate, getCurrencyFormat } from '@/lib/format';
+import { formatDate, formatAmount } from '@/lib/format';
 
 const PRIMARY: [number, number, number] = [30, 58, 110]; // #1e3a6e
 const GREEN: [number, number, number] = [76, 175, 80];
@@ -78,11 +78,7 @@ export interface PdfDocSpec {
   hideItemDiscount?: boolean;
 }
 
-const fmt = (n: number) =>
-  Number(n).toLocaleString(getCurrencyFormat().grouping === 'en' ? 'en-US' : 'en-BD', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+const fmt = (n: number) => formatAmount(n);
 
 async function loadImage(url: string): Promise<{ dataUrl: string; ratio: number } | null> {
   return new Promise((resolve) => {
@@ -498,16 +494,16 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
     doc.text(item.unit_name || '—', colX.unit + col.unit / 2, baseY, { align: 'center' });
     setText(TEXT);
     doc.text(String(item.quantity), colX.qty + col.qty / 2, baseY, { align: 'center' });
-    if (showRateCol) doc.text(Number(item.unit_price).toFixed(2), colX.rate + col.rate, baseY, { align: 'right' });
+    if (showRateCol) doc.text(fmt(Number(item.unit_price)), colX.rate + col.rate, baseY, { align: 'right' });
     if (showDiscCol) {
       setText(MUTED);
       doc.text((item.discount_percent || 0) > 0 ? `${item.discount_percent}%` : '—', colX.disc + col.disc / 2, baseY, { align: 'center' });
       setText(TEXT);
     }
     const netRate = Number(item.unit_price) * (1 - (item.discount_percent || 0) / 100);
-    doc.text(netRate.toFixed(2), colX.netRate + col.netRate, baseY, { align: 'right' });
+    doc.text(fmt(netRate), colX.netRate + col.netRate, baseY, { align: 'right' });
     doc.setFont('helvetica', 'bold');
-    doc.text(Number(item.subtotal).toFixed(2), colX.amount + col.amount, baseY, { align: 'right' });
+    doc.text(fmt(Number(item.subtotal)), colX.amount + col.amount, baseY, { align: 'right' });
     doc.setFont('helvetica', 'normal');
 
     y = baseY - 3.2 + rowH + 3.2;
