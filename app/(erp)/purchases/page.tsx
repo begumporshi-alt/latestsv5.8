@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { tokenizeSearch, matchValues, rankRows } from '@/lib/search';
 import { fetchAll } from '@/lib/fetch-all';
 import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 import { toast } from '@/hooks/use-toast';
@@ -535,12 +536,17 @@ export default function PurchasesPage() {
   }
 
   const dateRange = getDateRange();
-  const filtered = orders.filter(o => {
-    const matchSearch = !search || o.po_number.toLowerCase().includes(search.toLowerCase()) || o.supplier?.name?.toLowerCase().includes(search.toLowerCase());
-    const matchStatus = !filterStatus || o.status === filterStatus;
-    const matchDate = !dateRange || (o.order_date >= dateRange.from && o.order_date <= dateRange.to);
-    return matchSearch && matchStatus && matchDate;
-  });
+  const searchTokens = tokenizeSearch(search);
+  const filtered = rankRows(
+    orders.filter(o => {
+      const matchSearch = !search || matchValues([o.po_number, o.supplier?.name], searchTokens);
+      const matchStatus = !filterStatus || o.status === filterStatus;
+      const matchDate = !dateRange || (o.order_date >= dateRange.from && o.order_date <= dateRange.to);
+      return matchSearch && matchStatus && matchDate;
+    }),
+    o => [o.po_number, o.supplier?.name || ''],
+    searchTokens,
+  );
 
   // Reset to page 1 when filters change
   useEffect(() => { setCurrentPage(1); }, [search, filterStatus, dateFilter, customDateFrom, customDateTo]);

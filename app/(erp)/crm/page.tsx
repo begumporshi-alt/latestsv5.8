@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { tokenizeSearch, matchesTokens, rankRows } from '@/lib/search';
 import { toast } from '@/hooks/use-toast';
 import { Users, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, X, HardHat, Building2, Star, Palette, Eye, RotateCcw, Filter, ChevronDown, HandCoins, ChevronLeft, ChevronRight, FileDown, TriangleAlert as AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
@@ -235,17 +236,11 @@ export default function CRMPage() {
   }, [filterPeriod]);
 
   const filtered = useMemo(() => {
-    return customers.filter(c => {
-      // Text search: name, phone, email, city, code
-      if (search) {
-        const s = search.toLowerCase();
-        const matches = c.name.toLowerCase().includes(s) ||
-          (c.phone || '').includes(s) ||
-          (c.email || '').toLowerCase().includes(s) ||
-          (c.city || '').toLowerCase().includes(s) ||
-          (c.code || '').toLowerCase().includes(s);
-        if (!matches) return false;
-      }
+    const tokens = tokenizeSearch(search);
+    const searchCols = ['name', 'phone', 'email', 'city', 'code'];
+    const list = customers.filter(c => {
+      // Text search: name, phone, email, city, code (order-independent tokens)
+      if (search && !matchesTokens(c, searchCols, tokens)) return false;
       if (filterType && c.type !== filterType) return false;
       if (filterCity && (c.city || '').trim().toLowerCase() !== filterCity.toLowerCase()) return false;
       if (periodCutoff && c.created_at && new Date(c.created_at) < new Date(periodCutoff)) return false;
@@ -267,6 +262,8 @@ export default function CRMPage() {
 
       return true;
     });
+    if (!search || tokens.length === 0) return list;
+    return rankRows(list, c => [c.name, c.phone || '', c.email || '', c.city || '', c.code || ''], tokens);
   }, [customers, search, filterType, filterCity, filterOutstandingType, outstandingMin, outstandingMax, creditMin, creditMax, periodCutoff]);
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatDate } from '@/lib/format';
+import { tokenizeSearch, matchValues, rankRows } from '@/lib/search';
 import { toast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
@@ -161,16 +162,21 @@ export default function DeliveryPage() {
     }
   }
 
-  const filtered = deliveries.filter(d => {
-    if (search && !d.delivery_number.toLowerCase().includes(search.toLowerCase()) && !d.customer?.name?.toLowerCase().includes(search.toLowerCase())) return false;
-    if (filterStatus && d.status !== filterStatus) return false;
-    if (filterCustomer && d.customer_id !== filterCustomer) return false;
-    if (filterDateFrom && d.delivery_date && d.delivery_date < filterDateFrom) return false;
-    if (filterDateTo && d.delivery_date && d.delivery_date > filterDateTo) return false;
-    if (filterDateFrom && !d.delivery_date) return false;
-    if (filterDateTo && !d.delivery_date) return false;
-    return true;
-  })
+  const searchTokens = tokenizeSearch(search);
+  const filtered = rankRows(
+    deliveries.filter(d => {
+      if (search && !matchValues([d.delivery_number, d.customer?.name], searchTokens)) return false;
+      if (filterStatus && d.status !== filterStatus) return false;
+      if (filterCustomer && d.customer_id !== filterCustomer) return false;
+      if (filterDateFrom && d.delivery_date && d.delivery_date < filterDateFrom) return false;
+      if (filterDateTo && d.delivery_date && d.delivery_date > filterDateTo) return false;
+      if (filterDateFrom && !d.delivery_date) return false;
+      if (filterDateTo && !d.delivery_date) return false;
+      return true;
+    }),
+    d => [d.delivery_number, d.customer?.name || ''],
+    searchTokens,
+  )
   const [delPage, setDelPage] = useState(1);
   const [delPageSize, setDelPageSize] = useState(25);
   const pagedFiltered = filtered.slice((delPage - 1) * delPageSize, delPage * delPageSize);;

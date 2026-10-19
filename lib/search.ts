@@ -63,7 +63,13 @@ export function applyIlikeTokens<T extends OrBuilder<T>>(query: T, columns: stri
  */
 export function matchesTokens(row: Record<string, any>, columns: string[], tokens: string[]): boolean {
   if (tokens.length === 0) return true;
-  const hay = columns.map((c) => String(row?.[c] ?? '').toLowerCase());
+  return matchValues(columns.map((c) => row?.[c]), tokens);
+}
+
+/** Same predicate as matchesTokens, for already-extracted values (handles nested fields). */
+export function matchValues(values: unknown[], tokens: string[]): boolean {
+  if (tokens.length === 0) return true;
+  const hay = values.map((v) => String(v ?? '').toLowerCase());
   return tokens.every((t) => hay.some((h) => h.includes(t)));
 }
 

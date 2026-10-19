@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { tokenizeSearch, matchValues, rankRows } from '@/lib/search';
 import { UnitInput } from '@/components/ui/unit-input';
 import { openWhatsApp, openEmail, sharePdfFile, downloadFile } from '@/lib/share';
 import { buildDocumentPdf } from '@/lib/pdf-document';
@@ -227,14 +228,19 @@ export default function QuotationsPage() {
     loadData();
   }
 
-  const filtered = quotations.filter(q => {
-    if (search && !q.quote_number.toLowerCase().includes(search.toLowerCase()) && !q.customer?.name?.toLowerCase().includes(search.toLowerCase()) && !((q as any).reference || '').toLowerCase().includes(search.toLowerCase())) return false;
-    if (filterStatus && q.status !== filterStatus) return false;
-    if (filterCustomer && q.customer_id !== filterCustomer) return false;
-    if (filterDateFrom && q.issue_date < filterDateFrom) return false;
-    if (filterDateTo && q.issue_date > filterDateTo) return false;
-    return true;
-  });
+  const searchTokens = tokenizeSearch(search);
+  const filtered = rankRows(
+    quotations.filter(q => {
+      if (search && !matchValues([q.quote_number, q.customer?.name, (q as any).reference], searchTokens)) return false;
+      if (filterStatus && q.status !== filterStatus) return false;
+      if (filterCustomer && q.customer_id !== filterCustomer) return false;
+      if (filterDateFrom && q.issue_date < filterDateFrom) return false;
+      if (filterDateTo && q.issue_date > filterDateTo) return false;
+      return true;
+    }),
+    q => [q.quote_number, q.customer?.name || '', (q as any).reference || ''],
+    searchTokens,
+  );
 
   // Fetch product-filtered quotation IDs when filterProduct changes
   useEffect(() => {
