@@ -54,6 +54,13 @@ export default function PurchasesPage() {
   const [cancellingOrder, setCancellingOrder] = useState<PurchaseOrderWithSupplier | null>(null);
   const [poReturns, setPoReturns] = useState<Record<string, { return_number: string; total_amount: number }[]>>({});
 
+  // Deep-link support: /purchases?search=PO-123 pre-fills the search box
+  // (used by the header global search for record links).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get('search');
+    if (q) setSearch(q);
+  }, []);
+
   // Date filter state
   const [dateFilter, setDateFilter] = useState<'all' | 'today' | 'week' | 'month' | 'quarter' | 'year' | 'custom'>('all');
   const [customDateFrom, setCustomDateFrom] = useState('');

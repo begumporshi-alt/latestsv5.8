@@ -73,6 +73,13 @@ export default function QuotationsPage() {
   const [companySettings, setCompanySettings] = useState<any>({});
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
 
+  // Deep-link support: /quotations?search=QT-123 pre-fills the search box
+  // (used by the header global search for record links).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get('search');
+    if (q) setSearch(q);
+  }, []);
+
   useEffect(() => { loadData(); }, []);
 
   // Reference data (products with units + inventory, customers, warehouses,
