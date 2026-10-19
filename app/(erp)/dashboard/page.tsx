@@ -726,73 +726,105 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
   const [invPage, setInvPage] = useState(1);
   const [invTotal, setInvTotal] = useState(0);
   const [invData, setInvData] = useState<any[]>([]);
-  const [invPageTotal, setInvPageTotal] = useState(0);
+  const [invGrandTotal, setInvGrandTotal] = useState(0);
 
   const [manPage, setManPage] = useState(1);
   const [manTotal, setManTotal] = useState(0);
   const [manData, setManData] = useState<any[]>([]);
-  const [manPageTotal, setManPageTotal] = useState(0);
+  const [manGrandTotal, setManGrandTotal] = useState(0);
 
   useEffect(() => { if (tab === 'invoice') loadInvoices(); }, [invPage, search, filterStatus, tab]);
   useEffect(() => { if (tab === 'manual') loadManual(); }, [manPage, search, tab]);
 
   async function loadInvoices() {
     setLoading(true);
-    let baseQuery = supabase
-      .from('invoices')
-      .select('id, invoice_number, reference, customer:customers(name), status, invoice_date, due_date, total_amount, amount_paid, balance_due', { count: 'exact' })
-      .in('status', ['sent', 'partially_paid', 'overdue'])
-      .gt('balance_due', 0)
-      .order('invoice_date', { ascending: false });
+    const today = new Date().toISOString().slice(0, 10);
+    const term = search.trim().replace(/[%_,()]/g, '');
 
-    if (filterStatus) baseQuery = baseQuery.eq('status', filterStatus);
-
-    const from = (invPage - 1) * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-    const { data, count } = await baseQuery.range(from, to);
-
-    let filtered = data || [];
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      filtered = filtered.filter((i: any) => i.invoice_number?.toLowerCase().includes(q) || (i.customer?.name || '').toLowerCase().includes(q) || (i.reference || '').toLowerCase().includes(q));
+    // Search runs server-side (filtering after .range() would only search the
+    // current page); customer names are resolved to ids because PostgREST
+    // text-search arms can't reliably target aliased embeds.
+    let orClause: string | null = null;
+    if (term) {
+      const { data: custs } = await supabase.from('customers').select('id').ilike('name', `%${term}%`);
+      const idList = (custs || []).map((c: any) => c.id).join(',');
+      orClause = `invoice_number.ilike.%${term}%,reference.ilike.%${term}%${idList ? `,customer_id.in.(${idList})` : ''}`;
     }
 
-    setInvData(filtered);
-    setInvTotal(count || 0);
-    setInvPageTotal(filtered.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0));
+    function buildInvoiceQuery(select: string, opts?: { count?: 'exact' }) {
+      let q = supabase
+        .from('invoices')
+        .select(select, opts)
+        .in('status', ['sent', 'partially_paid', 'overdue'])
+        .gt('balance_due', 0);
+
+      // 'overdue' is never stored (overdue is computed from due_date), so the
+      // filter must match on the due date instead of the status column.
+      if (filterStatus === 'overdue') q = q.lt('due_date', today);
+      else if (filterStatus) q = q.eq('status', filterStatus);
+      if (orClause) q = q.or(orClause);
+      return q;
+    }
+
+    const from = (invPage - 1) * PAGE_SIZE;
+    const [pageRes, allRes] = await Promise.all([
+      buildInvoiceQuery('id, invoice_number, reference, customer:customers(name), status, invoice_date, due_date, total_amount, amount_paid, balance_due', { count: 'exact' })
+        .order('invoice_date', { ascending: false })
+        .range(from, from + PAGE_SIZE - 1),
+      buildInvoiceQuery('balance_due'),
+    ]);
+    if (pageRes.error) toast({ title: 'Error', description: pageRes.error.message, variant: 'destructive' });
+
+    setInvData(pageRes.data || []);
+    setInvTotal(pageRes.count || 0);
+    setInvGrandTotal((allRes.data || []).reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0));
     setLoading(false);
   }
 
   async function loadManual() {
     setLoading(true);
-    let baseQuery = supabase
-      .from('journal_entries')
-      .select('id, entry_number, entry_date, description, total_debit, total_credit, customer:customers(name)', { count: 'exact' })
-      .eq('reference_type', 'receivable')
-      .eq('is_posted', true)
-      .gt('total_debit', 0)
-      .order('entry_date', { ascending: false });
+    const [{ data: jes, error }, { data: pays }] = await Promise.all([
+      supabase
+        .from('journal_entries')
+        .select('id, entry_number, entry_date, description, total_debit, customer:customers(name)')
+        .eq('reference_type', 'receivable')
+        .eq('is_posted', true)
+        .gt('total_debit', 0)
+        .order('entry_date', { ascending: false }),
+      supabase
+        .from('payments')
+        .select('reference_id, amount, bad_debt_amount')
+        .eq('reference_type', 'receivable')
+        .neq('is_reversed', true),
+    ]);
+    if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
 
-    const from = (manPage - 1) * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-    const { data, count } = await baseQuery.range(from, to);
+    // Manual receivable JEs are recorded balanced (debit = credit) and
+    // collections post to separate journal entries, so outstanding is
+    // total_debit minus collected payments — never total_debit - total_credit.
+    const paidMap = new Map<string, number>();
+    (pays || []).forEach((p: any) => {
+      if (!p.reference_id) return;
+      paidMap.set(p.reference_id, (paidMap.get(p.reference_id) || 0) + Number(p.amount || 0) + Number(p.bad_debt_amount || 0));
+    });
 
-    let filtered = (data || []).map((je: any) => ({
-      ...je,
-      net_amount: Number(je.total_debit || 0) - Number(je.total_credit || 0),
-    }));
+    let rows = (jes || []).map((je: any) => {
+      const paid = paidMap.get(je.id) || 0;
+      return { ...je, paid, net_amount: Number(je.total_debit || 0) - paid };
+    }).filter((je: any) => je.net_amount > 0.01);
+
     if (search.trim()) {
       const q = search.toLowerCase();
-      filtered = filtered.filter((je: any) =>
+      rows = rows.filter((je: any) =>
         je.entry_number?.toLowerCase().includes(q) ||
         (je.description || '').toLowerCase().includes(q) ||
         (je.customer?.name || '').toLowerCase().includes(q)
       );
     }
 
-    setManData(filtered);
-    setManTotal(count || 0);
-    setManPageTotal(filtered.reduce((s: number, j: any) => s + j.net_amount, 0));
+    setManData(rows.slice((manPage - 1) * PAGE_SIZE, manPage * PAGE_SIZE));
+    setManTotal(rows.length);
+    setManGrandTotal(rows.reduce((s: number, j: any) => s + j.net_amount, 0));
     setLoading(false);
   }
 
@@ -822,12 +854,12 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
               <p className="text-lg font-bold text-red-700">{formatCurrency(totalReceivables)}</p>
             </div>
             <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
-              <p className="text-xs text-blue-600 font-medium">From Invoices (this page)</p>
-              <p className="text-lg font-bold text-blue-700">{formatCurrency(invPageTotal)}</p>
+              <p className="text-xs text-blue-600 font-medium">From Invoices</p>
+              <p className="text-lg font-bold text-blue-700">{formatCurrency(invGrandTotal)}</p>
             </div>
             <div className="bg-purple-50 rounded-lg p-3 border border-purple-100">
-              <p className="text-xs text-purple-600 font-medium">Manual Receivables (this page)</p>
-              <p className="text-lg font-bold text-purple-700">{formatCurrency(manPageTotal)}</p>
+              <p className="text-xs text-purple-600 font-medium">Manual Receivables</p>
+              <p className="text-lg font-bold text-purple-700">{formatCurrency(manGrandTotal)}</p>
             </div>
           </div>
 
@@ -899,8 +931,8 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
                   <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Customer</th>
                   <th className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">Date</th>
                   <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Debit</th>
-                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Credit</th>
-                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Net Amount</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Paid</th>
+                  <th className="text-right text-xs font-semibold text-muted-foreground px-4 py-3">Outstanding</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -915,7 +947,7 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
                     <td className="px-4 py-3 text-sm text-muted-foreground">{je.customer?.name || '—'}</td>
                     <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(je.entry_date).toLocaleDateString()}</td>
                     <td className="px-4 py-3 text-right text-sm text-foreground">{formatCurrency(je.total_debit)}</td>
-                    <td className="px-4 py-3 text-right text-sm text-muted-foreground">{formatCurrency(je.total_credit)}</td>
+                    <td className="px-4 py-3 text-right text-sm text-green-600">{formatCurrency(je.paid)}</td>
                     <td className="px-4 py-3 text-right text-sm font-bold text-purple-600">{formatCurrency(je.net_amount)}</td>
                   </tr>
                 ))}
