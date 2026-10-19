@@ -67,6 +67,12 @@ export function formatAxisCurrency(value: number): string {
   return formatCurrencyWith(value, { ...currencyFormat, symbol: '' });
 }
 
+/** Amounts inside documents and tables: grouped, never compacted ("1.14Cr"
+ *  would be wrong on a line item), decimals follow the company setting. */
+export function formatAmount(n: number | null | undefined): string {
+  return formatCurrencyWith(n, { ...currencyFormat, symbol: '', large_display: 'full' });
+}
+
 export function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-GB', {
     day: '2-digit',

@@ -1,6 +1,6 @@
 'use client';
 
-import { formatDate } from '@/lib/format';
+import { formatDate, formatAmount } from '@/lib/format';
 
 export interface PrintItem {
   product_name: string;
@@ -85,12 +85,7 @@ export interface PrintTemplateProps {
 const PRIMARY = '#1e3a6e';
 const GREEN = '#4caf50';
 
-const fmt = (n: number) =>
-  '৳' +
-  Number(n).toLocaleString('en-BD', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+const fmt = (n: number) => '৳' + formatAmount(n);
 
 function QRPlaceholder() {
   const blocks = [
@@ -621,7 +616,7 @@ export default function PrintTemplate({
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>{item.unit_name || '—'}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px' }}>{item.quantity}</td>
                   {!hideRate && (
-                    <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px' }}>{Number(item.unit_price).toFixed(2)}</td>
+                    <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px' }}>{formatAmount(Number(item.unit_price))}</td>
                   )}
                   {!hideDiscountPercent && (
                     <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>
@@ -629,10 +624,10 @@ export default function PrintTemplate({
                     </td>
                   )}
                   <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px', fontWeight: '600', color: PRIMARY }}>
-                    {(Number(item.unit_price) * (1 - (item.discount_percent || 0) / 100)).toFixed(2)}
+                    {formatAmount(Number(item.unit_price) * (1 - (item.discount_percent || 0) / 100))}
                   </td>
                   <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px', fontWeight: '600' }}>
-                    {Number(item.subtotal).toFixed(2)}
+                    {formatAmount(Number(item.subtotal))}
                   </td>
                 </tr>
               ))

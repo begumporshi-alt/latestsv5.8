@@ -1,6 +1,6 @@
 'use client';
 
-import { formatDate } from '@/lib/format';
+import { formatDate, formatAmount } from '@/lib/format';
 
 export interface PurchaseOrderPrintItem {
   product_name: string;
@@ -54,12 +54,7 @@ const statusConfig: Record<string, { bg: string; color: string }> = {
   cancelled:           { bg: '#6b7280', color: '#fff' },
 };
 
-const fmt = (n: number) =>
-  '৳' +
-  Number(n).toLocaleString('en-BD', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+const fmt = (n: number) => '৳' + formatAmount(n);
 
 export default function PurchaseOrderPrint({
   poNumber,
@@ -431,12 +426,12 @@ export default function PurchaseOrderPrint({
                     {item.unit_name || '—'}
                   </td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px' }}>{item.quantity}</td>
-                  <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px' }}>{Number(item.unit_price).toFixed(2)}</td>
+                  <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px' }}>{formatAmount(Number(item.unit_price))}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>
                     {(item.discount_percent || 0) > 0 ? `${item.discount_percent}%` : '—'}
                   </td>
                   <td style={{ padding: '3px 8px', textAlign: 'right', fontSize: '11px', fontWeight: '600' }}>
-                    {Number(item.subtotal).toFixed(2)}
+                    {formatAmount(Number(item.subtotal))}
                   </td>
                 </tr>
               ))
