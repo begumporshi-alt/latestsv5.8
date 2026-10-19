@@ -111,7 +111,7 @@ export default function QuickActionDrawer() {
   const visibleGroupedActions = Object.fromEntries(
     Object.entries(groupedActions).map(([category, actions]) => [
       category,
-      actions.filter(a => a.kind === 'catalog' || canAccessRoute(profile?.role, a.href)),
+      actions.filter(a => a.kind === 'catalog' || canAccessRoute(profile?.role, a.href, profile?.moduleOverrides)),
     ]),
   );
 

@@ -127,8 +127,8 @@ export default function Sidebar({ collapsed }: SidebarProps) {
   const [reminderCount, setReminderCount] = useState(0);
 
   const visibleItems = navItems.filter((item) => {
-    if (item.href) return canAccessRoute(profile?.role, item.href);
-    return item.children?.some((c) => canAccessRoute(profile?.role, c.href)) ?? false;
+    if (item.href) return canAccessRoute(profile?.role, item.href, profile?.moduleOverrides);
+    return item.children?.some((c) => canAccessRoute(profile?.role, c.href, profile?.moduleOverrides)) ?? false;
   });
 
   useEffect(() => {
