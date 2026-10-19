@@ -22,6 +22,7 @@ import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
 import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/credit-gate';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
+import { tokenizeSearch, matchValues, rankRows } from '@/lib/search';
 import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
 import InvoicePreviewModal from '@/components/InvoicePreviewModal';
@@ -488,9 +489,11 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     }
   }
 
-  const filtered = invoices.filter(i => {
-    // Basic filters
-    if (search && !i.invoice_number.toLowerCase().includes(search.toLowerCase()) && !i.customer?.name?.toLowerCase().includes(search.toLowerCase()) && !(i.reference || '').toLowerCase().includes(search.toLowerCase()) && !(i.client_temp_number || '').toLowerCase().includes(search.toLowerCase())) return false;
+  const searchTokens = tokenizeSearch(search);
+  const filtered = rankRows(
+    invoices.filter(i => {
+      // Basic filters
+      if (search && !matchValues([i.invoice_number, i.customer?.name, i.reference, i.client_temp_number], searchTokens)) return false;
     if (filterStatus === 'refundable') {
       // Invoices eligible for return (paid or partially paid, with remaining balance)
       if (i.status !== 'paid' && i.status !== 'partially_paid') return false;
@@ -512,7 +515,10 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     if (filterCustomer && i.customer_id !== filterCustomer) return false;
 
     return true;
-  });
+    }),
+    i => [i.invoice_number, i.customer?.name || '', i.reference || '', i.client_temp_number || ''],
+    searchTokens,
+  );
 
   // Fetch product-filtered invoice IDs when filterProduct changes
   useEffect(() => {
@@ -3796,11 +3802,16 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
     load();
   }, []);
 
-  const filtered = invoices.filter(inv => {
-    const matchSearch = !search || inv.invoice_number.toLowerCase().includes(search.toLowerCase()) || (inv.customer?.name || '').toLowerCase().includes(search.toLowerCase()) || (inv.reference || '').toLowerCase().includes(search.toLowerCase()) || (inv.client_temp_number || '').toLowerCase().includes(search.toLowerCase());
-    const matchStatus = !filterStatus || (filterStatus === 'overdue' ? isInvoiceOverdue(inv) : inv.status === filterStatus);
-    return matchSearch && matchStatus;
-  });
+  const searchTokens2 = tokenizeSearch(search);
+  const filtered = rankRows(
+    invoices.filter(inv => {
+      const matchSearch = !search || matchValues([inv.invoice_number, inv.customer?.name, inv.reference, inv.client_temp_number], searchTokens2);
+      const matchStatus = !filterStatus || (filterStatus === 'overdue' ? isInvoiceOverdue(inv) : inv.status === filterStatus);
+      return matchSearch && matchStatus;
+    }),
+    inv => [inv.invoice_number, inv.customer?.name || '', inv.reference || '', inv.client_temp_number || ''],
+    searchTokens2,
+  );
 
   const totalOutstanding = filtered.reduce((s, i) => s + Number(i.balance_due || 0), 0);
   const overdueCount = filtered.filter(i => isInvoiceOverdue(i)).length;

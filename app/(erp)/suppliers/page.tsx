@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { tokenizeSearch, matchesTokens, rankRows } from '@/lib/search';
 import { toast } from '@/hooks/use-toast';
 import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, FileDown, CircleAlert as AlertCircle } from 'lucide-react';
 import Link from 'next/link';
@@ -42,15 +43,15 @@ export default function SuppliersPage() {
     }
   }
 
-  const filtered = suppliers.filter(s =>
-    (!search ||
-      s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.code.toLowerCase().includes(search.toLowerCase()) ||
-      (s.phone || '').toLowerCase().includes(search.toLowerCase()) ||
-      (s.email || '').toLowerCase().includes(search.toLowerCase()) ||
-      (s.city || '').toLowerCase().includes(search.toLowerCase())
-    ) &&
-    (filterStatus === 'all' || (filterStatus === 'active' && s.is_active) || (filterStatus === 'inactive' && !s.is_active))
+  const searchTokens = tokenizeSearch(search);
+  const supplierSearchCols = ['name', 'code', 'phone', 'email', 'city'];
+  const filtered = rankRows(
+    suppliers.filter(s =>
+      (!search || matchesTokens(s, supplierSearchCols, searchTokens)) &&
+      (filterStatus === 'all' || (filterStatus === 'active' && s.is_active) || (filterStatus === 'inactive' && !s.is_active))
+    ),
+    s => [s.name, s.code || '', s.phone || '', s.email || '', s.city || ''],
+    searchTokens,
   );
 
   const activeSuppliers = suppliers.filter(s => s.is_active);

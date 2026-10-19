@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { tokenizeSearch, matchesTokens, rankRows } from '@/lib/search';
 import { toast } from '@/hooks/use-toast';
 import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
@@ -87,9 +88,14 @@ export default function ProjectsPage() {
     setDeletingProject(null);
   }
 
-  const filtered = projects.filter(p =>
-    (!search || p.name.toLowerCase().includes(search.toLowerCase())) &&
-    (!filterStatus || p.status === filterStatus)
+  const searchTokens = tokenizeSearch(search);
+  const filtered = rankRows(
+    projects.filter(p =>
+      (!search || matchesTokens(p, ['name'], searchTokens)) &&
+      (!filterStatus || p.status === filterStatus)
+    ),
+    p => [p.name],
+    searchTokens,
   );
 
   const stats = {
