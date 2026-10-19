@@ -4,12 +4,12 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { cachedQuery } from '@/lib/offline/cache';
-import { formatCurrency, formatRelativeTime, formatDate } from '@/lib/format';
+import { formatCurrency, formatAxisCurrency, formatRelativeTime, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { getInventoryValue } from '@/lib/inventory-value';
 import {
-  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+  PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer
 } from 'recharts';
 import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown, TriangleAlert as AlertTriangle } from 'lucide-react';
 import AppPagination from '@/components/ui/AppPagination';
@@ -243,33 +243,33 @@ export default function DashboardPage() {
   }
 
   async function getSalesChartData() {
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
-    const result: { month: string; sales: number; profit: number }[] = [];
+    // Rolling last-6-months window ending with the current month — the old
+    // version hardcoded Jan–Jun, so from July onward the chart never showed
+    // current data. sales_monthly (same source as /reports/sales) returns
+    // real revenue and COGS-based cost; the old profit line was a flat 35%
+    // estimate. toISODate avoids the GMT+6 toISOString date shift.
+    const now = new Date();
+    const toISODate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const start = toISODate(new Date(now.getFullYear(), now.getMonth() - 5, 1));
+    const end = toISODate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    const { data } = await supabase.rpc('sales_monthly', { p_start_date: start, p_end_date: end });
+    const byMonth = new Map(((data || []) as any[]).map((r: any) => [r.month, r]));
 
-    // Six month windows fetched in parallel — this used to be a sequential
-    // loop, adding six round trips to every dashboard load.
-    const ranges = months.map((_, i) => ({
-      start: new Date(new Date().getFullYear(), i, 1).toISOString().split('T')[0],
-      end: new Date(new Date().getFullYear(), i + 1, 0).toISOString().split('T')[0],
-    }));
-    const invoicesByMonth = await Promise.all(
-      ranges.map(({ start, end }) =>
-        supabase
-          .from('invoices')
-          .select('total_amount, subtotal')
-          .gte('invoice_date', start)
-          .lt('invoice_date', end)
-          .neq('status', 'cancelled')
-      )
-    );
+    const months: { key: string; label: string }[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push({
+        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+        label: d.toLocaleString('en-US', { month: 'short' }),
+      });
+    }
 
-    invoicesByMonth.forEach(({ data: invoices }, i) => {
-      const totalSales = (invoices || []).reduce((s: number, inv: any) => s + Number(inv.total_amount), 0);
-      const estimatedProfit = totalSales * 0.35;
-      result.push({ month: months[i], sales: totalSales, profit: estimatedProfit });
+    return months.map(({ key, label }) => {
+      const row = byMonth.get(key) as any;
+      const revenue = Number(row?.revenue || 0);
+      const cost = Number(row?.cost || 0);
+      return { month: label, sales: revenue, profit: revenue - cost };
     });
-
-    return result;
   }
 
   async function getCategoryData() {
@@ -386,21 +386,16 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-foreground">Sales Overview</h3>
           </div>
-          <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={salesChartData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.15} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                </linearGradient>
-              </defs>
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={salesChartData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
               <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => formatCurrency(Number(v))} />
-              <Tooltip contentStyle={{ fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8 }} formatter={(v: number) => [formatCurrency(v), '']} />
-              <Area type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2.5} fill="url(#salesGrad)" dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }} name="Sales" />
-              <Area type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} fill="none" dot={{ r: 3, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }} name="Profit" />
-            </AreaChart>
+              <YAxis width={78} tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => formatAxisCurrency(Number(v))} />
+              <Legend verticalAlign="top" height={24} iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+              <Tooltip contentStyle={{ fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8 }} formatter={(v: number, name: string) => [formatCurrency(v), name]} />
+              <Line type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2.5} dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }} name="Sales" />
+              <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} dot={{ r: 3, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }} name="Gross Profit" />
+            </LineChart>
           </ResponsiveContainer>
         </div>
 
