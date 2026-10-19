@@ -47,6 +47,13 @@ export default function DeliveryPage() {
   const [challanLoading, setChallanLoading] = useState(false);
   const challanPrintRef = useRef<HTMLDivElement>(null);
 
+  // Deep-link support: /delivery?search=DV-123 pre-fills the search box
+  // (used by the header global search for record links).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get('search');
+    if (q) setSearch(q);
+  }, []);
+
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {

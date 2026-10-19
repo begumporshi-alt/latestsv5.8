@@ -40,6 +40,13 @@ export default function ProjectsPage() {
   const [editingProject, setEditingProject] = useState<ProjectWithCustomer | null>(null);
   const [deletingProject, setDeletingProject] = useState<ProjectWithCustomer | null>(null);
 
+  // Deep-link support: /projects?search=... pre-fills the search box
+  // (used by the header global search for record links).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get('search');
+    if (q) setSearch(q);
+  }, []);
+
   useEffect(() => { loadData(); }, []);
 
   async function loadData() {

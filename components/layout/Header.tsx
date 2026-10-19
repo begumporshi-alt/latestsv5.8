@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { getInitials } from '@/lib/format';
 import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
-import { Search, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart } from 'lucide-react';
+import { Search, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart, AlertCircle } from 'lucide-react';
 import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
@@ -22,6 +22,7 @@ interface HeaderProps {
 }
 
 interface SearchResult {
+  id: string;
   type: string;
   label: string;
   sub: string;
@@ -30,15 +31,37 @@ interface SearchResult {
   color: string;
 }
 
-const searchSources: { table: string; labelCol: string; subCol?: string; searchCols: string[]; type: string; href: string; icon: React.ElementType; color: string }[] = [
-  { table: 'customers', labelCol: 'name', subCol: 'code', searchCols: ['name', 'code', 'phone'], type: 'Customer', href: '/crm', icon: Users, color: 'text-teal-600 bg-teal-50' },
-  { table: 'products', labelCol: 'name', subCol: 'sku', searchCols: ['name', 'sku'], type: 'Product', href: '/inventory', icon: Package, color: 'text-blue-600 bg-blue-50' },
-  { table: 'invoices', labelCol: 'invoice_number', subCol: 'status', searchCols: ['invoice_number'], type: 'Invoice', href: '/sales', icon: Receipt, color: 'text-green-600 bg-green-50' },
-  { table: 'quotations', labelCol: 'quote_number', subCol: 'status', searchCols: ['quote_number'], type: 'Quotation', href: '/quotations', icon: FileText, color: 'text-orange-600 bg-orange-50' },
-  { table: 'purchase_orders', labelCol: 'po_number', subCol: 'status', searchCols: ['po_number'], type: 'Purchase', href: '/purchases', icon: ShoppingBag, color: 'text-purple-600 bg-purple-50' },
-  { table: 'deliveries', labelCol: 'delivery_number', subCol: 'status', searchCols: ['delivery_number'], type: 'Delivery', href: '/delivery', icon: Truck, color: 'text-pink-600 bg-pink-50' },
-  { table: 'projects', labelCol: 'name', subCol: 'status', searchCols: ['name'], type: 'Project', href: '/projects', icon: FolderKanban, color: 'text-indigo-600 bg-indigo-50' },
+const searchSources: { table: string; labelCol: string; subCol?: string; searchCols: string[]; type: string; hrefFor: (row: any) => string; icon: React.ElementType; color: string }[] = [
+  { table: 'customers', labelCol: 'name', subCol: 'code', searchCols: ['name', 'code', 'phone'], type: 'Customer', hrefFor: (row) => `/crm/${row.id}`, icon: Users, color: 'text-teal-600 bg-teal-50' },
+  { table: 'products', labelCol: 'name', subCol: 'sku', searchCols: ['name', 'sku'], type: 'Product', hrefFor: (row) => `/inventory/${row.id}`, icon: Package, color: 'text-blue-600 bg-blue-50' },
+  { table: 'invoices', labelCol: 'invoice_number', subCol: 'status', searchCols: ['invoice_number'], type: 'Invoice', hrefFor: (row) => `/sales?search=${encodeURIComponent(row.invoice_number)}`, icon: Receipt, color: 'text-green-600 bg-green-50' },
+  { table: 'quotations', labelCol: 'quote_number', subCol: 'status', searchCols: ['quote_number'], type: 'Quotation', hrefFor: (row) => `/quotations?search=${encodeURIComponent(row.quote_number)}`, icon: FileText, color: 'text-orange-600 bg-orange-50' },
+  { table: 'purchase_orders', labelCol: 'po_number', subCol: 'status', searchCols: ['po_number'], type: 'Purchase', hrefFor: (row) => `/purchases?search=${encodeURIComponent(row.po_number)}`, icon: ShoppingBag, color: 'text-purple-600 bg-purple-50' },
+  { table: 'deliveries', labelCol: 'delivery_number', subCol: 'status', searchCols: ['delivery_number'], type: 'Delivery', hrefFor: (row) => `/delivery?search=${encodeURIComponent(row.delivery_number)}`, icon: Truck, color: 'text-pink-600 bg-pink-50' },
+  { table: 'projects', labelCol: 'name', subCol: 'status', searchCols: ['name'], type: 'Project', hrefFor: (row) => `/projects?search=${encodeURIComponent(row.name)}`, icon: FolderKanban, color: 'text-indigo-600 bg-indigo-50' },
 ];
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const kbdHint = isMac ? '⌘K' : 'Ctrl+K';
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function HighlightLabel({ text, query }: { text: string; query: string }) {
+  const tokens = tokenizeSearch(query);
+  if (!tokens.length) return <>{text}</>;
+  const re = new RegExp(`(${tokens.map(escapeRegExp).join('|')})`, 'ig');
+  return (
+    <>
+      {text.split(re).map((part, i) =>
+        tokens.includes(part.toLowerCase())
+          ? <mark key={i} className="bg-blue-100 text-blue-700 rounded-sm px-0.5">{part}</mark>
+          : <span key={i}>{part}</span>
+      )}
+    </>
+  );
+}
 
 export default function Header({ onMenuToggle }: HeaderProps) {
   const router = useRouter();
@@ -48,9 +71,12 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [showScanner, setShowScanner] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSeq = useRef(0);
   const { count: cartCount, addToCart } = useGlobalCart();
 
   useEffect(() => {
@@ -91,11 +117,14 @@ export default function Header({ onMenuToggle }: HeaderProps) {
         e.preventDefault();
         const input = searchRef.current?.querySelector('input');
         input?.focus();
+        input?.select();
         setShowResults(true);
       }
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && document.activeElement === searchRef.current?.querySelector('input')) {
+        e.preventDefault();
         setShowResults(false);
         setSearchQuery('');
+        (document.activeElement as HTMLElement).blur();
       }
     }
     document.addEventListener('keydown', handleKeydown);
@@ -103,8 +132,26 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   }, []);
 
   useEffect(() => {
+    if (activeIndex < 0) return;
+    document.getElementById(`global-search-option-${activeIndex}`)?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
+
+  function closeSearch() {
+    setShowResults(false);
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchError(false);
+    setActiveIndex(-1);
+  }
+
+  function selectResult(result: SearchResult) {
+    closeSearch();
+    router.push(result.href);
+  }
+
+  useEffect(() => {
     if (searchTimeout.current) clearTimeout(searchTimeout.current);
-    if (!searchQuery.trim()) { setSearchResults([]); setSearching(false); return; }
+    if (!searchQuery.trim()) { setSearchResults([]); setSearching(false); setSearchError(false); return; }
     const tokens = tokenizeSearch(searchQuery);
     // A term made only of filter grammar (e.g. ",,,") sanitises to nothing —
     // show nothing rather than an unfiltered dump of every source.
@@ -112,13 +159,15 @@ export default function Header({ onMenuToggle }: HeaderProps) {
 
     setSearching(true);
     searchTimeout.current = setTimeout(async () => {
+      const requestId = ++requestSeq.current;
       const results: SearchResult[] = [];
+      let failed = false;
 
       // One sanitised OR filter per token per source — PostgREST ANDs the
       // tokens together, so word order no longer matters and commas/parens
       // in the term can't break the filter.
       await Promise.all(searchSources.map(async (src) => {
-        const { data } = await applyIlikeTokens(
+        const { data, error } = await applyIlikeTokens(
           supabase
             .from(src.table)
             .select(`${src.labelCol}${src.subCol ? ', ' + src.subCol : ''}, id`),
@@ -126,21 +175,28 @@ export default function Header({ onMenuToggle }: HeaderProps) {
           tokens,
         ).limit(3);
 
+        if (error) { failed = true; return; }
         (data || []).forEach((row: any) => {
           results.push({
+            id: row.id,
             type: src.type,
             label: row[src.labelCol],
             sub: src.subCol ? String(row[src.subCol] || '') : '',
-            href: src.href,
+            href: src.hrefFor(row),
             icon: src.icon,
             color: src.color,
           });
         });
       }));
 
+      // A newer keystroke already started its own fetch — drop this stale batch.
+      if (requestId !== requestSeq.current) return;
+
       setSearchResults(results.slice(0, 8));
+      setSearchError(failed);
       setSearching(false);
       setShowResults(true);
+      setActiveIndex(results.length > 0 ? 0 : -1);
     }, 300);
   }, [searchQuery]);
 
@@ -193,29 +249,60 @@ export default function Header({ onMenuToggle }: HeaderProps) {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
           <input
             type="text"
+            role="combobox"
+            aria-label="Global search"
+            aria-expanded={showResults && !!searchQuery}
+            aria-controls="global-search-results"
+            aria-activedescendant={activeIndex >= 0 ? `global-search-option-${activeIndex}` : undefined}
+            aria-autocomplete="list"
             value={searchQuery}
             onChange={e => { setSearchQuery(e.target.value); setShowResults(true); }}
             onFocus={() => searchQuery && setShowResults(true)}
+            onKeyDown={e => {
+              if (e.key === 'ArrowDown' && searchResults.length > 0) {
+                e.preventDefault();
+                setActiveIndex(i => (i + 1) % searchResults.length);
+              } else if (e.key === 'ArrowUp' && searchResults.length > 0) {
+                e.preventDefault();
+                setActiveIndex(i => (i - 1 + searchResults.length) % searchResults.length);
+              } else if (e.key === 'Enter' && !searching) {
+                const result = searchResults[activeIndex] || searchResults[0];
+                if (result) {
+                  e.preventDefault();
+                  selectResult(result);
+                }
+              }
+            }}
             placeholder="Search customers, products, invoices..."
             className="w-full pl-8 pr-16 py-1.5 text-sm bg-muted/50 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/40 transition"
           />
           {searchQuery ? (
-            <button onClick={() => { setSearchQuery(''); setSearchResults([]); setShowResults(false); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
+            <button onClick={closeSearch} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
               <X className="w-3.5 h-3.5" />
             </button>
           ) : (
             <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground bg-white border border-border px-1.5 py-0.5 rounded font-mono">
-              Ctrl+K
+              {kbdHint}
             </kbd>
           )}
         </div>
 
         {showResults && searchQuery && (
-          <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-border rounded-xl shadow-xl z-50 overflow-hidden">
+          <div
+            id="global-search-results"
+            role="listbox"
+            aria-label="Search results"
+            className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+          >
             {searching ? (
               <div className="px-4 py-3 text-xs text-muted-foreground flex items-center gap-2">
                 <div className="w-3 h-3 border border-blue-500 border-t-transparent rounded-full animate-spin" />
                 Searching...
+              </div>
+            ) : searchError && searchResults.length === 0 ? (
+              <div className="px-4 py-3 text-xs text-red-600 flex items-center gap-2">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                Search failed — check your connection and try again
               </div>
             ) : searchResults.length === 0 ? (
               <div className="px-4 py-3 text-xs text-muted-foreground">No results for &ldquo;{searchQuery}&rdquo;</div>
@@ -223,16 +310,22 @@ export default function Header({ onMenuToggle }: HeaderProps) {
               <div>
                 {searchResults.map((result, i) => (
                   <Link
-                    key={i}
+                    key={`${result.type}-${result.id}`}
+                    id={`global-search-option-${i}`}
+                    role="option"
+                    aria-selected={i === activeIndex}
                     href={result.href}
-                    onClick={() => { setShowResults(false); setSearchQuery(''); }}
-                    className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
+                    onClick={closeSearch}
+                    onMouseEnter={() => setActiveIndex(i)}
+                    className={`flex items-center gap-3 px-3 py-2.5 transition-colors border-b border-border/50 last:border-0 ${i === activeIndex ? 'bg-muted' : ''}`}
                   >
                     <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${result.color}`}>
                       <result.icon className="w-3.5 h-3.5" />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground leading-snug break-words">{result.label}</p>
+                      <p className="text-sm font-medium text-foreground leading-snug break-words">
+                        <HighlightLabel text={result.label} query={searchQuery} />
+                      </p>
                       <p className="text-[10px] text-muted-foreground">{result.type}{result.sub ? ` · ${result.sub}` : ''}</p>
                     </div>
                   </Link>
