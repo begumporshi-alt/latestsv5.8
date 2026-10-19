@@ -66,3 +66,29 @@ export function matchesTokens(row: Record<string, any>, columns: string[], token
   const hay = columns.map((c) => String(row?.[c] ?? '').toLowerCase());
   return tokens.every((t) => hay.some((h) => h.includes(t)));
 }
+
+/**
+ * Relevance ordering for already-filtered rows. Substring search can't rank
+ * by itself — searching "tee" must not show "s**tee**l nail" alongside real
+ * tee products. Scores 2 for word-boundary hits, 1 for mid-word hits, per
+ * token; ties keep the caller's original order (stable sort).
+ */
+export function rankRows<T>(rows: T[], getColumns: (row: T) => string[], tokens: string[]): T[] {
+  if (tokens.length === 0) return rows;
+  const scored = rows.map((row) => {
+    const cols = getColumns(row).map((c) => String(c ?? '').toLowerCase());
+    let score = 0;
+    for (const token of tokens) {
+      let best = 0;
+      for (const col of cols) {
+        const i = col.indexOf(token);
+        if (i === -1) continue;
+        const atBoundary = i === 0 || /[^a-z0-9]/.test(col[i - 1]);
+        best = Math.max(best, atBoundary ? 2 : 1);
+      }
+      score += best;
+    }
+    return { row, score };
+  });
+  return scored.sort((a, b) => b.score - a.score).map((s) => s.row);
+}
