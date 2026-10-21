@@ -91,7 +91,7 @@ export default function SupplierDetailPage() {
       fetchAll(() => supabase.from('goods_receipt_notes').select('*, warehouse:warehouses(name), purchase_order:purchase_orders(po_number)')
         .eq('supplier_id', supplierId).order('created_at', { ascending: false }).order('id', { ascending: false })),
       fetchAll(() => supabase.from('payments')
-        .select('id, amount, payment_date, payment_method, reference_number, reference_type, is_reversed, created_at')
+        .select('id, amount, payment_date, payment_method, reference_id, reference_number, reference_type, is_reversed, collection_id, created_at')
         .eq('supplier_id', supplierId).order('created_at', { ascending: false }).order('id', { ascending: false })),
     ]);
 
@@ -185,6 +185,31 @@ export default function SupplierDetailPage() {
   }
 
   if (!supplier) return null;
+
+  // One payment run settled across several POs = one payments row per PO,
+  // each sharing collection_id. Merge them for display: summed amount, PO
+  // numbers listed under the type. Reversed rows stay as-is.
+  const buildPaymentRows = (rows: any[]): { key: string; items: any[] }[] => {
+    const byCollection = new Map<string, any[]>();
+    for (const p of rows) {
+      if (p.collection_id && !p.is_reversed) {
+        const list = byCollection.get(p.collection_id);
+        if (list) list.push(p); else byCollection.set(p.collection_id, [p]);
+      }
+    }
+    const rendered = new Set<string>();
+    return rows.map(p => {
+      const group = p.collection_id ? byCollection.get(p.collection_id) : undefined;
+      if (group && group.length > 1) {
+        if (rendered.has(p.collection_id!)) return null;
+        rendered.add(p.collection_id!);
+        return { key: p.collection_id!, items: group };
+      }
+      return { key: p.id, items: [p] };
+    }).filter((r): r is { key: string; items: any[] } => r !== null);
+  };
+
+  const paymentRows = buildPaymentRows(payments);
 
   const statusConfig: Record<string, { label: string; color: string }> = {
     draft: { label: 'Draft', color: 'bg-gray-100 text-gray-700' },
@@ -601,18 +626,33 @@ export default function SupplierDetailPage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {payments.map((p: any) => (
-                          <tr key={p.id} className={`hover:bg-muted/30 ${p.is_reversed ? 'opacity-50' : ''}`}>
+                        {paymentRows.map(({ key, items }) => {
+                          const p = items[0];
+                          const grouped = items.length > 1;
+                          const poNumbers = grouped
+                            ? items.map(it => purchaseOrders.find(po => po.id === it.reference_id)?.po_number).filter(Boolean).join(', ')
+                            : null;
+                          const totalAmount = items.reduce((s, it) => s + Number(it.amount), 0);
+                          return (
+                          <tr key={key} className={`hover:bg-muted/30 ${p.is_reversed ? 'opacity-50' : ''}`}>
                             <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(p.payment_date || p.created_at)}</td>
                             <td className="px-3 py-2 text-sm text-right font-semibold text-green-600">
-                              {formatCurrency(p.amount)}
+                              {formatCurrency(totalAmount)}
                               {p.is_reversed && <span className="ml-1 text-[10px] font-normal text-muted-foreground">(reversed)</span>}
                             </td>
                             <td className="px-3 py-2 text-sm text-foreground capitalize">{p.payment_method?.replace(/_/g, ' ') || '—'}</td>
                             <td className="px-3 py-2 text-sm text-muted-foreground">{p.reference_number || '—'}</td>
-                            <td className="px-3 py-2 text-sm text-foreground capitalize">{p.reference_type?.replace(/_/g, ' ') || '—'}</td>
+                            <td className="px-3 py-2 text-sm text-foreground capitalize">
+                              <span title={grouped ? 'One payment run spanning multiple POs' : undefined}>
+                                {p.reference_type?.replace(/_/g, ' ') || '—'}{grouped ? ` ×${items.length}` : ''}
+                              </span>
+                              {grouped && poNumbers && (
+                                <span className="block text-[10px] text-muted-foreground mt-0.5 max-w-[220px]">{poNumbers}</span>
+                              )}
+                            </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}

@@ -336,6 +336,30 @@ export default function CustomerDetailPage() {
   const actualRefunded = livePayments.filter(p => p.payment_type === 'refund').reduce((s, p) => s + Number(p.amount), 0);
   const reversalCount = payments.length - livePayments.length;
 
+  // One collection paid across several invoices = one payments row per
+  // invoice, each sharing collection_id. The tab shows them merged (first
+  // payment # + "+N", covered invoice numbers under the Ref badge, summed
+  // amounts); the reversal toggle's audit view stays row-per-payment.
+  const buildPaymentRows = (rows: Payment[]): { key: string; items: Payment[] }[] => {
+    const byCollection = new Map<string, Payment[]>();
+    for (const p of rows) {
+      if (p.collection_id && p.payment_type === 'received') {
+        const list = byCollection.get(p.collection_id);
+        if (list) list.push(p); else byCollection.set(p.collection_id, [p]);
+      }
+    }
+    const rendered = new Set<string>();
+    return rows.map(p => {
+      const group = p.collection_id ? byCollection.get(p.collection_id) : undefined;
+      if (group && group.length > 1) {
+        if (rendered.has(p.collection_id!)) return null;
+        rendered.add(p.collection_id!);
+        return { key: p.collection_id!, items: group };
+      }
+      return { key: p.id, items: [p] };
+    }).filter((r): r is { key: string; items: Payment[] } => r !== null);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center gap-4">
@@ -665,12 +689,25 @@ export default function CustomerDetailPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-border">
-                          {(showReversals ? payments : livePayments).map(p => {
+                          {(showReversals
+                            ? payments.map(p => ({ key: p.id, items: [p] }))
+                            : buildPaymentRows(livePayments)
+                          ).map(({ key, items }) => {
+                            const p = items[0];
+                            const grouped = items.length > 1;
+                            const invoiceNumbers = grouped
+                              ? items.map(it => invoices.find(inv => inv.id === it.reference_id)?.invoice_number).filter(Boolean).join(', ')
+                              : null;
+                            const totalAmount = items.reduce((s, it) => s + Number(it.amount), 0);
+                            const totalBad = items.reduce((s, it) => s + Number(it.bad_debt_amount || 0), 0);
                             const reversal = isReversalRow(p);
                             const superseded = p.payment_type === 'received' && p.is_reversed;
                             return (
-                            <tr key={p.id} className={`hover:bg-muted/30 ${reversal || superseded ? 'opacity-60' : ''}`}>
-                              <td className="px-3 py-2 text-sm font-semibold text-blue-600">{p.payment_number}</td>
+                            <tr key={key} className={`hover:bg-muted/30 ${reversal || superseded ? 'opacity-60' : ''}`}>
+                              <td className="px-3 py-2 text-sm font-semibold text-blue-600">
+                                {p.payment_number}
+                                {grouped && <span className="ml-1 text-[10px] font-normal text-muted-foreground">+{items.length - 1}</span>}
+                              </td>
                               <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(p.payment_date)}</td>
                               <td className="px-3 py-2">
                                 {reversal ? (
@@ -682,15 +719,21 @@ export default function CustomerDetailPage() {
                                     received · superseded
                                   </span>
                                 ) : (
-                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.payment_type === 'received' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}>
-                                    {p.payment_type === 'received' ? 'received' : 'refund'}
+                                  <span
+                                    className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.payment_type === 'received' ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}`}
+                                    title={grouped ? 'One collection spanning multiple invoices' : undefined}
+                                  >
+                                    {p.payment_type === 'received' ? 'received' : 'refund'}{grouped ? ` ×${items.length}` : ''}
                                   </span>
                                 )}
                               </td>
                               <td className="px-3 py-2">
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${p.reference_type === 'invoice' ? 'bg-blue-50 text-blue-600' : p.reference_type === 'receivable' ? 'bg-purple-50 text-purple-600' : 'bg-slate-50 text-slate-600'}`}>
-                                  {p.reference_type?.replace('invoice_cancel', 'invoice (cancelled)').replace('invoice_edit', 'invoice (edit)')}
+                                  {p.reference_type?.replace('invoice_cancel', 'invoice (cancelled)').replace('invoice_edit', 'invoice (edit)')}{grouped ? ` ×${items.length}` : ''}
                                 </span>
+                                {grouped && invoiceNumbers && (
+                                  <span className="block text-[10px] text-muted-foreground mt-0.5 max-w-[220px]">{invoiceNumbers}</span>
+                                )}
                               </td>
                               <td className="px-3 py-2 text-sm capitalize text-muted-foreground">{p.payment_method.replace(/_/g, ' ')}</td>
                               <td className={`px-3 py-2 text-sm text-right font-semibold ${
@@ -698,11 +741,11 @@ export default function CustomerDetailPage() {
                                   : p.payment_type === 'refund' ? 'text-red-600'
                                   : 'text-green-600'
                               }`}>
-                                {p.payment_type === 'refund' ? '−' : ''}{formatCurrency(Number(p.amount))}
+                                {p.payment_type === 'refund' ? '−' : ''}{formatCurrency(totalAmount)}
                               </td>
                               <td className="px-3 py-2 text-sm text-right font-semibold">
-                                {Number(p.bad_debt_amount || 0) > 0 ? (
-                                  <span className="text-orange-600">{formatCurrency(Number(p.bad_debt_amount))}</span>
+                                {totalBad > 0 ? (
+                                  <span className="text-orange-600">{formatCurrency(totalBad)}</span>
                                 ) : (
                                   <span className="text-muted-foreground">—</span>
                                 )}
