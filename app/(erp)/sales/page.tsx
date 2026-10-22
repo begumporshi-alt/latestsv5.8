@@ -431,7 +431,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     const [itemsRes, paymentsRes] = await Promise.all([
       supabase
         .from('invoice_items')
-        .select('*, product:products(name, sku, unit)')
+        .select('*, product:products(name, sku, unit, warranty_months)')
         .eq('invoice_id', invoice.id),
       supabase
         .from('payments')
@@ -1026,6 +1026,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
             discount_percent: item.discount_percent || 0,
             subtotal: item.subtotal,
             unit_name: item.unit_name || item.product?.unit || null,
+            warranty_months: item.product?.warranty_months || 0,
           }))}
           subtotal={Number(viewingInvoice.subtotal)}
           discountTotal={invoiceItems.reduce((s, item) => s + (item.quantity * item.unit_price * (item.discount_percent || 0) / 100), 0)}
@@ -1191,6 +1192,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     product_unit?: string;
     product_base_unit?: string;
     stock_qty: number | null;
+    warranty_months?: number;
     quantity: number;
     unit_price: number;
     cost_price: number;
@@ -1393,6 +1395,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       product_unit: product.unit,
       product_base_unit: product.base_unit,
       stock_qty: stock,
+      warranty_months: product.warranty_months || 0,
       track_inventory: (product as any).track_inventory !== false,
       quantity: 1,
       unit_price: unitPrice,

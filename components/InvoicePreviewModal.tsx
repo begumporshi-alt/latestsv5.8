@@ -68,6 +68,7 @@ export interface InvoicePreviewModalProps {
     discount_percent: number;
     subtotal: number;
     unit_name?: string;
+    warranty_months?: number;
     product_id?: string | number;
   }[];
   subtotal: number;
@@ -81,6 +82,7 @@ export interface InvoicePreviewModalProps {
   hideDiscountPercent?: boolean;
   hideRate?: boolean;
   hideItemDiscount?: boolean;
+  hideWarranty?: boolean;
   recalculatedSubtotal?: number;
   totalAmount: number;
   amountPaid?: number;
@@ -144,6 +146,8 @@ export default function InvoicePreviewModal({
   hideDiscountPercent: propHideDiscountPercent = true,
   hideRate: propHideRate = true,
   hideItemDiscount: propHideItemDiscount = true,
+  // Warranty defaults to Visible: it only carries data when the product has one.
+  hideWarranty: propHideWarranty = false,
   recalculatedSubtotal,
   totalAmount,
   amountPaid = 0,
@@ -178,6 +182,7 @@ export default function InvoicePreviewModal({
   const [hideDiscountPercent, setHideDiscountPercent] = useState(propHideDiscountPercent);
   const [hideRate, setHideRate] = useState(propHideRate);
   const [hideItemDiscount, setHideItemDiscount] = useState(propHideItemDiscount);
+  const [hideWarranty, setHideWarranty] = useState(propHideWarranty);
   const [printOptionsOpen, setPrintOptionsOpen] = useState(false);
   const [localCustomerOutstanding, setLocalCustomerOutstanding] = useState<CustomerOutstanding | null>(null);
   const [fetchedDueCollected, setFetchedDueCollected] = useState(0);
@@ -364,6 +369,7 @@ export default function InvoicePreviewModal({
             discount_percent: item.discount_percent,
             subtotal: item.subtotal,
             unit_name: item.unit_name,
+            warranty_months: item.warranty_months,
           })),
           subtotal,
           discountTotal,
@@ -383,6 +389,7 @@ export default function InvoicePreviewModal({
           hideRate,
           hideDiscountPercent,
           hideItemDiscount,
+          hideWarranty,
         },
         `${docType}-${docNumber}.pdf`,
       );
@@ -572,6 +579,17 @@ export default function InvoicePreviewModal({
                       )}
                     </button>
                     <button
+                      onClick={() => setHideWarranty(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
+                    >
+                      <span>Warranty Column</span>
+                      {hideWarranty ? (
+                        <span className="text-amber-700 font-medium">Hidden</span>
+                      ) : (
+                        <span className="text-green-700 font-medium">Visible</span>
+                      )}
+                    </button>
+                    <button
                       onClick={() => setHideItemDiscount(v => !v)}
                       className="w-full flex items-center justify-between px-3 py-2 rounded-md text-sm hover:bg-muted transition"
                     >
@@ -646,6 +664,7 @@ export default function InvoicePreviewModal({
               hideDiscountPercent={hideDiscountPercent}
               hideRate={hideRate}
               hideItemDiscount={hideItemDiscount}
+              hideWarranty={hideWarranty}
               recalculatedSubtotal={recalculatedSubtotal}
               totalAmount={totalAmount}
               amountPaid={amountPaid}

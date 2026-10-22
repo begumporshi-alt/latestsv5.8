@@ -60,6 +60,7 @@ interface PosReceipt {
     discount_percent: number;
     subtotal: number;
     unit_name?: string;
+    warranty_months?: number;
   }[];
   subtotal: number;
   cartDiscount: number;
@@ -95,6 +96,7 @@ interface CartItem {
   // Non-stock (quick-sell) products bypass the oversell gate — carried from
   // ProductData so the gate mapping can skip them.
   track_inventory?: boolean;
+  warranty_months?: number;
   selected_unit?: ProductUnit;
   unit_price: number;
   base_quantity: number;
@@ -127,6 +129,7 @@ interface ProductData {
   // handling — see lib/oversell-gate.ts and the 20260914100000 migration.
   track_inventory?: boolean;
   barcode?: string;
+  warranty_months?: number;
 }
 
 /**
@@ -313,7 +316,7 @@ export default function POSPage() {
       const productIds = globalCartItems.map(i => i.id);
       const { data } = await supabase
         .from('products')
-        .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit,
+        .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, warranty_months,
           inventory_items(id, warehouse_id, quantity_on_hand),
           units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
         .in('id', productIds);
@@ -340,6 +343,7 @@ export default function POSPage() {
             id: p.id, name: p.name, sku: p.sku, sale_price: unitPrice,
             cost_price: unit.cost_price || (p.cost_price || 0) * (unit.conversion_factor || 1),
             quantity: gci.quantity, image_url: p.image_url,
+            warranty_months: p.warranty_months,
             inventory_item_id: bestInv?.inventory_item_id, warehouse_id: bestInv?.warehouse_id,
             stock_available: stockAvailableInBase, selected_unit: unit,
             unit_price: unitPrice, base_quantity: convertToBaseUnit(gci.quantity, unit),
@@ -575,7 +579,7 @@ export default function POSPage() {
     void cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, () =>
       fetchAll(() => supabase
         .from('products')
-        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, track_inventory, brand_id, category_id,
+        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
           inventory_items(id, warehouse_id, quantity_on_hand),
           units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
         .eq('is_active', true)
@@ -631,7 +635,7 @@ export default function POSPage() {
 
     let query = supabase
       .from('products')
-      .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, track_inventory,
+      .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, track_inventory, warranty_months,
         inventory_items(id, warehouse_id, quantity_on_hand),
         units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
       .eq('is_active', true)
@@ -794,6 +798,7 @@ export default function POSPage() {
         cost_price: unit.cost_price || (product.cost_price || 0) * (unit.conversion_factor || 1),
         quantity: qty,
         image_url: product.image_url,
+        warranty_months: product.warranty_months,
         inventory_item_id: bestInv?.inventory_item_id,
         warehouse_id: warehouseId,
         stock_available: bestInv?.stock ?? 0,
@@ -1423,6 +1428,7 @@ export default function POSPage() {
           discount_percent: item.discount_percent || 0,
           subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
           unit_name: item.selected_unit?.unit_name ?? undefined,
+          warranty_months: item.warranty_months,
         })),
         subtotal,
         cartDiscount: cartDiscountAmount,
@@ -1680,6 +1686,7 @@ export default function POSPage() {
         discount_percent: item.discount_percent || 0,
           subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
           unit_name: item.selected_unit?.unit_name ?? undefined,
+          warranty_months: item.warranty_months,
         })),
         subtotal,
         cartDiscount: cartDiscountAmount,

@@ -63,6 +63,7 @@ export interface PrintTemplateProps {
   hideDiscountPercent?: boolean;
   hideRate?: boolean;
   hideItemDiscount?: boolean;
+  hideWarranty?: boolean;
   recalculatedSubtotal?: number;
   totalAmount: number;
   amountPaid?: number;
@@ -148,6 +149,7 @@ export default function PrintTemplate({
   hideDiscountPercent = false,
   hideRate = false,
   hideItemDiscount = false,
+  hideWarranty = false,
   recalculatedSubtotal,
   totalAmount,
   amountPaid = 0,
@@ -564,7 +566,7 @@ export default function PrintTemplate({
                 { label: 'SL',          align: 'center' as const, width: '36px'  },
                 { label: 'ITEM CODE',   align: 'left'   as const, width: '90px'  },
                 { label: 'ITEM DETAILS',align: 'left'   as const               },
-                { label: 'WARRANTY',    align: 'center' as const, width: '60px'  },
+                ...(hideWarranty ? [] : [{ label: 'WARRANTY',    align: 'center' as const, width: '60px'  }]),
                 { label: 'UNIT',        align: 'center' as const, width: '64px'  },
                 { label: 'QTY',         align: 'center' as const, width: '48px'  },
                 ...(hideRate ? [] : [{ label: 'RATE (৳)', align: 'right' as const, width: '80px' }]),
@@ -594,7 +596,7 @@ export default function PrintTemplate({
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={6 + (hideRate ? 0 : 1) + (hideDiscountPercent ? 0 : 1) + 2} style={{ padding: '20px', textAlign: 'center', color: '#aaa', fontSize: '13px' }}>
+                <td colSpan={5 + (hideWarranty ? 0 : 1) + (hideRate ? 0 : 1) + (hideDiscountPercent ? 0 : 1) + 2} style={{ padding: '20px', textAlign: 'center', color: '#aaa', fontSize: '13px' }}>
                   No items
                 </td>
               </tr>
@@ -610,9 +612,11 @@ export default function PrintTemplate({
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>{idx + 1}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'left',   fontSize: '11px', color: '#555' }}>{item.product_sku || '—'}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'left', fontSize: '11px', fontWeight: '500' }}>{item.product_name}</td>
-                  <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>
-                    {item.warranty_months && item.warranty_months > 0 ? `${item.warranty_months}mo` : '—'}
-                  </td>
+                  {!hideWarranty && (
+                    <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>
+                      {item.warranty_months && item.warranty_months > 0 ? `${item.warranty_months}mo` : '—'}
+                    </td>
+                  )}
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px', color: '#555' }}>{item.unit_name || '—'}</td>
                   <td style={{ padding: '3px 8px', textAlign: 'center', fontSize: '11px' }}>{item.quantity}</td>
                   {!hideRate && (
@@ -642,7 +646,7 @@ export default function PrintTemplate({
                   borderBottom: '1px solid #e8edf6',
                 }}
               >
-                {Array.from({ length: 6 + (hideRate ? 0 : 1) + (hideDiscountPercent ? 0 : 1) + 2 }).map((_, colIdx) => (
+                {Array.from({ length: 5 + (hideWarranty ? 0 : 1) + (hideRate ? 0 : 1) + (hideDiscountPercent ? 0 : 1) + 2 }).map((_, colIdx) => (
                   <td key={colIdx} style={{ padding: '3px 8px', fontSize: '11px', height: '20px' }}>&nbsp;</td>
                 ))}
               </tr>
