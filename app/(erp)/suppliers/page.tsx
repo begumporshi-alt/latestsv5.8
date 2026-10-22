@@ -264,7 +264,7 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
     address: supplier?.address || '',
     credit_limit: supplier?.credit_limit?.toString() || '0',
     credit_days: supplier?.credit_days?.toString() || '30',
-    rating: supplier?.rating?.toString() || '0',
+    rating: supplier?.rating?.toString() || '1',
     is_active: supplier?.is_active ?? true,
   });
   const [saving, setSaving] = useState(false);
@@ -272,6 +272,14 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
   // Set when a same-name/same-phone supplier already exists — shown as a
   // warning the user can override, not a hard block.
   const [dupWarning, setDupWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isEdit && !form.code) {
+      supabase.rpc('generate_supplier_code').then(({ data }) => {
+        if (data) setForm(f => ({ ...f, code: data as string }));
+      });
+    }
+  }, []);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -382,7 +390,7 @@ function SupplierModal({ supplier, onClose, onSaved }: { supplier?: Supplier | n
           <div className="grid grid-cols-3 gap-4">
             <div><label className="block text-xs font-medium mb-1">Credit Limit</label><UnitInput prefix="৳" min="0" value={form.credit_limit} onChange={e => setForm({ ...form, credit_limit: e.target.value })} className="rounded-lg" /></div>
             <div><label className="block text-xs font-medium mb-1">Credit Days</label><UnitInput min="0" inputMode="numeric" value={form.credit_days} onChange={e => setForm({ ...form, credit_days: e.target.value })} className="rounded-lg" /></div>
-            <div><label className="block text-xs font-medium mb-1">Rating (1-5)</label><UnitInput min="0" max="5" inputMode="numeric" value={form.rating} onChange={e => setForm({ ...form, rating: e.target.value })} className="rounded-lg" /></div>
+            <div><label className="block text-xs font-medium mb-1">Rating (1-5)</label><UnitInput min="1" max="5" inputMode="numeric" value={form.rating} onChange={e => setForm({ ...form, rating: e.target.value })} className="rounded-lg" /></div>
           </div>
           {isEdit && (
             <label className="flex items-center gap-2">

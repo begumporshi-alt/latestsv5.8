@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
@@ -1571,14 +1572,17 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
               {saving ? 'Creating...' : 'Create Purchase Order'}
             </button>
           </div>
-
-          {showAddSupplier && (
-            <AddSupplierModal
-              onClose={() => setShowAddSupplier(false)}
-              onSaved={(id, provisional) => { handleAddSupplier(id, provisional); setShowAddSupplier(false); }}
-            />
-          )}
         </form>
+
+        {/* Outside the PO <form> in the React tree too — portal events still
+            bubble through React, so an in-form AddSupplierModal submit would
+            trigger the PO form's onSubmit ("Please select a supplier"). */}
+        {showAddSupplier && (
+          <AddSupplierModal
+            onClose={() => setShowAddSupplier(false)}
+            onSaved={(id, provisional) => { handleAddSupplier(id, provisional); setShowAddSupplier(false); }}
+          />
+        )}
 
         {/* Must stay outside the PO <form> — a nested <form> breaks React's
             synthetic submit handling and the browser does a native GET reload. */}
@@ -2538,7 +2542,7 @@ function CancelPOConfirmModal({ order, onClose, onConfirm }: {
 function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: (id: string, provisionalRow?: any) => void }) {
   const [form, setForm] = useState({
     name: '',
-    code: `SUP-${Date.now().toString().slice(-4)}`,
+    code: '',
     phone: '',
     email: '',
     company_name: '',
@@ -2549,6 +2553,12 @@ function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    supabase.rpc('generate_supplier_code').then(({ data }) => {
+      if (data) setForm(f => ({ ...f, code: data as string }));
+    });
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -2602,7 +2612,10 @@ function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
     onSaved(inserted.id, { id: inserted.id, ...data });
   }
 
-  return (
+  // Portaled to body: this modal opens from inside CreatePOModal's <form>,
+  // and a form nested in a form makes the browser native-submit the page
+  // (React's onSubmit never fires), losing the whole PO being built.
+  return createPortal(
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" style={{ zIndex: 60 }}>
       <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border">
@@ -2668,6 +2681,7 @@ function AddSupplierModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
