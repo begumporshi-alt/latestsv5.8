@@ -5,9 +5,10 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { tokenizeSearch, matchesTokens, rankRows } from '@/lib/search';
 import { toast } from '@/hooks/use-toast';
-import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, FileDown, CircleAlert as AlertCircle } from 'lucide-react';
+import { Truck, Plus, Search, CreditCard as Edit, Trash2, Phone, Mail, Star, X, Eye, Building2, DollarSign, FileDown, CircleAlert as AlertCircle, HandCoins } from 'lucide-react';
 import Link from 'next/link';
 import type { Supplier } from '@/lib/types';
+import PaySupplierModal from '@/components/PaySupplierModal';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import RecordButton from '@/components/RecordButton';
@@ -21,6 +22,7 @@ export default function SuppliersPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [deletingSupplier, setDeletingSupplier] = useState<Supplier | null>(null);
+  const [payingSupplier, setPayingSupplier] = useState<Supplier | null>(null);
 
   useEffect(() => { loadData(); }, []);
 
@@ -217,6 +219,9 @@ export default function SuppliersPage() {
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
                       <Link href={`/suppliers/${s.id}`} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="View Details"><Eye className="w-3.5 h-3.5" /></Link>
+                      {s.outstanding_balance > 0 && (
+                        <button onClick={() => setPayingSupplier(s)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition" title="Pay Outstanding"><HandCoins className="w-3.5 h-3.5" /></button>
+                      )}
                       <button onClick={() => setEditingSupplier(s)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition" title="Edit"><Edit className="w-3.5 h-3.5" /></button>
                       <button onClick={() => setDeletingSupplier(s)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition" title="Deactivate"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
@@ -232,6 +237,15 @@ export default function SuppliersPage() {
       {editingSupplier && <SupplierModal supplier={editingSupplier} onClose={() => setEditingSupplier(null)} onSaved={loadData} />}
       {deletingSupplier && (
         <DeleteConfirmModal name={deletingSupplier.name} onClose={() => setDeletingSupplier(null)} onConfirm={handleDelete} />
+      )}
+      {payingSupplier && (
+        <PaySupplierModal
+          supplierId={payingSupplier.id}
+          supplierName={payingSupplier.name}
+          totalOutstanding={payingSupplier.outstanding_balance}
+          onClose={() => setPayingSupplier(null)}
+          onSaved={() => { setPayingSupplier(null); loadData(); }}
+        />
       )}
     </div>
   );
