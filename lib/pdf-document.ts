@@ -76,6 +76,7 @@ export interface PdfDocSpec {
   hideRate?: boolean;
   hideDiscountPercent?: boolean;
   hideItemDiscount?: boolean;
+  hideWarranty?: boolean;
 }
 
 const fmt = (n: number) => formatAmount(n);
@@ -408,11 +409,12 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
   // printed sheet exactly.
   const showRateCol = !(spec.hideRate ?? true);
   const showDiscCol = !(spec.hideDiscountPercent ?? true);
+  const showWarrantyCol = !(spec.hideWarranty ?? false);
   const col = {
     sl: 9,
     code: 26,
     unit: 16,
-    warranty: 14,
+    warranty: showWarrantyCol ? 14 : 0,
     qty: 12,
     rate: 20,
     disc: 12,
@@ -449,7 +451,7 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
     mid(colX.sl, col.sl, 'SL');
     doc.text('ITEM CODE', colX.code + 1, y);
     doc.text('ITEM DETAILS', colX.details + 1, y);
-    mid(colX.warranty, col.warranty, 'WARR.');
+    if (showWarrantyCol) mid(colX.warranty, col.warranty, 'WARR.');
     mid(colX.unit, col.unit, 'UNIT');
     mid(colX.qty, col.qty, 'QTY');
     if (showRateCol) doc.text('RATE', colX.rate + col.rate, y, { align: 'right' });
@@ -490,7 +492,7 @@ export async function buildDocumentPdf(spec: PdfDocSpec, fileName: string): Prom
     setText(TEXT);
     doc.text(nameLines, colX.details + 1, baseY);
     setText(MUTED);
-    doc.text(item.warranty_months && item.warranty_months > 0 ? `${item.warranty_months}mo` : '—', colX.warranty + col.warranty / 2, baseY, { align: 'center' });
+    if (showWarrantyCol) doc.text(item.warranty_months && item.warranty_months > 0 ? `${item.warranty_months}mo` : '—', colX.warranty + col.warranty / 2, baseY, { align: 'center' });
     doc.text(item.unit_name || '—', colX.unit + col.unit / 2, baseY, { align: 'center' });
     setText(TEXT);
     doc.text(String(item.quantity), colX.qty + col.qty / 2, baseY, { align: 'center' });
