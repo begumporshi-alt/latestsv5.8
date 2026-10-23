@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Keyboard, Tag, LayoutGrid } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Layers, Printer, Keyboard, Tag, LayoutGrid, Warehouse } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -22,6 +22,8 @@ import {
 import { InsufficientStockDialog, type InsufficientStockInfo } from '@/components/insufficient-stock-dialog';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { BatchAllocationEditor, type EditorBatch } from '@/components/batch-allocation-editor';
+import { BatchAllocationViewer } from '@/components/batch-allocation-viewer';
+import { WarehouseSelectModal } from '@/components/warehouse-select-modal';
 import { useGlobalCart } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -151,8 +153,7 @@ function posRankColumns(p: ProductData): string[] {
   return [p.name, p.sku || '', p.barcode || ''];
 }
 
-/** Grid cap; the exact match count is shown separately when more exist. */
-const POS_GRID_LIMIT = 60;
+const POS_GRID_PAGE_SIZE = 60;
 
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -244,7 +245,11 @@ export default function POSPage() {
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Monotonic sequence for product searches — drops out-of-order responses.
   const searchSeqRef = useRef(0);
+  const productLoadRef = useRef(false);
+  const productOffsetRef = useRef(0);
   const [matchCount, setMatchCount] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreProducts, setHasMoreProducts] = useState(false);
   const { items: globalCartItems, clearCart: clearGlobalCart } = useGlobalCart();
   const globalCartConsumed = useRef(false);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default: boolean }[]>([]);
@@ -279,7 +284,8 @@ export default function POSPage() {
     targetWarehouseId: string | undefined;
     availableWhs: CartItem['available_warehouses'];
   } | null>(null);
-  const [expandedBatchLine, setExpandedBatchLine] = useState<string | null>(null);
+  const [viewingBatchLine, setViewingBatchLine] = useState<string | null>(null);
+  const [pickingWarehouseLine, setPickingWarehouseLine] = useState<string | null>(null);
   const [editingAllocLine, setEditingAllocLine] = useState<string | null>(null);
 
   const defaultWarehouseId = warehouses.find(w => w.is_default)?.id ?? null;
@@ -574,14 +580,23 @@ export default function POSPage() {
   }, [cartProductKey]);
 
   useEffect(() => {
+    const sequence = searchSeqRef;
+    ++sequence.current;
+    productLoadRef.current = false;
+    setLoading(true);
+    setLoadingMore(false);
+    setHasMoreProducts(false);
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     searchDebounceRef.current = setTimeout(() => loadProducts(search), 250);
-    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
+    return () => {
+      ++sequence.current;
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, selectedBrand, selectedCategory]);
 
   // TTL for the full-product offline snapshot (also used by the inventory
-  // page). While online, a stale snapshot refreshes in the background — the
-  // visible grid always uses the fast 60-row query exactly as before.
+  // page). While online, a stale snapshot refreshes in the background.
   const PRODUCT_SNAPSHOT_TTL = 10 * 60_000;
 
   async function refreshProductSnapshot() {
@@ -596,78 +611,31 @@ export default function POSPage() {
       .catch(() => {});
   }
 
-  async function loadProducts(q: string) {
-    setLoading(true);
-    // Out-of-order guard: a slow response for an older query must not
-    // overwrite the results of a newer one while the user keeps typing.
+  async function loadProducts(q: string, append = false) {
+    if (append && (productLoadRef.current || loading || !hasMoreProducts)) return;
+    productLoadRef.current = true;
+    if (append) setLoadingMore(true);
+    else {
+      setLoading(true);
+      setLoadingMore(false);
+    }
     const seq = ++searchSeqRef.current;
+    const offset = append ? productOffsetRef.current : 0;
     const tokens = tokenizeSearch(q);
 
-    // Offline: serve the encrypted local snapshot, applying the same
-    // search/brand/category filters client-side.
-    if (!networkMonitor.getState().online) {
-      let cached = await cacheGet<ProductData[]>(CACHE_KEYS.products).catch(() => null);
-      if (!cached || cached.length === 0) {
-        // Page snapshot never built (page never visited online) — the local
-        // database replica still has the full catalog.
-        const fromReplica = await buildPosSnapshotFromReplica();
-        if (fromReplica && fromReplica.length > 0) {
-          cached = fromReplica as ProductData[];
-          void cachePut(CACHE_KEYS.products, cached);
-        }
-      }
-      if (cached && cached.length > 0) {
-        // Same search semantics as the online path: sanitized tokens AND-ed
-        // across name, SKU and barcode.
-        let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
-        if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
-        if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
-        // Quick-sell (non-stock) items never enter the POS grid; snapshots
-        // from before the flag existed simply lack the field.
-        list = list.filter(p => (p as any).track_inventory !== false);
-        if (seq === searchSeqRef.current) {
-          setProducts(rankRows(list, posRankColumns, tokens).slice(0, POS_GRID_LIMIT) as ProductData[]);
-          setMatchCount(list.length);
-        }
-      } else {
-        setProducts([]);
-        setMatchCount(null);
-        toast({
-          title: 'Offline — no product cache yet',
-          description: 'Open the POS once while online so this device builds its offline product list.',
-          variant: 'destructive',
-        });
-      }
-      setLoading(false);
-      return;
+    function applyPage(page: ProductData[], count: number | null) {
+      if (seq !== searchSeqRef.current) return;
+      productOffsetRef.current = offset + page.length;
+      setProducts(prev => {
+        if (!append) return page;
+        const ids = new Set(prev.map(p => p.id));
+        return [...prev, ...page.filter(p => !ids.has(p.id))];
+      });
+      setMatchCount(count);
+      setHasMoreProducts(page.length === POS_GRID_PAGE_SIZE && (count === null || offset + page.length < count));
     }
 
-    let query = supabase
-      .from('products')
-      .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months,
-        inventory_items(id, warehouse_id, quantity_on_hand),
-        units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
-      .eq('is_active', true)
-      .eq('track_inventory', true)  // POS grid is stocked-only; quick-sell items use the ⚡ form
-      .order('name');
-
-    // One sanitized `.or()` per token (AND-ed by PostgREST across calls), each
-    // matching name, SKU or barcode — so terms with commas/parentheses can't
-    // break the filter and word order doesn't matter.
-    query = applyIlikeTokens(query, POS_SEARCH_COLUMNS, tokens);
-    if (selectedBrand) {
-      query = query.eq('brand_id', selectedBrand);
-    }
-    if (selectedCategory) {
-      query = query.eq('category_id', selectedCategory);
-    }
-
-    const { data, count: exactCount, error: loadError } = await query.limit(POS_GRID_LIMIT);
-
-    // Silent network drop (or a monitor race at mount): fall back to the
-    // cached snapshot with the same client-side filters as the offline path.
-    if ((loadError && isNetworkError(loadError)) || (!loadError && !data)) {
-      networkMonitor.markOffline();
+    async function loadCachedPage() {
       let cached = await cacheGet<ProductData[]>(CACHE_KEYS.products).catch(() => null);
       if (!cached || cached.length === 0) {
         const fromReplica = await buildPosSnapshotFromReplica();
@@ -676,39 +644,65 @@ export default function POSPage() {
           void cachePut(CACHE_KEYS.products, cached);
         }
       }
-      if (cached && cached.length > 0) {
-        // Same search semantics as the online path: sanitized tokens AND-ed
-        // across name, SKU and barcode.
-        let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
-        if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
-        if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
-        // Quick-sell (non-stock) items never enter the POS grid; snapshots
-        // from before the flag existed simply lack the field.
-        list = list.filter(p => (p as any).track_inventory !== false);
-        if (seq === searchSeqRef.current) {
-          setProducts(rankRows(list, posRankColumns, tokens).slice(0, POS_GRID_LIMIT) as ProductData[]);
-          setMatchCount(list.length);
-        }
-      } else {
-        setProducts([]);
-        setMatchCount(null);
-        toast({
-          title: 'Offline — no product cache yet',
-          description: 'Open the POS once while online so this device builds its offline product list.',
-          variant: 'destructive',
-        });
+      if (!cached || cached.length === 0) {
+        throw new Error('Offline — no product cache yet. Open the POS once while online to build its offline product list.');
       }
-      setLoading(false);
-      return;
+      let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
+      if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
+      if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
+      list = list.filter(p => (p as any).track_inventory !== false);
+      list.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      const ranked = rankRows(list, posRankColumns, tokens);
+      applyPage(ranked.slice(offset, offset + POS_GRID_PAGE_SIZE), list.length);
     }
 
-    if (seq === searchSeqRef.current) {
-      setProducts(rankRows((data || []) as ProductData[], posRankColumns, tokens).slice(0, POS_GRID_LIMIT));
-      setMatchCount(exactCount ?? null);
+    try {
+      if (!networkMonitor.getState().online) {
+        await loadCachedPage();
+        return;
+      }
+
+      let query = supabase
+        .from('products')
+        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months,
+          inventory_items(id, warehouse_id, quantity_on_hand),
+          units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
+        .eq('is_active', true)
+        .eq('track_inventory', true)
+        .order('name').order('id');
+
+      query = applyIlikeTokens(query, POS_SEARCH_COLUMNS, tokens);
+      if (selectedBrand) query = query.eq('brand_id', selectedBrand);
+      if (selectedCategory) query = query.eq('category_id', selectedCategory);
+
+      const { data, count, error } = await query.range(offset, offset + POS_GRID_PAGE_SIZE - 1);
+      if ((error && isNetworkError(error)) || (!error && !data)) {
+        networkMonitor.markOffline();
+        await loadCachedPage();
+        return;
+      }
+      if (error) throw error;
+      applyPage(rankRows((data || []) as ProductData[], posRankColumns, tokens), count ?? null);
+      if (seq === searchSeqRef.current && !append) void refreshProductSnapshot();
+    } catch (error) {
+      if (seq !== searchSeqRef.current) return;
+      if (!append) {
+        setProducts([]);
+        setMatchCount(null);
+        setHasMoreProducts(false);
+      }
+      toast({
+        title: append ? 'Could not load more products' : 'Could not load products',
+        description: error instanceof Error ? error.message : (error as { message?: string })?.message,
+        variant: 'destructive',
+      });
+    } finally {
+      if (seq === searchSeqRef.current) {
+        productLoadRef.current = false;
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-    // Keep the offline snapshot warm (no-op while fresh).
-    void refreshProductSnapshot();
-    setLoading(false);
   }
 
   // Quick Sell now lives in the global header — refresh the grid when a
@@ -718,7 +712,7 @@ export default function POSPage() {
     window.addEventListener('quick-sell:created', onQuickSellCreated);
     return () => window.removeEventListener('quick-sell:created', onQuickSellCreated);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [search, selectedBrand, selectedCategory]);
 
   // Full customer list through the offline cache (also feeds the credit-gate
   // fallback and the walk-in resolution). Full rows so updated_at is captured
@@ -1002,6 +996,17 @@ export default function POSPage() {
     setCart(prev => prev.map(c => (lineIdOf(c) === lineIdOf(item) ? { ...c, allocOverride: override } : c)));
     setEditingAllocLine(null);
     toast({ title: 'Batch allocation updated', description: 'Manual allocation saved for this line' });
+  }
+
+  function selectWarehouseForLine(liKey: string, warehouseId: string) {
+    setCart(prev => prev.map(c => {
+      if (lineIdOf(c) !== liKey) return c;
+      const wh = (c.available_warehouses || []).find(w => w.warehouse_id === warehouseId);
+      if (!wh) return c;
+      // New warehouse = new allocation pair: drop any manual override so
+      // automatic allocation re-runs there.
+      return { ...c, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_available: wh.stock, allocOverride: null };
+    }));
   }
 
   function reorderCart(fromIndex: number, toIndex: number) {
@@ -2545,16 +2550,10 @@ export default function POSPage() {
           </div>
         </div>
 
-        {search && matchCount !== null && matchCount > POS_GRID_LIMIT && (
-          <p className="text-xs text-muted-foreground -mt-1">
-            Showing first {products.length} of {matchCount} matches — refine your search to narrow the list
-          </p>
-        )}
-
         {/* Product grid — natural flow on mobile, overflow-y-auto on desktop */}
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+        <div aria-label="Product gallery" aria-busy={loading || loadingMore} className="grid grid-cols-2 md:grid-cols-3 gap-2.5 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
           {loading ? Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-border p-3 animate-pulse"><div className="h-20 bg-muted rounded-lg mb-2" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
+            <div key={i} className="bg-white rounded-xl border border-border p-2.5 animate-pulse"><div className="h-16 bg-muted rounded-lg mb-1.5" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
           )) : filteredProducts.length === 0 ? (
             <div className="col-span-full text-center py-12 text-muted-foreground">
               {search ? `No products found for "${search}"` : 'No products found'}
@@ -2572,7 +2571,7 @@ export default function POSPage() {
             return (
               <div
                 key={p.id}
-                className="bg-white rounded-xl border border-border p-3 text-left hover:border-blue-400 hover:shadow-md transition-all group relative"
+                className="bg-white rounded-xl border border-border p-2.5 text-left hover:border-blue-400 hover:shadow-md transition-all group relative"
               >
                 {/* group class stays for image-btn opacity; cost overlay uses a separate nested group below */}
                 {/* Image change button (top-right, appears on hover) */}
@@ -2588,7 +2587,7 @@ export default function POSPage() {
                   {multiUnit && (
                     <span className="absolute top-2 left-2 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium z-10">Multi-unit</span>
                   )}
-                  <div className="w-full h-20 bg-muted rounded-lg overflow-hidden mb-2 relative">
+                  <div className="w-full h-16 bg-muted rounded-lg overflow-hidden mb-1.5 relative">
                     {p.image_url || defaultProductImage ? (
                       <img
                         src={p.image_url || defaultProductImage}
@@ -2635,6 +2634,25 @@ export default function POSPage() {
               </div>
             );
           })}
+          {!loading && products.length > 0 && (
+            <div className="col-span-full flex flex-col sm:flex-row items-center justify-between gap-3 rounded-xl border border-border bg-muted/30 p-3">
+              <p role="status" className="text-xs text-muted-foreground">
+                Showing {products.length}{matchCount !== null ? ` of ${matchCount}` : ''} products
+                {!hasMoreProducts && ' · All products loaded'}
+              </p>
+              {hasMoreProducts && (
+                <button
+                  type="button"
+                  onClick={() => loadProducts(search, true)}
+                  disabled={loadingMore}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 disabled:opacity-60 transition"
+                >
+                  <ChevronDown className={`w-4 h-4 ${loadingMore ? 'animate-pulse' : ''}`} />
+                  {loadingMore ? 'Loading products...' : 'Load more products'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -2644,7 +2662,7 @@ export default function POSPage() {
         style={cartHeightOverride != null && !cartMaximized ? ({ '--cart-ovh': `${cartHeightOverride}px` } as CSSProperties) : undefined}
         className={`
         ${cartMaximized ? 'fixed inset-0 z-[100]' : 'fixed lg:relative inset-x-0 bottom-0 lg:inset-auto'}
-        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[480px]'}
+        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[560px]'}
         flex flex-col bg-white
         ${cartMaximized ? 'rounded-none lg:rounded-none' : 'rounded-t-3xl lg:rounded-2xl'}
         border border-border shadow-sm overflow-hidden relative
@@ -2720,7 +2738,7 @@ export default function POSPage() {
         <div
           ref={cartListRef}
           onScroll={e => setCartListScrolled(e.currentTarget.scrollTop > 4)}
-          className={`grow shrink min-h-0 overflow-y-auto p-3 space-y-2 ${cartMaximized ? 'lg:max-w-4xl lg:mx-auto lg:w-full' : ''}`}
+          className={`grow shrink min-h-0 overflow-y-auto p-2.5 space-y-1.5 ${cartMaximized ? 'lg:max-w-4xl lg:mx-auto lg:w-full' : ''}`}
         >
           <div
             className="sticky top-0 -mb-6 h-6 z-10 pointer-events-none bg-gradient-to-b from-white to-transparent transition-opacity"
@@ -2739,7 +2757,29 @@ export default function POSPage() {
               const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
               const liKey = lineIdOf(item);
               const la = lineAllocation(item);
-              const batchExpanded = expandedBatchLine === liKey;
+              // Warnings worth a red count on the batch button: a ledger
+              // shortfall, and a manual override that no longer fits.
+              const batchWarnCount = (la && la.shortfall > 1e-9 ? 1 : 0) + (la && la.overrideInvalid ? 1 : 0);
+              // The button is the line's only batch affordance, so it also
+              // shows when there is nothing allocated yet but the ledger
+              // cannot cover the line — the warning needs a carrier.
+              const hasBatchButton = !!la && (la.allocations.length > 0 || batchWarnCount > 0);
+              const batchButtonTitle = hasBatchButton
+                ? `Batch allocation — ${la!.allocations.length} batch${la!.allocations.length === 1 ? '' : 'es'} (${la!.usedOverride ? 'manual' : strategy.toUpperCase()})${batchWarnCount > 0 ? ` · ${batchWarnCount} warning${batchWarnCount === 1 ? '' : 's'}` : ''}`
+                : '';
+              const whOptions = item.available_warehouses || [];
+              // A product stocked in one warehouse offers no choice, so the
+              // picker would be a dead control occupying a full row.
+              const multiWarehouse = whOptions.length > 1;
+              const activeWarehouseName = whOptions.find(w => w.warehouse_id === item.warehouse_id)?.warehouse_name
+                || warehouses.find(w => w.id === item.warehouse_id)?.name
+                || '';
+              // The chosen warehouse must hold what the line needs; when it
+              // does not, the picker carries a warning count.
+              const activeWhStock = whOptions.find(w => w.warehouse_id === item.warehouse_id)?.stock;
+              const warehouseShort = activeWhStock != null ? Math.max(0, item.base_quantity - activeWhStock) : 0;
+              const warehouseWarnCount = warehouseShort > 1e-9 ? 1 : 0;
+              const warehouseButtonTitle = `Warehouse — ${activeWarehouseName || 'not set'}${warehouseWarnCount > 0 ? ` · short ${fmtQty(warehouseShort)}` : ''}`;
               return (
             <div
               key={`${item.id}-${item.selected_unit?.id || 'default'}`}
@@ -2748,7 +2788,7 @@ export default function POSPage() {
               onDragOver={e => { e.preventDefault(); setDragOverItem(index); }}
               onDrop={() => { if (draggedItem !== null && draggedItem !== index) reorderCart(draggedItem, index); setDraggedItem(null); setDragOverItem(null); }}
               onDragEnd={() => { setDraggedItem(null); setDragOverItem(null); }}
-              className={`bg-muted/30 rounded-lg px-3 py-2 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} cursor-grab active:cursor-grabbing`}
+              className={`bg-muted/30 rounded-lg px-2.5 py-1.5 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} cursor-grab active:cursor-grabbing`}
             >
               <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
@@ -2759,8 +2799,13 @@ export default function POSPage() {
                   className="flex-1 min-w-0 text-sm font-semibold text-foreground leading-tight break-words cursor-default"
                 />
                 <span className="text-sm font-bold text-blue-600 shrink-0 whitespace-nowrap">{formatCurrency(lineTotal)}</span>
+                {(item.discount_percent || 0) > 0 && (
+                  <span className="text-[11px] font-semibold text-green-600 bg-green-50 border border-green-200 rounded px-1 py-px shrink-0 whitespace-nowrap">
+                    −{fmtQty(item.discount_percent)}%
+                  </span>
+                )}
               </div>
-              <div className="flex items-end gap-2 mt-1.5 pl-6">
+              <div className="flex items-end gap-1 min-[400px]:gap-1.5 sm:gap-2 mt-1 pl-4 min-[400px]:pl-5 sm:pl-6">
                 <div className="flex flex-col">
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Price</label>
                   <input
@@ -2770,10 +2815,10 @@ export default function POSPage() {
                     value={item.unit_price}
                     onChange={e => updateCartPrice(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-20 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right tabular-nums bg-white"
+                    className="w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right tabular-nums bg-white"
                   />
                 </div>
-                {item.selected_unit && <span className="text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
+                {item.selected_unit && <span className="shrink-0 hidden min-[360px]:inline text-[10px] sm:text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
                 <div className="flex flex-col">
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Disc %</label>
                   <input
@@ -2784,14 +2829,57 @@ export default function POSPage() {
                     value={item.discount_percent || 0}
                     onChange={e => updateCartItemDiscount(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-16 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-right tabular-nums bg-amber-50/30"
+                    className="w-12 min-[400px]:w-14 sm:w-16 min-w-0 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-right tabular-nums bg-amber-50/30"
                     placeholder="0"
                   />
                 </div>
-                {(item.discount_percent || 0) > 0 && (
-                  <span className="text-xs text-green-600 font-semibold whitespace-nowrap pb-1.5">→ {formatCurrency(item.unit_price * (1 - (item.discount_percent || 0) / 100))}</span>
+                {multiWarehouse && (
+                  /* Warehouse choice lives in the inputs row as an icon too —
+                     same treatment as the batch button, so a line never spends
+                     a row on a picker. */
+                  <div className="flex flex-col ml-auto">
+                    <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">WH</label>
+                    <button
+                      onClick={e => { e.stopPropagation(); setPickingWarehouseLine(liKey); }}
+                      title={warehouseButtonTitle}
+                      aria-label={warehouseButtonTitle}
+                      className="relative h-[30px] w-6 min-[400px]:w-7 shrink-0 rounded-md border border-emerald-200 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100 transition flex items-center justify-center"
+                    >
+                      <Warehouse className="w-3.5 h-3.5" />
+                      {warehouseWarnCount > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center leading-none shadow-sm">
+                          {warehouseWarnCount}
+                        </span>
+                      )}
+                    </button>
+                  </div>
                 )}
-                <div className="flex flex-col ml-auto">
+                {hasBatchButton && (
+                  /* Batch allocation lives in the inputs row: a Layers button
+                     that carries the warning count, so a line never spends a
+                     separate row on batch metadata. */
+                  <div className={`flex flex-col ${multiWarehouse ? '' : 'ml-auto'}`}>
+                    <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Batch</label>
+                    <button
+                      onClick={e => { e.stopPropagation(); setViewingBatchLine(liKey); }}
+                      title={batchButtonTitle}
+                      aria-label={batchButtonTitle}
+                      className={`relative h-[30px] w-6 min-[400px]:w-7 shrink-0 rounded-md border transition flex items-center justify-center ${
+                        la.usedOverride
+                          ? 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100'
+                          : 'border-blue-200 bg-blue-50/60 text-blue-700 hover:bg-blue-100'
+                      }`}
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      {batchWarnCount > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center leading-none shadow-sm">
+                          {batchWarnCount}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                )}
+                <div className={`flex flex-col ${multiWarehouse || hasBatchButton ? '' : 'ml-auto'}`}>
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Qty</label>
                   <input
                     type="number"
@@ -2800,76 +2888,10 @@ export default function POSPage() {
                     value={item.quantity}
                     onChange={e => updateCartQuantity(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-20 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white"
+                    className="w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white"
                   />
                 </div>
               </div>
-              {la && la.shortfall > 1e-9 && (
-                <div className="mt-1.5 pl-6 flex items-center gap-1.5">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  <span className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                    Batch ledger {fmtQty(la.allocatedQty)} of {fmtQty(item.base_quantity)} — short {fmtQty(la.shortfall)} base units, needs confirmation
-                  </span>
-                </div>
-              )}
-              {la && la.allocations.length > 0 && (
-                <div className="mt-1 pl-6">
-                  {/* Batch allocation preview (spec §7–§8): informational,
-                      expandable — the normal flow never requires interaction */}
-                  <button
-                    onClick={() => setExpandedBatchLine(v => (v === liKey ? null : liKey))}
-                    className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 font-medium"
-                  >
-                    {batchExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                    Batch Allocation ({la.allocations.length} batch{la.allocations.length === 1 ? '' : 'es'})
-                    <span className={`ml-1 px-1 py-px rounded text-[9px] font-semibold ${la.usedOverride ? 'bg-purple-100 text-purple-700' : 'bg-blue-50 text-blue-500'}`}>
-                      {la.usedOverride ? 'MANUAL' : strategy.toUpperCase()}
-                    </span>
-                  </button>
-                  {batchExpanded && (
-                    <div className="mt-1 bg-white border border-border rounded-lg px-2 py-1.5 space-y-0.5">
-                      {la.allocations.map(a => (
-                        <div key={a.batch.id} className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-foreground font-medium truncate max-w-[130px]">{a.batch.batch_number || a.batch.id.slice(0, 8)}</span>
-                          <span className="text-muted-foreground shrink-0">
-                            {fmtQty(a.qty)}{item.selected_unit && item.selected_unit.conversion_factor !== 1 ? ` (${fmtQty(a.qty / item.selected_unit.conversion_factor)} ${item.selected_unit.unit_short || item.selected_unit.unit_name})` : ''}
-                          </span>
-                          <span className="text-muted-foreground shrink-0">@ {formatCurrency(a.batch.unit_cost)}</span>
-                        </div>
-                      ))}
-                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-border/60">
-                        <span className="text-muted-foreground">Batch COGS (est.)</span>
-                        <span className="font-semibold text-foreground">{formatCurrency(la.allocations.reduce((s, a) => s + a.qty * a.batch.unit_cost, 0))}</span>
-                      </div>
-                      <button onClick={() => setEditingAllocLine(liKey)} className="text-[11px] text-blue-600 hover:underline pt-0.5">
-                        Edit Batch Allocation
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-              {item.available_warehouses && item.available_warehouses.length > 0 && (
-                <div className="flex items-center gap-1.5 mt-1.5 pl-6">
-                  <span className="text-[10px] font-medium text-muted-foreground shrink-0">WH</span>
-                  <select
-                    value={item.warehouse_id || ''}
-                    onChange={e => {
-                      const wh = item.available_warehouses?.find(w => w.warehouse_id === e.target.value);
-                      if (wh) {
-                        // New warehouse = new allocation pair: drop any manual
-                        // override so automatic allocation re-runs there.
-                        setCart(prev => prev.map((c, ci) => ci === index ? { ...c, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_available: wh.stock, allocOverride: null } : c));
-                      }
-                    }}
-                    onClick={e => e.stopPropagation()}
-                    className="flex-1 text-xs border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-1.5 py-1 focus:outline-none cursor-pointer"
-                  >
-                    {item.available_warehouses.map(w => (
-                      <option key={w.warehouse_id} value={w.warehouse_id}>{w.warehouse_name} ({w.stock})</option>
-                    ))}
-                  </select>
-                </div>
-              )}
             </div>
               );
             })
@@ -3138,6 +3160,65 @@ export default function POSPage() {
           </div>
         </div>
       )}
+
+      {/* Batch allocation viewer (read-only; spec §7–§8) */}
+      {viewingBatchLine && (() => {
+        const item = cart.find(c => lineIdOf(c) === viewingBatchLine);
+        if (!item) return null;
+        const la = lineAllocation(item);
+        if (!la) return null;
+        // The ledger consumes from the line's warehouse, else the default
+        // one — name the warehouse that will actually be drawn from.
+        const allocWh = resolveWarehouse({ warehouseId: item.warehouse_id }, defaultWarehouseId);
+        const whName = (item.available_warehouses || []).find(w => w.warehouse_id === allocWh)?.warehouse_name
+          || warehouses.find(w => w.id === allocWh)?.name
+          || 'Not assigned';
+        return (
+          <BatchAllocationViewer
+            line={{
+              productName: item.name,
+              sku: item.sku,
+              unitLabel: item.selected_unit ? (item.selected_unit.unit_short || item.selected_unit.unit_name) : undefined,
+              warehouseName: whName,
+              lineQty: item.base_quantity,
+              allocatedQty: la.allocatedQty,
+              shortfall: la.shortfall,
+              usedOverride: la.usedOverride,
+              overrideInvalid: la.overrideInvalid,
+              strategy,
+              allocations: la.allocations,
+              conversionFactor: item.selected_unit?.conversion_factor ?? 1,
+            }}
+            onEdit={() => { setEditingAllocLine(viewingBatchLine); setViewingBatchLine(null); }}
+            onClose={() => setViewingBatchLine(null)}
+          />
+        );
+      })()}
+
+      {/* Warehouse picker (spec §12) */}
+      {pickingWarehouseLine && (() => {
+        const item = cart.find(c => lineIdOf(c) === pickingWarehouseLine);
+        if (!item) return null;
+        return (
+          <WarehouseSelectModal
+            productName={item.name}
+            unitLabel={item.selected_unit ? (item.selected_unit.unit_short || item.selected_unit.unit_name) : undefined}
+            needBaseQty={item.base_quantity}
+            conversionFactor={item.selected_unit?.conversion_factor ?? 1}
+            options={(item.available_warehouses || []).map(w => ({
+              warehouse_id: w.warehouse_id,
+              warehouse_name: w.warehouse_name,
+              stock: w.stock,
+            }))}
+            selectedId={item.warehouse_id || null}
+            onSelect={(wid) => {
+              selectWarehouseForLine(pickingWarehouseLine, wid);
+              setPickingWarehouseLine(null);
+            }}
+            onClose={() => setPickingWarehouseLine(null)}
+          />
+        );
+      })()}
 
       {/* Manual batch allocation override (spec §9) */}
       {editingAllocLine && (() => {
