@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { allowDecimalFor, clampSaleQty } from '@/lib/unit-utils';
 import { fetchAll } from '@/lib/fetch-all';
 import { toast } from '@/hooks/use-toast';
 import { ArrowLeft, Search, RefreshCw, Plus, X, Package, FileText, Receipt, CreditCard, CircleCheck as CheckCircle, Clock, Eye, ArrowRightLeft, Building2, Banknote, Wallet, ExternalLink, CircleAlert as AlertCircle } from 'lucide-react';
@@ -30,7 +31,7 @@ interface InvoiceItem {
   id: string;
   invoice_id: string;
   product_id: string;
-  product?: { name: string; sku: string; unit: string };
+  product?: { name: string; sku: string; unit: string; allow_decimal?: boolean };
   quantity: number;
   unit_price: number;
   cost_price: number;
@@ -350,7 +351,7 @@ function ReturnModal({ invoices, onClose, onSaved }: {
     setSelectedInvoice(invoice);
     const { data } = await supabase
       .from('invoice_items')
-      .select('id, invoice_id, product_id, quantity, unit_price, cost_price, discount_percent, subtotal, unit_name, unit_conversion_factor, base_quantity, product:products(name, sku, unit)')
+      .select('id, invoice_id, product_id, quantity, unit_price, cost_price, discount_percent, subtotal, unit_name, unit_conversion_factor, base_quantity, product:products(name, sku, unit, allow_decimal)')
       .eq('invoice_id', invoice.id);
 
     // Fetch previously returned quantities for each item
@@ -695,10 +696,11 @@ function ReturnModal({ invoices, onClose, onSaved }: {
                             type="number"
                             min="0"
                             max={maxReturnable}
+                            step={allowDecimalFor(item.product?.allow_decimal, item.product?.unit) ? '0.01' : '1'}
                             value={returnItems[item.id]?.qty || 0}
                             onChange={e => setReturnItems({
                               ...returnItems,
-                              [item.id]: { qty: Math.min(Number(e.target.value), maxReturnable), reason: returnItems[item.id]?.reason || '' }
+                              [item.id]: { qty: Math.min(clampSaleQty(Number(e.target.value) || 0, allowDecimalFor(item.product?.allow_decimal, item.product?.unit)), maxReturnable), reason: returnItems[item.id]?.reason || '' }
                             })}
                             className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                           />

@@ -13,7 +13,7 @@ import { toast } from '@/hooks/use-toast';
 import ProductModal from '@/components/ProductModal';
 import { Plus, Search, Eye, X, Trash2, CircleCheck as CheckCircle, Truck, DollarSign, CreditCard, Printer, UserPlus, Pencil, Ban, Undo2, ChevronLeft, ChevronRight, Calendar, Bell, Package, ShoppingBag } from 'lucide-react';
 import type { PurchaseOrder, PurchaseOrderStatus, Supplier, Product, PaymentMethod, ProductUnit, PurchaseReminder, Category, Brand, Warehouse as WarehouseType } from '@/lib/types';
-import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
 import { UnitInput } from '@/components/ui/unit-input';
@@ -879,7 +879,7 @@ type ProductModalRefs = {
   categories: Category[];
   brands: Brand[];
   warehouses: WarehouseType[];
-  unitTypes: { id: string; unit_name: string; unit_short: string }[];
+  unitTypes: { id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[];
 };
 
 // Reference data for the shared Add Product modal — fetched lazily the first
@@ -894,7 +894,7 @@ function useProductModalRefs(open: boolean): ProductModalRefs | null {
         supabase.from('categories').select('*').eq('is_active', true),
         supabase.from('brands').select('*').eq('is_active', true),
         supabase.from('warehouses').select('*').eq('is_active', true).order('is_default', { ascending: false }),
-        supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
+        supabase.from('unit_types').select('id, unit_name, unit_short, allow_decimal').eq('is_active', true).order('unit_name'),
       ]);
       if (cancelled) return;
       setRefs({
@@ -1116,6 +1116,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
       product_sku: product.sku,
       product_unit: product.unit,
       product_base_unit: product.base_unit,
+      allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
       quantity: 1,
       unit_price: unitPrice,
       discount_percent: 0,
@@ -1135,7 +1136,13 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
       const unit = value as ProductUnit;
       updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0 };
     } else if (field === 'quantity') {
-      const qty = parseInt(value) || 1;
+      // Decimal units (meter/foot/kg) accept fractions; discrete units keep
+      // the legacy parseInt behaviour.
+      const allowDecimal = updated[index].allow_decimal ?? unitAllowsDecimal(updated[index].product_unit);
+      const parsed = parseFloat(value);
+      const qty = allowDecimal && !isNaN(parsed) && parsed > 0
+        ? clampSaleQty(parsed, true)
+        : (parseInt(value) || 1);
       const unit = updated[index].selected_unit;
       updated[index] = { ...updated[index], quantity: qty, base_quantity: unit ? convertToBaseUnit(qty, unit) : qty };
     } else if (field === 'discount_percent') {
@@ -1428,7 +1435,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                             {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                           </select>
                         </td>
-                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} placeholder="optional" className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
@@ -2071,6 +2078,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           product_sku: prod?.sku || '',
           product_unit: prod?.unit,
           product_base_unit: prod?.base_unit,
+          allow_decimal: (prod as any)?.allow_decimal ?? unitAllowsDecimal(prod?.unit),
           quantity: Number(it.quantity),
           unit_price: Number(it.unit_cost),
           discount_percent: Number(it.discount_percent) || 0,
@@ -2093,7 +2101,13 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
       const unit = value as ProductUnit;
       updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0 };
     } else if (field === 'quantity') {
-      const qty = parseInt(value) || 1;
+      // Decimal units (meter/foot/kg) accept fractions; discrete units keep
+      // the legacy parseInt behaviour.
+      const allowDecimal = updated[index].allow_decimal ?? unitAllowsDecimal(updated[index].product_unit);
+      const parsed = parseFloat(value);
+      const qty = allowDecimal && !isNaN(parsed) && parsed > 0
+        ? clampSaleQty(parsed, true)
+        : (parseInt(value) || 1);
       const unit = updated[index].selected_unit;
       updated[index] = { ...updated[index], quantity: qty, base_quantity: unit ? convertToBaseUnit(qty, unit) : qty };
     } else if (field === 'discount_percent') {
@@ -2144,6 +2158,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
       product_sku: product.sku,
       product_unit: product.unit,
       product_base_unit: product.base_unit,
+      allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
       quantity: 1,
       unit_price: unitPrice,
       discount_percent: 0,
@@ -2416,7 +2431,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
                             {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                           </select>
                         </td>
-                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.sale_price ?? ''} onChange={e => updateItem(index, 'sale_price', e.target.value === '' ? null : parseFloat(e.target.value) || 0)} placeholder="optional" className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>

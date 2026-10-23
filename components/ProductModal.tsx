@@ -11,6 +11,7 @@ import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { patchInventoryAggregateAfterProductOp, patchPosSnapshotAfterProductOp } from '@/lib/offline/optimistic';
+import { allowDecimalFor, clampSaleQty } from '@/lib/unit-utils';
 
 // Callers pass either a raw Product or an inventory-list row whose
 // category/brand are narrowed to { name } — only these fields are read.
@@ -23,7 +24,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   categories: Category[];
   brands: Brand[];
   warehouses: WarehouseType[];
-  unitTypes: { id: string; unit_name: string; unit_short: string }[];
+  unitTypes: { id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[];
   product?: ProductModalProduct | null;
   onClose: () => void;
   onSaved: () => void;
@@ -55,6 +56,12 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   );
   // Tracks the original DB stock to compute diffs accurately (not the stale prop)
   const originalStockRef = useRef<Record<string, number>>({});
+  // Stock fields follow the same decimal rule as selling: unit_types flag
+  // first (matches what the products trigger derives), name-set as fallback.
+  const stockAllowDecimal = allowDecimalFor(
+    unitTypes.find(u => u.unit_name === form.unit)?.allow_decimal ?? (product as any)?.allow_decimal,
+    form.unit
+  );
   const [colors, setColors] = useState<ProductColor[]>([]);
   const [sizes, setSizes] = useState<ProductSize[]>([]);
   const [units, setUnits] = useState<ProductUnit[]>([]);
@@ -230,7 +237,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
       const stock = Object.entries(stockByWarehouse)
         .map(([warehouseId, qty]) => ({
           warehouse_id: warehouseId,
-          quantity: Number(qty) || 0,
+          quantity: clampSaleQty(Number(qty) || 0, stockAllowDecimal),
           unit_cost: Number(form.cost_price) || 0,
         }))
         .filter(s => (isEdit ? true : s.quantity > 0));
@@ -331,7 +338,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
 
         if (!isEdit) {
           for (const [warehouseId, qty] of Object.entries(stockByWarehouse)) {
-            const quantity = Number(qty);
+            const quantity = clampSaleQty(Number(qty) || 0, stockAllowDecimal);
             if (quantity > 0) {
               await supabase.from('inventory_items').insert({
                 tenant_id: '00000000-0000-0000-0000-000000000001',
@@ -367,7 +374,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
         } else {
           // Handle stock adjustments for existing products
           for (const [warehouseId, newQtyStr] of Object.entries(stockByWarehouse)) {
-            const newQty = Number(newQtyStr);
+            const newQty = clampSaleQty(Number(newQtyStr) || 0, stockAllowDecimal);
             // Use freshly-loaded DB values (originalStockRef), not the stale product prop
             const currentQty = originalStockRef.current[warehouseId] ?? 0;
             const diff = newQty - currentQty;
@@ -791,6 +798,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                     <input
                       type="number"
                       min="0"
+                      step={stockAllowDecimal ? '0.001' : '1'}
                       value={stockByWarehouse[wh.id] || '0'}
                       onChange={e => setStockByWarehouse({ ...stockByWarehouse, [wh.id]: e.target.value })}
                       className="w-24 border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
@@ -824,6 +832,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                         <input
                           type="number"
                           min="0"
+                          step={stockAllowDecimal ? '0.001' : '1'}
                           value={stockByWarehouse[wh.id] || '0'}
                           onChange={e => setStockByWarehouse({ ...stockByWarehouse, [wh.id]: e.target.value })}
                           className="w-24 border border-border rounded px-2 py-1 text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500/20"
