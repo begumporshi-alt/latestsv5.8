@@ -12,6 +12,7 @@ import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { printNode } from '@/lib/print';
 import GrnPrint from '@/components/GrnPrint';
+import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
 
 interface PurchaseOrder {
   id: string;
@@ -726,14 +727,11 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                 <div className="space-y-4">
                   <div>
                     <label className="block text-xs font-medium mb-1">Supplier *</label>
-                    <select
-                      value={directSupplier}
-                      onChange={e => setDirectSupplier(e.target.value)}
-                      className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                    >
-                      <option value="">Select supplier</option>
-                      {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
+                    <SupplierSearchInput
+                      onSelect={(s) => setDirectSupplier(s.id)}
+                      selectedName={suppliers.find(s => s.id === directSupplier)?.name}
+                      placeholder="Search supplier by name, code, or phone..."
+                    />
                   </div>
                   <div>
                     <label className="block text-xs font-medium mb-1">Warehouse *</label>

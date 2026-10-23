@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { cachedQuery } from '@/lib/offline/cache';
 import { formatCurrency, formatAxisCurrency, formatRelativeTime, formatDate } from '@/lib/format';
+import { tokenizeSearch, matchesTokens, rankRows } from '@/lib/search';
 import { toast } from '@/hooks/use-toast';
 import { getInventoryValue } from '@/lib/inventory-value';
 import {
@@ -617,9 +618,12 @@ function PayablesAgingModal({ totalPayables, onClose }: { totalPayables: number;
     });
   }, []);
 
-  const q = search.toLowerCase();
-  const filtered = rows.filter((r: any) =>
-    !q || r.supplier_name?.toLowerCase().includes(q));
+  const searchTokens = tokenizeSearch(search);
+  const filtered = rankRows(
+    rows.filter((r: any) => !search || matchesTokens(r, ['supplier_name'], searchTokens)),
+    (r: any) => [r.supplier_name || ''],
+    searchTokens,
+  );
   const sum = (key: string) => filtered.reduce((s: number, r: any) => s + Number(r[key] || 0), 0);
 
   const BUCKETS = [
