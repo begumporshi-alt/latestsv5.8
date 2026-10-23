@@ -8,7 +8,7 @@ import { toast } from '@/hooks/use-toast';
 import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap, Keyboard } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
-import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
+import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import InvoicePreviewModal from '@/components/InvoicePreviewModal';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
@@ -258,6 +258,7 @@ export default function POSPage() {
   const [allocBatches, setAllocBatches] = useState<Map<string, AllocatableBatch[]> | null>(null);
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const [oversellBlocked, setOversellBlocked] = useState(false);
   const shortfallConfirmedRef = useRef(false);
   const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
   const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
@@ -545,7 +546,7 @@ export default function POSPage() {
   }, [selectedCustomer, walkInCustomerId]);
 
   // Any cart change invalidates a prior "Sell anyway" confirmation.
-  useEffect(() => { shortfallConfirmedRef.current = false; creditConfirmedRef.current = false; }, [cart]);
+  useEffect(() => { shortfallConfirmedRef.current = false; creditConfirmedRef.current = false; setOversellBlocked(false); }, [cart]);
 
   // Allocation strategy + partial-add policy (spec §3, §6) — loaded once.
   useEffect(() => {
@@ -860,7 +861,15 @@ export default function POSPage() {
     if (newTotalBase > maxTotalBase + 1e-9) {
       const availableBase = Math.max(0, maxTotalBase - existingBase);
       if (availableBase <= 1e-9) {
-        toast({ title: 'Out of stock', description: `${product.name} has nothing allocatable across its batches`, variant: 'destructive' });
+        // With "Allow selling beyond stock" ON, a 0-stock product is a
+        // deliberate add — the submit gate polices the shortfall (confirm
+        // dialog; DB hard-block when the setting is OFF).
+        if (!invSettings.allow_oversell) {
+          toast({ title: 'Out of stock', description: `${product.name} has nothing allocatable across its batches`, variant: 'destructive' });
+          return;
+        }
+        performAdd(product, unit, qty, targetWarehouseId, availableWhs);
+        setUnitSelectorProduct(null);
         return;
       }
       // Insufficient stock (spec §6): offer what exists — behavior is
@@ -905,7 +914,9 @@ export default function POSPage() {
       // reservation (batch ledger truth; counter fallback without data).
       const extra = pairAvailable(i.id, i.warehouse_id);
       const maxBase = extra !== null ? i.base_quantity + extra : i.stock_available;
-      if (newBaseQty > maxBase + 1e-9) {
+      // With overselling allowed the ceiling is advisory — the submit gate
+      // (and the DB, when the setting is OFF) do the enforcing.
+      if (newBaseQty > maxBase + 1e-9 && !invSettings.allow_oversell) {
         toast({ title: 'Stock limit', description: `Only ${fmtQty(maxBase)} base units available`, variant: 'destructive' });
         return i;
       }
@@ -1085,8 +1096,12 @@ export default function POSPage() {
         );
 
         if (shortfalls.length > 0) {
+          const policy = await fetchOversellPolicy();
           const blocked = shortfalls.filter(s => s.bothEmpty);
-          if (blocked.length > 0 && !gateStock.stale) {
+          // With "Allow selling beyond stock" ON, a 0/ledger-empty line is a
+          // deliberate oversell and gets the normal confirm dialog; treat it
+          // as a suspected data error only when the setting is off or unknown.
+          if (policy !== true && blocked.length > 0 && !gateStock.stale) {
             toast({
               title: 'Cannot sell — no stock record at all',
               description: `${blocked.map(s => s.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`,
@@ -1097,6 +1112,9 @@ export default function POSPage() {
           // With a stale (offline) snapshot, "no record" may just mean "never
           // cached on this device" — downgrade the hard block to a warning
           // that requires the same explicit confirmation as any shortfall.
+          // When "Allow selling beyond stock" is OFF, the DB rejects any
+          // shortfall, so the dialog opens in hard-block mode instead.
+          setOversellBlocked(policy === false);
           setPendingShortfalls(shortfalls);
           setShortfallConfirmOpen(true);
           return;
@@ -2402,7 +2420,7 @@ export default function POSPage() {
                   <ImagePlus className="w-3.5 h-3.5" />
                 </button>
 
-                <div onClick={() => available > 0 && handleProductClick(p)} className={available <= 0 ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}>
+                <div onClick={() => (available > 0 || invSettings.allow_oversell) && handleProductClick(p)} className={available <= 0 && !invSettings.allow_oversell ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}>
                   {multiUnit && (
                     <span className="absolute top-2 left-2 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium z-10">Multi-unit</span>
                   )}
@@ -2994,7 +3012,8 @@ export default function POSPage() {
       {shortfallConfirmOpen && (
         <OversellConfirmDialog
           shortfalls={pendingShortfalls}
-          onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+          blocked={oversellBlocked}
+          onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); setOversellBlocked(false); }}
           onConfirm={() => {
             shortfallConfirmedRef.current = true;
             setShortfallConfirmOpen(false);

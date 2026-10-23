@@ -15,7 +15,7 @@ import { useRouter } from 'next/navigation';
 import Pagination from '@/components/ui/AppPagination';
 import type { Invoice, InvoiceStatus, Customer, Product, Payment, PaymentMethod, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
-import { fetchLedgerStockFor, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
+import { fetchLedgerStockFor, fetchOversellPolicy, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
@@ -1215,6 +1215,13 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const [ledgerStock, setLedgerStock] = useState<LedgerStock | null>(null);
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const [oversellBlocked, setOversellBlocked] = useState(false);
+  // Read once at modal mount: when "Allow selling beyond stock" is ON the
+  // item-table clamps stand down and the submit gate does the policing.
+  const [oversellAllowed, setOversellAllowed] = useState(false);
+  useEffect(() => {
+    fetchOversellPolicy().then(p => setOversellAllowed(p !== false));
+  }, []);
   const shortfallConfirmedRef = useRef(false);
   const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
   const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
@@ -1242,6 +1249,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   useEffect(() => {
     shortfallConfirmedRef.current = false;
     creditConfirmedRef.current = false;
+    setOversellBlocked(false);
     if (!itemProductKey) { setLedgerStock(null); return; }
     let stale = false;
     (async () => {
@@ -1371,7 +1379,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     const stock = bestWh ? bestWh.stock : (invItems.length > 0 ? 0 : null);
 
     // Stock validation - prevent adding out of stock items
-    if (stock !== null && stock <= 0) {
+    if (stock !== null && stock <= 0 && !oversellAllowed) {
       toast({ title: 'Out of stock', description: `${product.name} is not available`, variant: 'destructive' });
       return;
     }
@@ -1386,7 +1394,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       const newQty = ex.quantity + 1;
       const newBase = ex.selected_unit ? convertToBaseUnit(newQty, ex.selected_unit) : newQty;
       // Check stock limit
-      if (ex.stock_qty !== null && newBase > ex.stock_qty) {
+      if (ex.stock_qty !== null && newBase > ex.stock_qty && !oversellAllowed) {
         toast({ title: 'Stock limit', description: `Only ${ex.stock_qty} ${ex.product_base_unit || 'units'} available`, variant: 'destructive' });
         return;
       }
@@ -1424,7 +1432,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       const wh = updated[index].available_warehouses?.find(w => w.warehouse_id === value);
       if (wh) {
         const newBaseQty = updated[index].selected_unit ? convertToBaseUnit(updated[index].quantity, updated[index].selected_unit!) : updated[index].quantity;
-        if (newBaseQty > wh.stock) {
+        if (newBaseQty > wh.stock && !oversellAllowed) {
           toast({ title: 'Stock limit', description: `Only ${wh.stock} ${updated[index].product_base_unit || 'units'} in ${wh.warehouse_name}`, variant: 'destructive' });
           return;
         }
@@ -1435,7 +1443,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       const newBaseQty = convertToBaseUnit(updated[index].quantity, unit);
       const stockQty = updated[index].stock_qty;
       // Check stock limit when changing unit
-      if (stockQty !== null && newBaseQty > stockQty) {
+      if (stockQty !== null && newBaseQty > stockQty && !oversellAllowed) {
         toast({ title: 'Stock limit', description: `Only ${stockQty} ${updated[index].product_base_unit || 'units'} available`, variant: 'destructive' });
         return;
       }
@@ -1458,7 +1466,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       const newBaseQty = unit ? convertToBaseUnit(qty, unit) : qty;
       const stockQty = updated[index].stock_qty;
       // Check stock limit when changing quantity
-      if (stockQty !== null && newBaseQty > stockQty) {
+      if (stockQty !== null && newBaseQty > stockQty && !oversellAllowed) {
         toast({ title: 'Stock limit', description: `Only ${stockQty} ${updated[index].product_base_unit || 'units'} available`, variant: 'destructive' });
         return;
       }
@@ -1549,11 +1557,18 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         gateStock
       );
       if (shortfalls.length > 0) {
+        const policy = await fetchOversellPolicy();
         const blocked = shortfalls.filter(s => s.bothEmpty);
-        if (blocked.length > 0) {
+        // With "Allow selling beyond stock" ON, a 0/ledger-empty line is a
+        // deliberate oversell and gets the normal confirm dialog; treat it
+        // as a suspected data error only when the setting is off or unknown.
+        if (policy !== true && blocked.length > 0) {
           setError(`Cannot sell — no stock record at all for ${blocked.map(s => s.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`);
           return;
         }
+        // "Allow selling beyond stock" OFF → the DB rejects any shortfall,
+        // so the dialog opens in hard-block mode instead of warn-and-confirm.
+        setOversellBlocked(policy === false);
         setPendingShortfalls(shortfalls);
         setShortfallConfirmOpen(true);
         return;
@@ -2255,7 +2270,8 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         {shortfallConfirmOpen && (
           <OversellConfirmDialog
             shortfalls={pendingShortfalls}
-            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+            blocked={oversellBlocked}
+            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); setOversellBlocked(false); }}
             onConfirm={() => {
               shortfallConfirmedRef.current = true;
               setShortfallConfirmOpen(false);

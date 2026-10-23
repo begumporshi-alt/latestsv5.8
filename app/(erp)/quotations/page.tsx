@@ -16,7 +16,7 @@ import { cachedQuery } from '@/lib/offline/cache';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
-import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
+import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
@@ -2168,6 +2168,7 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
   // Oversell gate state — same warn-and-confirm as POS / invoice creation.
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const [oversellBlocked, setOversellBlocked] = useState(false);
   const shortfallConfirmedRef = useRef(false);
 
   useEffect(() => {
@@ -2253,12 +2254,19 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
         gateStock
       );
       if (shortfalls.length > 0) {
+        const policy = await fetchOversellPolicy();
         const blocked = shortfalls.filter(x => x.bothEmpty);
-        if (blocked.length > 0) {
+        // With "Allow selling beyond stock" ON, a 0/ledger-empty line is a
+        // deliberate oversell and gets the normal confirm dialog; treat it
+        // as a suspected data error only when the setting is off or unknown.
+        if (policy !== true && blocked.length > 0) {
           setError(`Cannot sell — no stock record at all for ${blocked.map(x => x.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`);
           setSaving(false);
           return;
         }
+        // "Allow selling beyond stock" OFF → the DB rejects any shortfall,
+        // so the dialog opens in hard-block mode instead of warn-and-confirm.
+        setOversellBlocked(policy === false);
         setPendingShortfalls(shortfalls);
         setShortfallConfirmOpen(true);
         setSaving(false);
@@ -2471,7 +2479,8 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
           <OversellConfirmDialog
             shortfalls={pendingShortfalls}
             confirmLabel="Convert anyway"
-            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+            blocked={oversellBlocked}
+            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); setOversellBlocked(false); }}
             onConfirm={() => {
               shortfallConfirmedRef.current = true;
               setShortfallConfirmOpen(false);
