@@ -2552,7 +2552,7 @@ export default function POSPage() {
         )}
 
         {/* Product grid — natural flow on mobile, overflow-y-auto on desktop */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
           {loading ? Array.from({ length: 12 }).map((_, i) => (
             <div key={i} className="bg-white rounded-xl border border-border p-3 animate-pulse"><div className="h-20 bg-muted rounded-lg mb-2" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
           )) : filteredProducts.length === 0 ? (
@@ -2644,7 +2644,7 @@ export default function POSPage() {
         style={cartHeightOverride != null && !cartMaximized ? ({ '--cart-ovh': `${cartHeightOverride}px` } as CSSProperties) : undefined}
         className={`
         ${cartMaximized ? 'fixed inset-0 z-[100]' : 'fixed lg:relative inset-x-0 bottom-0 lg:inset-auto'}
-        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[420px]'}
+        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[480px]'}
         flex flex-col bg-white
         ${cartMaximized ? 'rounded-none lg:rounded-none' : 'rounded-t-3xl lg:rounded-2xl'}
         border border-border shadow-sm overflow-hidden relative
