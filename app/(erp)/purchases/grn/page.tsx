@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { allowDecimalFor, clampSaleQty } from '@/lib/unit-utils';
 import { toast } from '@/hooks/use-toast';
 import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, Printer, TrendingUp, Truck } from 'lucide-react';
 import type { Supplier, Warehouse } from '@/lib/types';
@@ -24,7 +25,7 @@ interface PurchaseOrder {
 interface PurchaseOrderItem {
   id: string;
   product_id: string;
-  product: { name: string; sku: string; unit: string };
+  product: { name: string; sku: string; unit: string; allow_decimal?: boolean };
   quantity: number;
   received_quantity: number;
   unit_cost: number;
@@ -35,6 +36,13 @@ interface PurchaseOrderItem {
 // receive_grn posts batches and movements at this figure for PO-based receipts.
 function effectiveUnitCost(item: PurchaseOrderItem): number {
   return Number(item.unit_cost) * (1 - (Number(item.discount_percent) || 0) / 100);
+}
+
+// Discrete-unit products (pcs/box) can only be received whole.
+function grnReceiveQty(item: PurchaseOrderItem, raw: number, remaining: number): number {
+  const product = item.product as any;
+  const allowDecimal = allowDecimalFor(product?.allow_decimal, product?.unit);
+  return Math.min(clampSaleQty(isNaN(raw) ? 0 : Math.max(0, raw), allowDecimal), remaining);
 }
 
 interface GRN {
@@ -408,7 +416,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
     setSelectedPO(po);
     const { data } = await supabase
       .from('purchase_order_items')
-      .select('*, product:products(name, sku, unit)')
+      .select('*, product:products(name, sku, unit, allow_decimal)')
       .eq('purchase_order_id', po.id);
     setItems(data || []);
     const initReceive: Record<string, number> = {};
@@ -796,8 +804,9 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                               type="number"
                               min="0"
                               max={remaining}
+                              step={allowDecimalFor((item.product as any)?.allow_decimal, (item.product as any)?.unit) ? '0.01' : '1'}
                               value={receiveItems[item.id] || 0}
-                              onChange={e => setReceiveItems({ ...receiveItems, [item.id]: Number(e.target.value) })}
+                              onChange={e => setReceiveItems({ ...receiveItems, [item.id]: grnReceiveQty(item, Number(e.target.value), remaining) })}
                               placeholder="0"
                               className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                             />

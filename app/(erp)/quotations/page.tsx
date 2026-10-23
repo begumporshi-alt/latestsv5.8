@@ -15,7 +15,7 @@ import { fetchAll } from '@/lib/fetch-all';
 import { cachedQuery } from '@/lib/offline/cache';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
-import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
@@ -672,6 +672,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
     product_sku: string;
     product_unit?: string;
     product_base_unit?: string;
+    allow_decimal?: boolean;
     stock_qty: number | null;
     quantity: number;
     unit_price: number;
@@ -792,6 +793,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
       product_sku: product.sku,
       product_unit: product.unit,
       product_base_unit: product.base_unit,
+      allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
       stock_qty: stock,
       quantity: 1,
       unit_price: unitPrice,
@@ -847,12 +849,14 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
           }));
         const warehouse = availableWhs.find(w => w.warehouse_id === row.warehouse_id) || (availableWhs.length > 0 ? availableWhs.reduce((a, b) => a.stock > b.stock ? a : b) : null);
         const stock = warehouse ? warehouse.stock : (invItems.length > 0 ? 0 : null);
-        const quantity = Math.max(1, Number(row.quantity) || 1);
+        const allowDecimal = (product as any).allow_decimal ?? unitAllowsDecimal(product.unit);
+        const quantity = clampSaleQty(Math.max(1, Number(row.quantity) || 1), allowDecimal);
         const baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
         const costPrice = selectedUnit ? (selectedUnit.cost_price || product.cost_price || 0) : (product.cost_price || 0);
         return {
           product_id: product.id, product_name: product.name, product_sku: product.sku,
           product_unit: product.unit, product_base_unit: product.base_unit, stock_qty: stock,
+          allow_decimal: allowDecimal,
           quantity, unit_price: Number(row.unit_price) || (selectedUnit?.price || product.sale_price || 0),
           discount_percent: Math.min(100, Math.max(0, Number(row.discount_percent) || 0)),
           selected_unit: selectedUnit, available_units: availableUnits.length ? availableUnits : undefined,
@@ -899,7 +903,13 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
         base_quantity: convertToBaseUnit(updated[index].quantity, unit),
       };
     } else if (field === 'quantity') {
-      const qty = parseInt(value) || 1;
+      // Decimal units (meter/foot/kg) accept fractions; discrete units keep
+      // the legacy parseInt behaviour.
+      const allowDecimal = updated[index].allow_decimal ?? unitAllowsDecimal(updated[index].product_unit);
+      const parsed = parseFloat(value);
+      const qty = allowDecimal && !isNaN(parsed) && parsed > 0
+        ? clampSaleQty(parsed, true)
+        : (parseInt(value) || 1);
       const unit = updated[index].selected_unit;
       updated[index] = { ...updated[index], quantity: qty, base_quantity: unit ? convertToBaseUnit(qty, unit) : qty };
     } else if (field === 'discount_percent') {
@@ -1221,7 +1231,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            <input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className={`w-full border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none ${isOverStock ? 'border-red-300 bg-red-50' : 'border-border'}`} />
+                            <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className={`w-full border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none ${isOverStock ? 'border-red-300 bg-red-50' : 'border-border'}`} />
                             {item.available_units && item.selected_unit && (
                               <p className="text-[10px] text-muted-foreground text-center mt-0.5">= {item.base_quantity} {item.product_base_unit || 'base'}</p>
                             )}
@@ -1536,7 +1546,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     (async () => {
       const { data } = await supabase
         .from('quotation_items')
-        .select('*, product:products(name, sku, unit, base_unit, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand))')
+        .select('*, product:products(name, sku, unit, base_unit, allow_decimal, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand))')
         .eq('quotation_id', quotation.id);
       setItems((data || []).map((it: any) => {
         const prod = Array.isArray(it.product) ? it.product[0] : it.product;
@@ -1550,6 +1560,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
           product_sku: prod?.sku || '',
           product_unit: prod?.unit,
           product_base_unit: prod?.base_unit,
+          allow_decimal: (prod as any)?.allow_decimal ?? unitAllowsDecimal(prod?.unit),
           stock_qty: stock,
           quantity: Number(it.quantity),
           unit_price: Number(it.unit_price),
@@ -1615,6 +1626,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
       product_sku: product.sku,
       product_unit: product.unit,
       product_base_unit: product.base_unit,
+      allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
       stock_qty: stock,
       quantity: 1,
       unit_price: unitPrice,
@@ -1670,12 +1682,14 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
           }));
         const warehouse = availableWhs.find(w => w.warehouse_id === row.warehouse_id) || (availableWhs.length > 0 ? availableWhs.reduce((a, b) => a.stock > b.stock ? a : b) : null);
         const stock = invItems.length > 0 ? invItems.reduce((s: number, i: any) => s + Number(i.quantity_on_hand), 0) : null;
-        const quantity = Math.max(1, Number(row.quantity) || 1);
+        const allowDecimal = (product as any).allow_decimal ?? unitAllowsDecimal(product.unit);
+        const quantity = clampSaleQty(Math.max(1, Number(row.quantity) || 1), allowDecimal);
         const baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
         const costPrice = selectedUnit ? (selectedUnit.cost_price || product.cost_price || 0) : (product.cost_price || 0);
         return {
           product_id: product.id, product_name: product.name, product_sku: product.sku,
           product_unit: product.unit, product_base_unit: product.base_unit, stock_qty: stock,
+          allow_decimal: allowDecimal,
           quantity, unit_price: Number(row.unit_price) || (selectedUnit?.price || product.sale_price || 0),
           discount_percent: Math.min(100, Math.max(0, Number(row.discount_percent) || 0)),
           selected_unit: selectedUnit, available_units: availableUnits.length ? availableUnits : undefined,
@@ -1711,7 +1725,13 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
       const unit = value as ProductUnit;
       updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit) };
     } else if (field === 'quantity') {
-      const qty = parseInt(value) || 1;
+      // Decimal units (meter/foot/kg) accept fractions; discrete units keep
+      // the legacy parseInt behaviour.
+      const allowDecimal = updated[index].allow_decimal ?? unitAllowsDecimal(updated[index].product_unit);
+      const parsed = parseFloat(value);
+      const qty = allowDecimal && !isNaN(parsed) && parsed > 0
+        ? clampSaleQty(parsed, true)
+        : (parseInt(value) || 1);
       const unit = updated[index].selected_unit;
       updated[index] = { ...updated[index], quantity: qty, base_quantity: unit ? convertToBaseUnit(qty, unit) : qty };
     } else if (field === 'discount_percent') {
@@ -1956,7 +1976,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                             </select>
                           )}
                         </td>
-                        <td className="px-3 py-2"><input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
+                        <td className="px-3 py-2"><input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2"><input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
                         <td className="px-3 py-2 text-right text-sm font-semibold">{formatCurrency(item.quantity * item.unit_price * (1 - item.discount_percent / 100))}</td>

@@ -61,7 +61,7 @@ interface InventoryPageData {
   byWarehouse: Record<string, Record<string, number>>;
   uniqueColors: { id: string; name: string; hex_code: string }[];
   uniqueSizes: { id: string; name: string }[];
-  unitTypes: { id: string; unit_name: string; unit_short: string }[];
+  unitTypes: { id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[];
   fMap: Record<string, number>;
   stats: { total: number; lowStock: number; outOfStock: number; value: number };
 }
@@ -96,7 +96,7 @@ export default function InventoryPage() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [stats, setStats] = useState({ total: 0, lowStock: 0, outOfStock: 0, value: 0 });
   const [fifoValueMap, setFifoValueMap] = useState<Record<string, number>>({});
-  const [unitTypes, setUnitTypes] = useState<{ id: string; unit_name: string; unit_short: string }[]>([]);
+  const [unitTypes, setUnitTypes] = useState<{ id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[]>([]);
   const [dataStale, setDataStale] = useState(false);
 
   useEffect(() => { loadData(); }, []);
@@ -147,7 +147,7 @@ export default function InventoryPage() {
         // Unbounded reference tables — paginate past the 1000-row cap too.
         fetchAll(() => supabase.from('product_colors').select('id, name, hex_code').order('name').order('id')),
         fetchAll(() => supabase.from('product_sizes').select('id, name').order('name').order('id')),
-        supabase.from('unit_types').select('id, unit_name, unit_short').eq('is_active', true).order('unit_name'),
+        supabase.from('unit_types').select('id, unit_name, unit_short, allow_decimal').eq('is_active', true).order('unit_name'),
       ]),
       loadQuickSellSettings(supabase),
     ]);
@@ -1439,19 +1439,21 @@ function BarcodeModal({ product, onClose }: { product: ProductWithStock; onClose
 function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }: {
   categories: Category[];
   brands: Brand[];
-  unitTypes: { id: string; unit_name: string; unit_short: string }[];
+  unitTypes: { id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [tab, setTab] = useState<'categories' | 'brands' | 'units'>('categories');
   const [newName, setNewName] = useState('');
   const [newShort, setNewShort] = useState('');
+  const [newAllowDecimal, setNewAllowDecimal] = useState(false);
   const [parentCategory, setParentCategory] = useState('');
   const [saving, setSaving] = useState(false);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
   const [editingShort, setEditingShort] = useState('');
+  const [editingAllowDecimal, setEditingAllowDecimal] = useState(false);
 
   const parentCategories = categories.filter(c => !c.parent_id);
   const subCategories = categories.filter(c => c.parent_id);
@@ -1467,10 +1469,11 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
     setExpandedCategories(newExpanded);
   }
 
-  function startEdit(id: string, name: string, short?: string) {
+  function startEdit(id: string, name: string, short?: string, allowDecimal?: boolean) {
     setEditingId(id);
     setEditingName(name);
     setEditingShort(short || '');
+    setEditingAllowDecimal(!!allowDecimal);
   }
 
   function cancelEdit() {
@@ -1485,9 +1488,9 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
     setSaving(true);
 
     if (tab === 'units') {
-      const { error } = await supabase.from('unit_types').insert({ unit_name: newName.trim().toLowerCase(), unit_short: newShort.trim().toLowerCase(), is_active: true });
+      const { error } = await supabase.from('unit_types').insert({ unit_name: newName.trim().toLowerCase(), unit_short: newShort.trim().toLowerCase(), is_active: true, allow_decimal: newAllowDecimal });
       if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      else { toast({ title: 'Unit added' }); setNewName(''); setNewShort(''); onSaved(); }
+      else { toast({ title: 'Unit added' }); setNewName(''); setNewShort(''); setNewAllowDecimal(false); onSaved(); }
     } else {
       const table = tab === 'categories' ? 'categories' : 'brands';
       const insertData: any = { name: newName.trim(), is_active: true, slug: newName.trim().toLowerCase().replace(/\s+/g, '-') };
@@ -1502,7 +1505,7 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
   async function handleSaveEdit(id: string, isUnit = false) {
     setSaving(true);
     if (isUnit) {
-      const { error } = await supabase.from('unit_types').update({ unit_name: editingName.trim().toLowerCase(), unit_short: editingShort.trim().toLowerCase() }).eq('id', id);
+      const { error } = await supabase.from('unit_types').update({ unit_name: editingName.trim().toLowerCase(), unit_short: editingShort.trim().toLowerCase(), allow_decimal: editingAllowDecimal }).eq('id', id);
       if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
       else { toast({ title: 'Unit updated' }); cancelEdit(); onSaved(); }
     } else {
@@ -1578,6 +1581,15 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
                     Add
                   </button>
                 </div>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={newAllowDecimal}
+                    onChange={e => setNewAllowDecimal(e.target.checked)}
+                    className="accent-blue-600"
+                  />
+                  Allow decimal quantities (for continuous units like meter, kg, liter)
+                </label>
                 <p className="text-xs text-muted-foreground">Short name is the abbreviation shown on invoices (e.g. &quot;pcs&quot;, &quot;box&quot;, &quot;ctn&quot;).</p>
               </div>
             ) : (
@@ -1619,15 +1631,22 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
               unitTypes.length === 0 ? (
                 <p className="text-center text-sm text-muted-foreground py-6">No units yet. Add one above.</p>
               ) : (
-                <div className="grid grid-cols-4 gap-1 px-2 py-1 text-xs font-semibold text-muted-foreground border-b border-border mb-1">
-                  <span className="col-span-1">Name</span><span className="col-span-1">Short</span><span className="col-span-2"></span>
+                <div className="grid grid-cols-5 gap-1 px-2 py-1 text-xs font-semibold text-muted-foreground border-b border-border mb-1">
+                  <span className="col-span-1">Name</span><span className="col-span-1">Short</span><span className="col-span-1">Decimal</span><span className="col-span-2"></span>
                 </div>
               ) && unitTypes.map(u => (
-                <div key={u.id} className="grid grid-cols-4 gap-1 items-center px-2 py-1.5 rounded-lg hover:bg-muted/50 group">
+                <div key={u.id} className="grid grid-cols-5 gap-1 items-center px-2 py-1.5 rounded-lg hover:bg-muted/50 group">
                   {editingId === u.id ? (
                     <>
                       <input value={editingName} onChange={e => setEditingName(e.target.value)} className="col-span-1 border border-blue-300 rounded px-1 py-0.5 text-sm" autoFocus />
                       <input value={editingShort} onChange={e => setEditingShort(e.target.value)} className="col-span-1 border border-blue-300 rounded px-1 py-0.5 text-sm" />
+                      <input
+                        type="checkbox"
+                        checked={editingAllowDecimal}
+                        onChange={e => setEditingAllowDecimal(e.target.checked)}
+                        title="Allow decimal quantities"
+                        className="col-span-1 accent-blue-600 justify-self-center"
+                      />
                       <div className="col-span-2 flex justify-end gap-1">
                         <button onClick={() => handleSaveEdit(u.id, true)} disabled={saving} className="px-2 py-0.5 bg-blue-600 text-white rounded text-xs">Save</button>
                         <button onClick={cancelEdit} className="px-2 py-0.5 border border-border rounded text-xs">Cancel</button>
@@ -1637,9 +1656,12 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
                     <>
                       <span className="text-sm text-foreground font-medium">{u.unit_name}</span>
                       <span className="text-sm text-muted-foreground font-mono">{u.unit_short}</span>
+                      <span className={`text-xs justify-self-center px-1.5 py-0.5 rounded-full ${u.allow_decimal ? 'bg-emerald-100 text-emerald-700' : 'bg-muted text-muted-foreground'}`}>
+                        {u.allow_decimal ? 'yes' : 'no'}
+                      </span>
                       <div className="col-span-2 flex justify-end gap-1">
                         <button
-                          onClick={() => startEdit(u.id, u.unit_name, u.unit_short)}
+                          onClick={() => startEdit(u.id, u.unit_name, u.unit_short, u.allow_decimal)}
                           className="opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded text-muted-foreground hover:text-blue-600 hover:bg-blue-50 transition"
                           title="Edit unit"
                         >

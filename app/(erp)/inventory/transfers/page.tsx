@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { allowDecimalFor, clampSaleQty } from '@/lib/unit-utils';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowRightLeft, Plus, Search, RefreshCw, X, Package, Warehouse as WarehouseIcon, ArrowRight, CircleCheck as CheckCircle, Clock } from 'lucide-react';
@@ -286,7 +287,8 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
     e.preventDefault();
     setError('');
     if (form.from_warehouse_id === form.to_warehouse_id) { setError('Source and destination warehouses cannot be the same'); return; }
-    const qty = Number(form.quantity);
+    const allowDecimal = allowDecimalFor((selectedProduct as any)?.allow_decimal, selectedProduct?.unit);
+    const qty = clampSaleQty(Number(form.quantity) || 0, allowDecimal);
     if (qty <= 0) { setError('Quantity must be greater than 0'); return; }
     if (qty > availableQty) { setError(`Insufficient stock. Available: ${availableQty}`); return; }
 
@@ -499,7 +501,8 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
               <>
                 <div>
                   <label className="block text-xs font-medium mb-1">Quantity to Transfer *</label>
-                  <input type="number" required min="1" max={availableQty || undefined}
+                  <input type="number" required min={allowDecimalFor((selectedProduct as any)?.allow_decimal, selectedProduct?.unit) ? '0.001' : '1'} max={availableQty || undefined}
+                    step={allowDecimalFor((selectedProduct as any)?.allow_decimal, selectedProduct?.unit) ? '0.001' : '1'}
                     value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })}
                     placeholder={`Max: ${availableQty}`}
                     className="w-full border border-border rounded-lg px-3 py-2 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"

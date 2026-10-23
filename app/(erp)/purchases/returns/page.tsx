@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
+import { allowDecimalFor, clampSaleQty } from '@/lib/unit-utils';
 import { fetchAll } from '@/lib/fetch-all';
 import { toast } from '@/hooks/use-toast';
 import { ArrowLeft, Search, RefreshCw, Plus, X, Package, FileText, Truck, CircleCheck as CheckCircle, Eye, Printer, ArrowRightLeft, TrendingUp } from 'lucide-react';
@@ -26,7 +27,7 @@ interface PurchaseOrderItem {
   id: string;
   purchase_order_id: string;
   product_id: string;
-  product: { name: string; sku: string; unit: string };
+  product: { name: string; sku: string; unit: string; allow_decimal?: boolean };
   quantity: number;
   received_quantity: number;
   unit_cost: number;
@@ -56,7 +57,7 @@ interface PurchaseReturnItem {
   unit_cost: number;
   subtotal: number;
   reason: string;
-  product?: { name: string; sku: string; unit: string };
+  product?: { name: string; sku: string; unit: string; allow_decimal?: boolean };
 }
 
 export default function PurchaseReturnsPage() {
@@ -107,7 +108,7 @@ export default function PurchaseReturnsPage() {
   async function handleViewReturn(ret: PurchaseReturn) {
     const { data: items } = await supabase
       .from('purchase_return_items')
-      .select('*, product:products(name, sku, unit)')
+      .select('*, product:products(name, sku, unit, allow_decimal)')
       .eq('purchase_return_id', ret.id);
     setViewItems((items || []).map((it: any) => ({
       ...it,
@@ -260,7 +261,7 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
     setSelectedPO(po);
     const { data } = await supabase
       .from('purchase_order_items')
-      .select('*, product:products(name, sku, unit)')
+      .select('*, product:products(name, sku, unit, allow_decimal)')
       .eq('purchase_order_id', po.id);
     setItems((data || []).map((it: any) => ({
       ...it,
@@ -534,10 +535,17 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
                             type="number"
                             min="0"
                             max={item.received_quantity || item.quantity}
+                            step={allowDecimalFor(item.product?.allow_decimal, item.product?.unit) ? '0.01' : '1'}
                             value={returnItems[item.id]?.qty || 0}
                             onChange={e => setReturnItems({
                               ...returnItems,
-                              [item.id]: { qty: Number(e.target.value), reason: returnItems[item.id]?.reason || '' }
+                              [item.id]: {
+                                qty: Math.min(
+                                  clampSaleQty(Number(e.target.value) || 0, allowDecimalFor(item.product?.allow_decimal, item.product?.unit)),
+                                  item.received_quantity || item.quantity
+                                ),
+                                reason: returnItems[item.id]?.reason || ''
+                              }
                             })}
                             className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                           />
