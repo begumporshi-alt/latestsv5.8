@@ -7,6 +7,7 @@ import { toast } from '@/hooks/use-toast';
 import { allowDecimalFor, clampSaleQty } from '@/lib/unit-utils';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
+import { fetchOversellPolicy } from '@/lib/oversell-gate';
 import { ArrowRightLeft, Plus, Search, RefreshCw, X, Package, Warehouse as WarehouseIcon, ArrowRight, CircleCheck as CheckCircle, Clock } from 'lucide-react';
 import type { Product, Warehouse } from '@/lib/types';
 
@@ -260,6 +261,11 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
   const [error, setError] = useState('');
   const [availableQty, setAvailableQty] = useState(0);
   const [productSearch, setProductSearch] = useState('');
+  const [oversellAllowed, setOversellAllowed] = useState(false);
+
+  useEffect(() => {
+    fetchOversellPolicy().then(p => setOversellAllowed(p !== false));
+  }, []);
 
   useEffect(() => {
     if (form.product_id && form.from_warehouse_id) {
@@ -290,7 +296,7 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
     const allowDecimal = allowDecimalFor((selectedProduct as any)?.allow_decimal, selectedProduct?.unit);
     const qty = clampSaleQty(Number(form.quantity) || 0, allowDecimal);
     if (qty <= 0) { setError('Quantity must be greater than 0'); return; }
-    if (qty > availableQty) { setError(`Insufficient stock. Available: ${availableQty}`); return; }
+    if (qty > availableQty && !oversellAllowed) { setError(`Insufficient stock. Available: ${availableQty}`); return; }
 
     setSaving(true);
     try {
@@ -323,67 +329,40 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
         return;
       }
 
-      // availableQty comes from a page-load snapshot that goes stale the
-      // moment anyone else sells; re-check against the live counter before
-      // writing anything, or the absolute counter update below can drive the
-      // source warehouse negative.
-      const { data: liveSrcRows } = await supabase
-        .from('inventory_items')
-        .select('id, quantity_on_hand')
-        .eq('product_id', form.product_id)
-        .eq('warehouse_id', form.from_warehouse_id)
-        .limit(1);
-      const liveSrc = liveSrcRows?.[0] ?? null;
-      const liveSrcQty = Number(liveSrc?.quantity_on_hand ?? 0);
-      if (liveSrcQty < qty) {
-        setError(`Insufficient stock — only ${liveSrcQty} available now in ${warehouses.find(w => w.id === form.from_warehouse_id)?.name || 'the source warehouse'} (the list showed ${availableQty})`);
-        return;
+      // Snapshot stock is stale the moment anyone else sells; a live re-check
+      // keeps the friendly error, but with overselling allowed a shortfall is
+      // legal and the server records an IOU layer at the source.
+      if (!oversellAllowed) {
+        const { data: liveSrcRows } = await supabase
+          .from('inventory_items')
+          .select('id, quantity_on_hand')
+          .eq('product_id', form.product_id)
+          .eq('warehouse_id', form.from_warehouse_id)
+          .limit(1);
+        const liveSrcQty = Number(liveSrcRows?.[0]?.quantity_on_hand ?? 0);
+        if (liveSrcQty < qty) {
+          setError(`Insufficient stock — only ${liveSrcQty} available now in ${warehouses.find(w => w.id === form.from_warehouse_id)?.name || 'the source warehouse'} (the list showed ${availableQty})`);
+          return;
+        }
       }
 
-      const { error: outError } = await supabase.from('stock_movements').insert({
-        tenant_id: '00000000-0000-0000-0000-000000000001',
-        product_id: form.product_id, warehouse_id: form.from_warehouse_id,
-        movement_type: 'transfer_out', quantity: -qty, unit_cost: product?.cost_price || 0,
-        reference_type: 'transfer', reference_id: transferId, reference_number: transferNumber,
-        notes: form.notes || `Transfer to ${warehouses.find(w => w.id === form.to_warehouse_id)?.name}`,
+      // Same atomic path the offline replay uses: both movements + FIFO batch
+      // move + counter resync + IOU healing in one server round-trip. When
+      // overselling is OFF the server raises on any ledger shortfall and the
+      // whole transfer rolls back.
+      const { error: syncError } = await supabase.rpc('sync_stock_transfer_create', {
+        p_payload: {
+          id: transferId,
+          transfer_number: transferNumber,
+          product_id: form.product_id,
+          from_warehouse_id: form.from_warehouse_id,
+          to_warehouse_id: form.to_warehouse_id,
+          quantity: qty,
+          unit_cost: product?.cost_price || 0,
+          notes: form.notes || null,
+        },
       });
-      if (outError) throw outError;
-
-      const { error: inError } = await supabase.from('stock_movements').insert({
-        tenant_id: '00000000-0000-0000-0000-000000000001',
-        product_id: form.product_id, warehouse_id: form.to_warehouse_id,
-        movement_type: 'transfer_in', quantity: qty, unit_cost: product?.cost_price || 0,
-        reference_type: 'transfer', reference_id: transferId, reference_number: transferNumber,
-        notes: form.notes || `Transfer from ${warehouses.find(w => w.id === form.from_warehouse_id)?.name}`,
-      });
-      if (inError) throw inError;
-
-      // Move FIFO batches between warehouses
-      await supabase.rpc('transfer_fifo_batches', {
-        p_product_id: form.product_id,
-        p_from_warehouse_id: form.from_warehouse_id,
-        p_to_warehouse_id: form.to_warehouse_id,
-        p_quantity: qty,
-        p_reference_id: transferId,
-        p_reference_number: transferNumber,
-      });
-
-      const sourceItem = liveSrc ?? inventory.find(i => i.product_id === form.product_id && i.warehouse_id === form.from_warehouse_id);
-      if (sourceItem) {
-        await supabase.from('inventory_items').update({ quantity_on_hand: Math.max(0, liveSrcQty - qty), updated_at: new Date().toISOString() }).eq('id', sourceItem.id);
-      }
-      const { data: liveDestRows } = await supabase
-        .from('inventory_items')
-        .select('id, quantity_on_hand')
-        .eq('product_id', form.product_id)
-        .eq('warehouse_id', form.to_warehouse_id)
-        .limit(1);
-      const liveDest = liveDestRows?.[0] ?? null;
-      if (liveDest) {
-        await supabase.from('inventory_items').update({ quantity_on_hand: Number(liveDest.quantity_on_hand) + qty, updated_at: new Date().toISOString() }).eq('id', liveDest.id);
-      } else {
-        await supabase.from('inventory_items').insert({ tenant_id: '00000000-0000-0000-0000-000000000001', product_id: form.product_id, warehouse_id: form.to_warehouse_id, quantity_on_hand: qty });
-      }
+      if (syncError) throw syncError;
 
       toast({ title: 'Success', description: 'Stock transfer completed successfully' });
       onSaved();
@@ -501,7 +480,7 @@ function TransferModal({ products, warehouses, inventory, getAvailableStock, onC
               <>
                 <div>
                   <label className="block text-xs font-medium mb-1">Quantity to Transfer *</label>
-                  <input type="number" required min={allowDecimalFor((selectedProduct as any)?.allow_decimal, selectedProduct?.unit) ? '0.001' : '1'} max={availableQty || undefined}
+                  <input type="number" required min={allowDecimalFor((selectedProduct as any)?.allow_decimal, selectedProduct?.unit) ? '0.001' : '1'} max={oversellAllowed ? undefined : (availableQty || undefined)}
                     step={allowDecimalFor((selectedProduct as any)?.allow_decimal, selectedProduct?.unit) ? '0.001' : '1'}
                     value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })}
                     placeholder={`Max: ${availableQty}`}

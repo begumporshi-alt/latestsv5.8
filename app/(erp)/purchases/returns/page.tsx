@@ -381,6 +381,18 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
           reason: reason || 'other',
         });
 
+        // Reverse FIFO batches first (reduce youngest batches first) — when
+        // overselling is OFF this raises on any ledger shortfall, so it must
+        // run before the movement insert or the rollback would orphan it.
+        await supabase.rpc('reverse_fifo_on_purchase_return', {
+          p_product_id: item.product_id,
+          p_warehouse_id: itemWarehouseId,
+          p_quantity: qty,
+          p_unit_cost: item.unit_cost,
+          p_reference_id: returnId,
+          p_reference_number: returnNumber,
+        });
+
         // Create stock movement for return out
         await supabase.from('stock_movements').insert({
           tenant_id: '00000000-0000-0000-0000-000000000001',
@@ -393,16 +405,6 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
           reference_id: returnId,
           reference_number: returnNumber,
           notes: reason || `Return to supplier from PO ${selectedPO.po_number}`,
-        });
-
-        // Reverse FIFO batches (reduce youngest batches first)
-        await supabase.rpc('reverse_fifo_on_purchase_return', {
-          p_product_id: item.product_id,
-          p_warehouse_id: itemWarehouseId,
-          p_quantity: qty,
-          p_unit_cost: item.unit_cost,
-          p_reference_id: returnId,
-          p_reference_number: returnNumber,
         });
 
         // Update inventory - reduce stock from the correct warehouse
@@ -419,6 +421,13 @@ function ReturnModal({ purchaseOrders, onClose, onSaved }: {
             updated_at: new Date().toISOString(),
           }).eq('id', invItem.id);
         }
+
+        // The floored write above can drift from the batch ledger; resync from
+        // the ledger (source of truth) after the FIFO reversal.
+        await supabase.rpc('heal_negative_batches_and_resync', {
+          p_product_id: item.product_id,
+          p_warehouse_id: itemWarehouseId,
+        });
 
         // Update received quantity on PO item (fall back to quantity if received_quantity was 0)
         const currentReceived = Number(item.received_quantity) || Number(item.quantity);
