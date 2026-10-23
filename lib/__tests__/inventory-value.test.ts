@@ -1,110 +1,68 @@
 import { getInventoryValue } from '../inventory-value';
 
-// Minimal mock that mimics the supabase-js call chain used by the helper.
-// The helper makes three kinds of calls:
-//   rpc('get_fifo_inventory_value') -> { data, error }
-//   from('inventory_items').select(...).gt(...).order(...) -> { data, error }
-//   from('inventory_batches').select(...).gt(...).order(...) -> { data, error }
+// The helper reads the whole valuation from one set-based RPC
+// (get_inventory_page_aggregates with p_include_products = false), which
+// returns the four scalar fields the caller needs.
 function mockSupabase(opts: {
-  fifoValue: number | null;
-  invItems: any[];        // rows from inventory_items
-  batchKeys: string[];    // product_id|warehouse_id pairs with remaining batches
+  aggregates?: Record<string, unknown> | null;
+  error?: { message: string } | null;
   rpcThrows?: boolean;
 }) {
   const rpc = opts.rpcThrows
     ? jest.fn().mockRejectedValue(new Error('boom'))
-    : jest.fn().mockResolvedValue({ data: opts.fifoValue, error: null });
-  const from = jest.fn().mockImplementation((table: string) => {
-    if (table === 'inventory_items') {
-      const builder: any = {
-        select: jest.fn(),
-        gt: jest.fn(),
-        order: jest.fn(),
-        range: jest.fn(),
-      };
-      builder.select.mockReturnValue(builder);
-      builder.gt.mockReturnValue(builder);
-      builder.order.mockReturnValue(builder);
-      builder.range.mockResolvedValue({ data: opts.invItems, error: null });
-      return builder;
-    }
-    if (table === 'inventory_batches') {
-      const batchData = opts.batchKeys.map((k) => {
-        const [product_id, warehouse_id] = k.split('|');
-        return { product_id, warehouse_id };
-      });
-      const builder: any = {
-        select: jest.fn(),
-        gt: jest.fn(),
-        order: jest.fn(),
-        range: jest.fn(),
-      };
-      builder.select.mockReturnValue(builder);
-      builder.gt.mockReturnValue(builder);
-      builder.order.mockReturnValue(builder);
-      builder.range.mockResolvedValue({ data: batchData, error: null });
-      return builder;
-    }
-    return { select: jest.fn().mockResolvedValue({ data: [], error: null }) };
-  });
-  return { rpc, from };
+    : jest.fn().mockResolvedValue({ data: opts.aggregates ?? null, error: opts.error ?? null });
+  return { rpc };
 }
 
 describe('getInventoryValue', () => {
-  it('returns FIFO total when no products lack batches', async () => {
-    const m = mockSupabase({ fifoValue: 500, invItems: [], batchKeys: [] });
-    const result = await getInventoryValue({ rpc: m.rpc, from: m.from } as any);
+  it('returns the FIFO total when no pair needs the qty x cost fallback', async () => {
+    const m = mockSupabase({
+      aggregates: { total_value: 500, fallback_value: 0, stock_pair_count: 3, stock_pair_product_count: 3 },
+    });
+    const result = await getInventoryValue({ rpc: m.rpc } as any);
     expect(result.total).toBe(500);
+    expect(result.source).toBe('fifo');
+    expect(result.productsWithoutBatches).toBe(0);
+    expect(result.productCount).toBe(3);
+  });
+
+  it('reads the valuation from the aggregates RPC without the product payload', async () => {
+    const m = mockSupabase({
+      aggregates: { total_value: 500, fallback_value: 0, stock_pair_count: 3, stock_pair_product_count: 3 },
+    });
+    await getInventoryValue({ rpc: m.rpc } as any);
+    expect(m.rpc).toHaveBeenCalledWith('get_inventory_page_aggregates', { p_include_products: false });
+  });
+
+  it('flags the fallback pairs that carry value outside the batch layers', async () => {
+    const m = mockSupabase({
+      aggregates: { total_value: 700, fallback_value: 200, stock_pair_count: 4, stock_pair_product_count: 1 },
+    });
+    const result = await getInventoryValue({ rpc: m.rpc } as any);
+    expect(result.total).toBe(700);
+    expect(result.source).toBe('fifo_with_fallback');
+    expect(result.productsWithoutBatches).toBe(1);
+    expect(result.productCount).toBe(4);
+  });
+
+  it('treats a missing aggregate payload as a zero valuation', async () => {
+    const m = mockSupabase({ aggregates: null });
+    const result = await getInventoryValue({ rpc: m.rpc } as any);
+    expect(result.total).toBe(0);
     expect(result.source).toBe('fifo');
     expect(result.productsWithoutBatches).toBe(0);
   });
 
-  it('adds fallback qty*cost_price for products with stock but no batches', async () => {
-    const m = mockSupabase({
-      fifoValue: 500,
-      invItems: [
-        { product_id: 'p1', warehouse_id: 'w1', quantity_on_hand: 10, product: { id: 'p1', cost_price: 20 } },
-      ],
-      batchKeys: [], // p1|w1 has no remaining batch
-    });
-    const result = await getInventoryValue({ rpc: m.rpc, from: m.from } as any);
-    expect(result.total).toBe(700); // 500 + 10*20
-    expect(result.source).toBe('fifo_with_fallback');
-    expect(result.productsWithoutBatches).toBe(1);
-  });
-
-  it('does not double-count a product that has a remaining batch', async () => {
-    const m = mockSupabase({
-      fifoValue: 500,
-      invItems: [
-        { product_id: 'p1', warehouse_id: 'w1', quantity_on_hand: 10, product: { id: 'p1', cost_price: 20 } },
-      ],
-      batchKeys: ['p1|w1'], // p1|w1 already counted by FIFO
-    });
-    const result = await getInventoryValue({ rpc: m.rpc, from: m.from } as any);
-    expect(result.total).toBe(500);
-    expect(result.source).toBe('fifo');
-  });
-
-  it('falls back to simple sum when the RPC throws', async () => {
-    const m = mockSupabase({
-      fifoValue: null,
-      invItems: [{ product_id: 'p1', warehouse_id: 'w1', quantity_on_hand: 10, product: { id: 'p1', cost_price: 20 } }],
-      batchKeys: [],
-      rpcThrows: true,
-    });
-    const result = await getInventoryValue({ rpc: m.rpc, from: m.from } as any);
-    expect(result.source).toBe('fallback_simple');
-    expect(result.total).toBe(200);
-  });
-
   it('returns error result on hard failure without throwing', async () => {
-    const rpc = jest.fn().mockRejectedValue(new Error('boom'));
-    const from = jest.fn().mockImplementation(() => ({
-      select: jest.fn().mockReturnThis(),
-      gt: jest.fn().mockRejectedValue(new Error('boom')),
-    }));
-    const result = await getInventoryValue({ rpc, from } as any);
+    const m = mockSupabase({ error: { message: 'boom' } });
+    const result = await getInventoryValue({ rpc: m.rpc } as any);
+    expect(result.source).toBe('error');
+    expect(result.total).toBe(0);
+  });
+
+  it('returns error result when the RPC rejects without throwing', async () => {
+    const m = mockSupabase({ rpcThrows: true });
+    const result = await getInventoryValue({ rpc: m.rpc } as any);
     expect(result.source).toBe('error');
     expect(result.total).toBe(0);
   });
