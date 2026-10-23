@@ -212,7 +212,9 @@ export default function StockMovementsPage() {
   const renderMovementRow = (m: any, grouped: boolean) => {
     const cfg = typeConfig[m.movement_type] || typeConfig.adjustment;
     const qty = Number(m.quantity);
-    const showTooltip = TOOLTIP_TYPES.has(m.movement_type) && m.notes;
+    // 'sale' rows normally carry a generic id-only note; the DB appends an
+    // "OVERSOLD by N" marker when the line went beyond the batch ledger.
+    const showTooltip = !!m.notes && (TOOLTIP_TYPES.has(m.movement_type) || m.notes.includes('OVERSOLD'));
     return (
       <tr key={m.id} className="hover:bg-muted/30 transition-colors">
         <td className={`py-3 text-sm font-medium text-foreground ${grouped ? 'pl-9 pr-4' : 'px-4'}`}>
