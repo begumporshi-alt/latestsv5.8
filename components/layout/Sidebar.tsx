@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
@@ -125,6 +126,36 @@ export default function Sidebar({ collapsed }: SidebarProps) {
   const { profile } = useProfile();
   const [openMenus, setOpenMenus] = useState<string[]>(['Inventory', 'Sales', 'Purchases', 'CRM', 'Accounting', 'HR Management']);
   const [reminderCount, setReminderCount] = useState(0);
+  const [flyout, setFlyout] = useState<{ item: NavItem; top: number; left: number } | null>(null);
+  const flyoutCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    setFlyout(null);
+  }, [pathname, collapsed]);
+
+  function openFlyout(item: NavItem, e: React.MouseEvent) {
+    if (!collapsed || !item.children) return;
+    if (flyoutCloseTimer.current) {
+      clearTimeout(flyoutCloseTimer.current);
+      flyoutCloseTimer.current = null;
+    }
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const estHeight = item.children.length * 36 + 44;
+    const top = Math.max(8, Math.min(rect.top, window.innerHeight - estHeight - 8));
+    setFlyout({ item, top, left: rect.right + 6 });
+  }
+
+  function scheduleFlyoutClose() {
+    if (flyoutCloseTimer.current) clearTimeout(flyoutCloseTimer.current);
+    flyoutCloseTimer.current = setTimeout(() => setFlyout(null), 120);
+  }
+
+  function cancelFlyoutClose() {
+    if (flyoutCloseTimer.current) {
+      clearTimeout(flyoutCloseTimer.current);
+      flyoutCloseTimer.current = null;
+    }
+  }
 
   const visibleItems = navItems.filter((item) => {
     if (item.href) return canAccessRoute(profile?.role, item.href, profile?.moduleOverrides);
@@ -181,10 +212,10 @@ export default function Sidebar({ collapsed }: SidebarProps) {
             const open = openMenus.includes(item.title) && !collapsed;
             const parentActive = isParentActive(item);
             return (
-              <div key={item.title} className="relative group">
+              <div key={item.title} className="relative group" onMouseLeave={scheduleFlyoutClose}>
                 <button
                   onClick={() => !collapsed && toggleMenu(item.title)}
-                  title={collapsed ? item.title : undefined}
+                  onMouseEnter={(e) => openFlyout(item, e)}
                   className={cn(
                     'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-left transition-colors text-[13px] font-medium',
                     collapsed ? 'justify-center' : '',
@@ -222,26 +253,6 @@ export default function Sidebar({ collapsed }: SidebarProps) {
                             </span>
                           )}
                         </span>
-                      </Link>
-                    ))}
-                  </div>
-                )}
-                {/* Collapsed submenu popup */}
-                {collapsed && (
-                  <div className="absolute left-full top-0 invisible group-hover:visible z-50 bg-slate-800 rounded-lg shadow-xl py-1 min-w-[160px] ml-0">
-                    <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase border-b border-slate-700">{item.title}</div>
-                    {item.children.map((child) => (
-                      <Link
-                        key={child.href}
-                        href={child.href}
-                        className={cn(
-                          'block px-3 py-2 text-[12px] transition-colors truncate',
-                          isActive(child.href)
-                            ? 'text-white font-semibold bg-blue-600'
-                            : 'text-slate-300 hover:text-white hover:bg-slate-700'
-                        )}
-                      >
-                        {child.title}
                       </Link>
                     ))}
                   </div>
@@ -291,6 +302,41 @@ export default function Sidebar({ collapsed }: SidebarProps) {
             </Link>
           </div>
         </div>
+      )}
+
+      {/* Collapsed submenu flyout — portaled to body so the nav's
+          overflow-y-auto can't clip it */}
+      {collapsed && flyout && createPortal(
+        <div
+          className="fixed z-[70] bg-slate-800 rounded-lg shadow-xl py-1 min-w-[180px] max-h-[calc(100vh-16px)] overflow-y-auto"
+          style={{ top: flyout.top, left: flyout.left }}
+          onMouseEnter={cancelFlyoutClose}
+          onMouseLeave={scheduleFlyoutClose}
+        >
+          <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase border-b border-slate-700">{flyout.item.title}</div>
+          {flyout.item.children!.map((child) => (
+            <Link
+              key={child.href}
+              href={child.href}
+              className={cn(
+                'block px-3 py-2 text-[12px] transition-colors truncate',
+                isActive(child.href)
+                  ? 'text-white font-semibold bg-blue-600'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-700'
+              )}
+            >
+              <span className="flex items-center justify-between">
+                <span>{child.title}</span>
+                {child.href === '/purchases' && reminderCount > 0 && (
+                  <span className="bg-amber-500 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full min-w-[16px] text-center">
+                    {reminderCount}
+                  </span>
+                )}
+              </span>
+            </Link>
+          ))}
+        </div>,
+        document.body
       )}
     </aside>
   );

@@ -168,7 +168,7 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
 
       {/* Sidebar — hidden on mobile, collapsible on lg+ */}
       <div className={`
-        fixed inset-y-0 left-0 z-50 lg:relative lg:z-auto
+        fixed inset-y-0 left-0 z-50 lg:sticky lg:top-0 lg:self-start lg:z-auto
         transform transition-all duration-300 ease-in-out
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
         ${sidebarCollapsed ? 'lg:w-[60px]' : 'lg:w-auto'}
