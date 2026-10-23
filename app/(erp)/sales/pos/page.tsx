@@ -151,8 +151,7 @@ function posRankColumns(p: ProductData): string[] {
   return [p.name, p.sku || '', p.barcode || ''];
 }
 
-/** Grid cap; the exact match count is shown separately when more exist. */
-const POS_GRID_LIMIT = 60;
+const POS_GRID_PAGE_SIZE = 60;
 
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -244,7 +243,11 @@ export default function POSPage() {
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Monotonic sequence for product searches — drops out-of-order responses.
   const searchSeqRef = useRef(0);
+  const productLoadRef = useRef(false);
+  const productOffsetRef = useRef(0);
   const [matchCount, setMatchCount] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMoreProducts, setHasMoreProducts] = useState(false);
   const { items: globalCartItems, clearCart: clearGlobalCart } = useGlobalCart();
   const globalCartConsumed = useRef(false);
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default: boolean }[]>([]);
@@ -574,14 +577,23 @@ export default function POSPage() {
   }, [cartProductKey]);
 
   useEffect(() => {
+    const sequence = searchSeqRef;
+    ++sequence.current;
+    productLoadRef.current = false;
+    setLoading(true);
+    setLoadingMore(false);
+    setHasMoreProducts(false);
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     searchDebounceRef.current = setTimeout(() => loadProducts(search), 250);
-    return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
+    return () => {
+      ++sequence.current;
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, selectedBrand, selectedCategory]);
 
   // TTL for the full-product offline snapshot (also used by the inventory
-  // page). While online, a stale snapshot refreshes in the background — the
-  // visible grid always uses the fast 60-row query exactly as before.
+  // page). While online, a stale snapshot refreshes in the background.
   const PRODUCT_SNAPSHOT_TTL = 10 * 60_000;
 
   async function refreshProductSnapshot() {
@@ -596,78 +608,31 @@ export default function POSPage() {
       .catch(() => {});
   }
 
-  async function loadProducts(q: string) {
-    setLoading(true);
-    // Out-of-order guard: a slow response for an older query must not
-    // overwrite the results of a newer one while the user keeps typing.
+  async function loadProducts(q: string, append = false) {
+    if (append && (productLoadRef.current || loading || !hasMoreProducts)) return;
+    productLoadRef.current = true;
+    if (append) setLoadingMore(true);
+    else {
+      setLoading(true);
+      setLoadingMore(false);
+    }
     const seq = ++searchSeqRef.current;
+    const offset = append ? productOffsetRef.current : 0;
     const tokens = tokenizeSearch(q);
 
-    // Offline: serve the encrypted local snapshot, applying the same
-    // search/brand/category filters client-side.
-    if (!networkMonitor.getState().online) {
-      let cached = await cacheGet<ProductData[]>(CACHE_KEYS.products).catch(() => null);
-      if (!cached || cached.length === 0) {
-        // Page snapshot never built (page never visited online) — the local
-        // database replica still has the full catalog.
-        const fromReplica = await buildPosSnapshotFromReplica();
-        if (fromReplica && fromReplica.length > 0) {
-          cached = fromReplica as ProductData[];
-          void cachePut(CACHE_KEYS.products, cached);
-        }
-      }
-      if (cached && cached.length > 0) {
-        // Same search semantics as the online path: sanitized tokens AND-ed
-        // across name, SKU and barcode.
-        let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
-        if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
-        if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
-        // Quick-sell (non-stock) items never enter the POS grid; snapshots
-        // from before the flag existed simply lack the field.
-        list = list.filter(p => (p as any).track_inventory !== false);
-        if (seq === searchSeqRef.current) {
-          setProducts(rankRows(list, posRankColumns, tokens).slice(0, POS_GRID_LIMIT) as ProductData[]);
-          setMatchCount(list.length);
-        }
-      } else {
-        setProducts([]);
-        setMatchCount(null);
-        toast({
-          title: 'Offline — no product cache yet',
-          description: 'Open the POS once while online so this device builds its offline product list.',
-          variant: 'destructive',
-        });
-      }
-      setLoading(false);
-      return;
+    function applyPage(page: ProductData[], count: number | null) {
+      if (seq !== searchSeqRef.current) return;
+      productOffsetRef.current = offset + page.length;
+      setProducts(prev => {
+        if (!append) return page;
+        const ids = new Set(prev.map(p => p.id));
+        return [...prev, ...page.filter(p => !ids.has(p.id))];
+      });
+      setMatchCount(count);
+      setHasMoreProducts(page.length === POS_GRID_PAGE_SIZE && (count === null || offset + page.length < count));
     }
 
-    let query = supabase
-      .from('products')
-      .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months,
-        inventory_items(id, warehouse_id, quantity_on_hand),
-        units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
-      .eq('is_active', true)
-      .eq('track_inventory', true)  // POS grid is stocked-only; quick-sell items use the ⚡ form
-      .order('name');
-
-    // One sanitized `.or()` per token (AND-ed by PostgREST across calls), each
-    // matching name, SKU or barcode — so terms with commas/parentheses can't
-    // break the filter and word order doesn't matter.
-    query = applyIlikeTokens(query, POS_SEARCH_COLUMNS, tokens);
-    if (selectedBrand) {
-      query = query.eq('brand_id', selectedBrand);
-    }
-    if (selectedCategory) {
-      query = query.eq('category_id', selectedCategory);
-    }
-
-    const { data, count: exactCount, error: loadError } = await query.limit(POS_GRID_LIMIT);
-
-    // Silent network drop (or a monitor race at mount): fall back to the
-    // cached snapshot with the same client-side filters as the offline path.
-    if ((loadError && isNetworkError(loadError)) || (!loadError && !data)) {
-      networkMonitor.markOffline();
+    async function loadCachedPage() {
       let cached = await cacheGet<ProductData[]>(CACHE_KEYS.products).catch(() => null);
       if (!cached || cached.length === 0) {
         const fromReplica = await buildPosSnapshotFromReplica();
@@ -676,39 +641,65 @@ export default function POSPage() {
           void cachePut(CACHE_KEYS.products, cached);
         }
       }
-      if (cached && cached.length > 0) {
-        // Same search semantics as the online path: sanitized tokens AND-ed
-        // across name, SKU and barcode.
-        let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
-        if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
-        if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
-        // Quick-sell (non-stock) items never enter the POS grid; snapshots
-        // from before the flag existed simply lack the field.
-        list = list.filter(p => (p as any).track_inventory !== false);
-        if (seq === searchSeqRef.current) {
-          setProducts(rankRows(list, posRankColumns, tokens).slice(0, POS_GRID_LIMIT) as ProductData[]);
-          setMatchCount(list.length);
-        }
-      } else {
-        setProducts([]);
-        setMatchCount(null);
-        toast({
-          title: 'Offline — no product cache yet',
-          description: 'Open the POS once while online so this device builds its offline product list.',
-          variant: 'destructive',
-        });
+      if (!cached || cached.length === 0) {
+        throw new Error('Offline — no product cache yet. Open the POS once while online to build its offline product list.');
       }
-      setLoading(false);
-      return;
+      let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
+      if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
+      if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
+      list = list.filter(p => (p as any).track_inventory !== false);
+      list.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      const ranked = rankRows(list, posRankColumns, tokens);
+      applyPage(ranked.slice(offset, offset + POS_GRID_PAGE_SIZE), list.length);
     }
 
-    if (seq === searchSeqRef.current) {
-      setProducts(rankRows((data || []) as ProductData[], posRankColumns, tokens).slice(0, POS_GRID_LIMIT));
-      setMatchCount(exactCount ?? null);
+    try {
+      if (!networkMonitor.getState().online) {
+        await loadCachedPage();
+        return;
+      }
+
+      let query = supabase
+        .from('products')
+        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months,
+          inventory_items(id, warehouse_id, quantity_on_hand),
+          units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
+        .eq('is_active', true)
+        .eq('track_inventory', true)
+        .order('name').order('id');
+
+      query = applyIlikeTokens(query, POS_SEARCH_COLUMNS, tokens);
+      if (selectedBrand) query = query.eq('brand_id', selectedBrand);
+      if (selectedCategory) query = query.eq('category_id', selectedCategory);
+
+      const { data, count, error } = await query.range(offset, offset + POS_GRID_PAGE_SIZE - 1);
+      if ((error && isNetworkError(error)) || (!error && !data)) {
+        networkMonitor.markOffline();
+        await loadCachedPage();
+        return;
+      }
+      if (error) throw error;
+      applyPage(rankRows((data || []) as ProductData[], posRankColumns, tokens), count ?? null);
+      if (seq === searchSeqRef.current && !append) void refreshProductSnapshot();
+    } catch (error) {
+      if (seq !== searchSeqRef.current) return;
+      if (!append) {
+        setProducts([]);
+        setMatchCount(null);
+        setHasMoreProducts(false);
+      }
+      toast({
+        title: append ? 'Could not load more products' : 'Could not load products',
+        description: error instanceof Error ? error.message : (error as { message?: string })?.message,
+        variant: 'destructive',
+      });
+    } finally {
+      if (seq === searchSeqRef.current) {
+        productLoadRef.current = false;
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-    // Keep the offline snapshot warm (no-op while fresh).
-    void refreshProductSnapshot();
-    setLoading(false);
   }
 
   // Quick Sell now lives in the global header — refresh the grid when a
@@ -718,7 +709,7 @@ export default function POSPage() {
     window.addEventListener('quick-sell:created', onQuickSellCreated);
     return () => window.removeEventListener('quick-sell:created', onQuickSellCreated);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [search, selectedBrand, selectedCategory]);
 
   // Full customer list through the offline cache (also feeds the credit-gate
   // fallback and the walk-in resolution). Full rows so updated_at is captured
@@ -2545,14 +2536,8 @@ export default function POSPage() {
           </div>
         </div>
 
-        {search && matchCount !== null && matchCount > POS_GRID_LIMIT && (
-          <p className="text-xs text-muted-foreground -mt-1">
-            Showing first {products.length} of {matchCount} matches — refine your search to narrow the list
-          </p>
-        )}
-
         {/* Product grid — natural flow on mobile, overflow-y-auto on desktop */}
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+        <div aria-label="Product gallery" aria-busy={loading || loadingMore} className="grid grid-cols-2 md:grid-cols-3 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
           {loading ? Array.from({ length: 12 }).map((_, i) => (
             <div key={i} className="bg-white rounded-xl border border-border p-3 animate-pulse"><div className="h-20 bg-muted rounded-lg mb-2" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
           )) : filteredProducts.length === 0 ? (
@@ -2635,6 +2620,25 @@ export default function POSPage() {
               </div>
             );
           })}
+          {!loading && products.length > 0 && (
+            <div className="col-span-full flex flex-col sm:flex-row items-center justify-between gap-3 rounded-xl border border-border bg-muted/30 p-3">
+              <p role="status" className="text-xs text-muted-foreground">
+                Showing {products.length}{matchCount !== null ? ` of ${matchCount}` : ''} products
+                {!hasMoreProducts && ' · All products loaded'}
+              </p>
+              {hasMoreProducts && (
+                <button
+                  type="button"
+                  onClick={() => loadProducts(search, true)}
+                  disabled={loadingMore}
+                  className="flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30 disabled:opacity-60 transition"
+                >
+                  <ChevronDown className={`w-4 h-4 ${loadingMore ? 'animate-pulse' : ''}`} />
+                  {loadingMore ? 'Loading products...' : 'Load more products'}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
