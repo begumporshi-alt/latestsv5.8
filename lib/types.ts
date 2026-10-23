@@ -55,6 +55,7 @@ export interface Product {
   brand_id?: string;
   unit: string;
   base_unit?: string;
+  allow_decimal?: boolean;
   enable_multi_unit?: boolean;
   enable_colors?: boolean;
   enable_sizes?: boolean;
