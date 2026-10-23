@@ -52,12 +52,13 @@ export default function FifoLedgerPage() {
 
   // Group by product; only products with remaining qty appear.
   const products = useMemo(() => {
-    const map = new Map<string, { product: Batch['product']; value: number; remaining: number }>();
+    const map = new Map<string, { product: Batch['product']; value: number; remaining: number; received: number }>();
     for (const b of batches) {
       const key = b.product_id as unknown as string;
       if (!key) continue;
-      const cur = map.get(key) || { product: b.product, value: 0, remaining: 0 };
+      const cur = map.get(key) || { product: b.product, value: 0, remaining: 0, received: 0 };
       cur.remaining += Number(b.quantity_remaining);
+      cur.received += Number(b.quantity_received);
       cur.value += Number(b.quantity_remaining) * Number(b.unit_cost);
       map.set(key, cur);
     }
@@ -249,7 +250,12 @@ export default function FifoLedgerPage() {
                   <p className="text-sm font-semibold text-foreground">{v.product?.name || 'Unknown'}</p>
                   <p className="text-xs text-muted-foreground">{v.product?.sku}</p>
                 </div>
-                <p className="text-sm font-semibold text-foreground">{formatCurrency(v.value)}</p>
+                <div className="text-right shrink-0 ml-3">
+                  <p className="text-sm font-semibold text-foreground">{formatCurrency(v.value)}</p>
+                  <p className="text-xs text-muted-foreground whitespace-nowrap">
+                    Recv {v.received.toLocaleString()} · Rem {v.remaining.toLocaleString()}
+                  </p>
+                </div>
               </button>
             ))}
             {filteredProducts.length === 0 && (
@@ -262,9 +268,9 @@ export default function FifoLedgerPage() {
 
         {/* Right: batch table for selected product */}
         <div className="rounded-xl border border-border overflow-hidden">
-          <div className="px-5 py-4 border-b border-border flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-bold">
+          <div className="px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-bold truncate">
                 {selectedBatches[0]?.product?.name || 'Select a product'}
               </h2>
               <p className="text-xs text-muted-foreground">
@@ -282,11 +288,25 @@ export default function FifoLedgerPage() {
                 {selectedBatches.length} batch{selectedBatches.length === 1 ? '' : 'es'}
               </p>
             </div>
-            <div className="text-right">
-              <p className="text-xs text-muted-foreground">Remaining</p>
-              <p className="text-lg font-bold">
-                {formatCurrency(selectedBatches.reduce((s, b) => s + Number(b.quantity_remaining) * Number(b.unit_cost), 0))}
-              </p>
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 sm:shrink-0">
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Total Received</p>
+                <p className="text-lg font-bold">
+                  {selectedBatches.reduce((s, b) => s + Number(b.quantity_received), 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Total Remaining</p>
+                <p className="text-lg font-bold">
+                  {selectedBatches.reduce((s, b) => s + Number(b.quantity_remaining), 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-muted-foreground">Remaining Value</p>
+                <p className="text-lg font-bold">
+                  {formatCurrency(selectedBatches.reduce((s, b) => s + Number(b.quantity_remaining) * Number(b.unit_cost), 0))}
+                </p>
+              </div>
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -329,7 +349,7 @@ export default function FifoLedgerPage() {
                 })}
                 {selectedBatches.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">
+                    <td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">
                       No batches for this product.
                     </td>
                   </tr>

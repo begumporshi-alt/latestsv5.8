@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap, Keyboard } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Keyboard, Tag, LayoutGrid } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -36,7 +36,7 @@ import { runReplicaQuery } from '@/lib/offline/replica-query';
 import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
-import { QuickSellModal } from '@/components/quick-sell-modal';
+import { createPortal } from 'react-dom';
 import { tokenizeSearch, applyIlikeTokens, matchesTokens, rankRows } from '@/lib/search';
 import HighlightLabel from '@/components/ui/HighlightLabel';
 import {
@@ -710,6 +710,15 @@ export default function POSPage() {
     void refreshProductSnapshot();
     setLoading(false);
   }
+
+  // Quick Sell now lives in the global header — refresh the grid when a
+  // quick sell completes while this page is mounted.
+  useEffect(() => {
+    const onQuickSellCreated = () => loadProducts(search);
+    window.addEventListener('quick-sell:created', onQuickSellCreated);
+    return () => window.removeEventListener('quick-sell:created', onQuickSellCreated);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   // Full customer list through the offline cache (also feeds the credit-gate
   // fallback and the walk-in resolution). Full rows so updated_at is captured
@@ -1795,7 +1804,6 @@ export default function POSPage() {
   const [cartMaximized, setCartMaximized] = useState(false);
   const [cartTab, setCartTab] = useState<'items' | 'cost'>('items');
   const [showCheckout, setShowCheckout] = useState(false);
-  const [showQuickSell, setShowQuickSell] = useState(false);
   // Each checkout session is a fresh charge intent — a new idempotency key
   // per modal open. Must sit after the showCheckout declaration: the
   // dependency below evaluates during render.
@@ -1807,6 +1815,13 @@ export default function POSPage() {
   const listHBeforeFooterRef = useRef(0);
   const [cartHeightOverride, setCartHeightOverride] = useState<number | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  // Pinned cart footer: while the auto-grown cart's footer is scrolled out of
+  // view, a fixed clone floats at the viewport bottom. The page scrolls in the
+  // window (main grows with the page and never scrolls internally), so CSS
+  // sticky cannot reach the viewport from inside the cart panel.
+  const [footerPinned, setFooterPinned] = useState(false);
+  const [footerBarRect, setFooterBarRect] = useState({ h: 0, left: 0, width: 0 });
+  const cartFooterRef = useRef<HTMLDivElement>(null);
   const toggleCartFooter = () => {
     // The toggle must stay put on screen: the cart grows for the
     // footer, so afterwards scroll the page by whatever the
@@ -1974,6 +1989,45 @@ export default function POSPage() {
     });
     return () => cancelAnimationFrame(raf);
   }, [cart.length, cartAutoGrow, showCartFooter, cartMaximized]);
+  // Geometry for the pinned footer clone: panel left/width and footer height.
+  useEffect(() => {
+    let raf = 0;
+    const measure = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const panel = cartPanelRef.current;
+        const footer = cartFooterRef.current;
+        if (!panel || !footer) return;
+        const pr = panel.getBoundingClientRect();
+        setFooterBarRect({ h: footer.offsetHeight, left: pr.left, width: pr.width });
+      });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (cartFooterRef.current) ro.observe(cartFooterRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); cancelAnimationFrame(raf); };
+  }, [cartHeightOverride, cartMaximized, showCartFooter, cart.length]);
+  // Pin decision: the in-flow footer keeps its space (only visually hidden
+  // while pinned), so its rect is always the true flow position.
+  useEffect(() => {
+    let raf = 0;
+    const update = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const active = window.matchMedia('(min-width: 1024px)').matches
+          && cartHeightOverride != null
+          && !cartMaximized
+          && !orderComplete;
+        setFooterPinned(active && !!cartFooterRef.current
+          && cartFooterRef.current.getBoundingClientRect().bottom > window.innerHeight + 1);
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    return () => { window.removeEventListener('scroll', update); window.removeEventListener('resize', update); cancelAnimationFrame(raf); };
+  }, [cartHeightOverride, cartMaximized, showCartFooter, cart.length, orderComplete]);
   useEffect(() => {
     sessionStorage.setItem('posCartAutoGrow', cartAutoGrow ? 'on' : 'off');
   }, [cartAutoGrow]);
@@ -1988,7 +2042,6 @@ export default function POSPage() {
       if (e.key === 'Escape') {
         if (showShortcuts) { setShowShortcuts(false); return; }
         if (showCheckout) { setShowCheckout(false); return; }
-        if (showQuickSell) { setShowQuickSell(false); return; }
         if (isEditable(e.target)) { (e.target as HTMLElement).blur(); return; }
         if (showCartFooter) { setShowCartFooter(false); return; }
         if (showMobileCart) { setShowMobileCart(false); return; }
@@ -1998,7 +2051,7 @@ export default function POSPage() {
       // Ctrl+Enter never inserts text, so it stays live even while typing;
       // Shift-letters would insert capitals, so they wait until below the
       // isEditable guard, as do "/" and "?".
-      if (showCheckout || showQuickSell) return;
+      if (showCheckout) return;
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         if (cart.length > 0 && !processing) setShowCheckout(true);
@@ -2038,7 +2091,7 @@ export default function POSPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showCheckout, showQuickSell, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, processing]);
+  }, [showCheckout, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, processing]);
   const [defaultProductImage, setDefaultProductImage] = useState('');
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalProduct, setImageModalProduct] = useState<ProductData | null>(null);
@@ -2105,6 +2158,123 @@ export default function POSPage() {
     }
   }
 
+  // Cart footer: toggle + (expanded totals form | Total + Pay row). Rendered
+  // in flow inside the panel; while pinned, the same content is portaled as a
+  // fixed bar at the viewport bottom and the in-flow copy is only hidden.
+  const renderCartFooter = (extraClass: string, inFlow: boolean) => (
+    <div
+      ref={inFlow ? cartFooterRef : undefined}
+      className={`border-t border-border bg-white ${extraClass}`}
+      style={inFlow ? undefined : { position: 'fixed', bottom: 0, left: footerBarRect.left, width: footerBarRect.width, zIndex: 90, boxShadow: '0 -4px 12px rgba(15, 23, 42, 0.08)' }}
+    >
+      {/* Collapse toggle */}
+      <button
+        ref={inFlow ? footerToggleRef : undefined}
+        onClick={() => toggleCartFooter()}
+        className="w-full flex items-center justify-between px-3 py-2 border border-blue-200 bg-blue-50/60 text-blue-600 hover:bg-blue-100/60 transition text-xs font-medium"
+      >
+        <span className="flex items-center gap-1.5">
+          <Eye className="w-3.5 h-3.5" />
+          {showCartFooter ? 'Hide footer' : 'See more in list (Optional)'}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <kbd className="rounded border border-blue-200 bg-white px-1 text-[10px] font-semibold text-blue-400">⇧L</kbd>
+          {showCartFooter ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </span>
+      </button>
+
+      {showCartFooter && (
+        <div className="p-2.5 space-y-2">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Date</label>
+              <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Reference</label>
+              <input type="text" value={reference} onChange={e => setReference(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Ref. person (optional)" />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Cart Discount %</span>
+              <div className="w-28">
+                <UnitInput unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="rounded-lg text-xs" />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Extra Discount ৳</span>
+              <div className="w-28">
+                <UnitInput prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-muted-foreground">Shipping /Service Fee ৳</span>
+              <div className="w-28">
+                <UnitInput prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-0.5 text-sm">
+            <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span>{formatCurrency(subtotal + itemDiscountTotal)}</span></div>
+            {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item Discounts</span><span>-{formatCurrency(itemDiscountTotal)}</span></div>}
+            {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart Discount ({discount}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>}
+            {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>}
+            {shipping > 0 && <div className="flex justify-between text-blue-700"><span>Shipping /Service Fee</span><span>+{formatCurrency(shipping)}</span></div>}
+            {vatSettings.enabled && (
+              <div className="flex justify-between items-center pt-1 border-t border-border">
+                <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={applyVat}
+                    onChange={e => setApplyVat(e.target.checked)}
+                    className="w-3.5 h-3.5 accent-blue-600"
+                  />
+                  VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
+                </label>
+                {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(posVat.taxAmount)}</span>}
+              </div>
+            )}
+            <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
+          </div>
+
+          <button
+            onClick={() => setShowCheckout(true)}
+            disabled={processing || !selectedCustomer}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl transition disabled:opacity-60 text-sm flex items-center justify-center gap-2"
+          >
+            <Receipt className="w-4 h-4" />
+            {processing ? 'Processing...' : `Checkout · ${formatCurrency(grandTotal)}`}
+          </button>
+
+          <button
+            onClick={() => setShowCartFooter(false)}
+            className="w-full flex items-center justify-center gap-1 text-sm text-muted-foreground hover:text-foreground transition pb-0.5"
+          >
+            Turn back <ChevronUp className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {!showCartFooter && (
+        <div className="px-2.5 py-2 flex items-center justify-between">
+          <div className="flex justify-between font-bold text-sm text-foreground w-full"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
+          <button
+            onClick={() => setShowCheckout(true)}
+            disabled={processing || !selectedCustomer}
+            className="ml-3 shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2.5 rounded-lg transition disabled:opacity-60 text-sm flex items-center gap-1.5"
+          >
+            <Receipt className="w-4 h-4" />
+            Pay
+            <kbd className="rounded bg-white/20 px-1 text-[10px] font-semibold leading-4">⇧P</kbd>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div ref={posRootRef} className="flex flex-col lg:flex-row lg:h-[var(--pos-h,calc(100dvh_-_104px))] transition-[height] duration-300 ease-out gap-4 animate-fade-in">
       {/* Mobile Cart Overlay */}
@@ -2126,7 +2296,7 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col min-w-0 lg:overflow-hidden">
         {/* Controls row */}
         <div className="flex flex-col gap-2 mb-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-          <div className="relative flex-1">
+          <div className="relative flex-1 sm:basis-72">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input
               ref={searchInputRef}
@@ -2137,38 +2307,30 @@ export default function POSPage() {
             />
             <kbd className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground pointer-events-none">/</kbd>
           </div>
-          {/* Quick Sell — non-stock items bought on demand, sold immediately */}
-          <button
-            type="button"
-            onClick={() => setShowQuickSell(true)}
-            className="flex items-center gap-1.5 shrink-0 border border-amber-500 text-amber-600 hover:bg-amber-50 rounded-xl px-3 py-2.5 text-sm font-semibold bg-white focus:outline-none focus:border-amber-500 transition whitespace-nowrap"
-            title="Sell an item bought on demand from another shop — no inventory record"
-          >
-            <Zap className="w-4 h-4" />
-            <span className="hidden sm:inline">Quick Sell</span>
-          </button>
-          {/* Brand filter */}
+          {/* Brand filter — icon-only until a brand is picked, then shows its name */}
           <div className="relative shrink-0">
             <button
               type="button"
               onClick={() => setBrandDropdownOpen(!brandDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-xl px-3 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition whitespace-nowrap ${
+              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
                 selectedBrand ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by brand"
             >
-              <Filter className="w-3.5 h-3.5" />
-              <span className="max-w-[100px] truncate">{selectedBrand ? brands.find(b => b.id === selectedBrand)?.name : 'All Brands'}</span>
+              <Tag className="w-4 h-4 shrink-0" />
               {selectedBrand && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); } }}
-                  className="ml-0.5 hover:text-red-500"
-                >
-                  <X className="w-3 h-3" />
-                </span>
+                <>
+                  <span className="max-w-[100px] truncate">{brands.find(b => b.id === selectedBrand)?.name}</span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); } }}
+                    className="ml-0.5 hover:text-red-500"
+                  >
+                    <X className="w-3 h-3" />
+                  </span>
+                </>
               )}
             </button>
             {brandDropdownOpen && (
@@ -2208,28 +2370,30 @@ export default function POSPage() {
               </div>
             )}
           </div>
-          {/* Category filter */}
+          {/* Category filter — icon-only until a category is picked, then shows its name */}
           <div className="relative shrink-0">
             <button
               type="button"
               onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-lg px-3 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition whitespace-nowrap ${
+              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
                 selectedCategory ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by category"
             >
-              <Filter className="w-3.5 h-3.5" />
-              <span className="max-w-[100px] truncate">{selectedCategory ? categories.find(c => c.id === selectedCategory)?.name : 'All Categories'}</span>
+              <LayoutGrid className="w-4 h-4 shrink-0" />
               {selectedCategory && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); } }}
-                  className="ml-0.5 hover:text-red-500"
-                >
-                  <X className="w-3 h-3" />
-                </span>
+                <>
+                  <span className="max-w-[100px] truncate">{categories.find(c => c.id === selectedCategory)?.name}</span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); } }}
+                    className="ml-0.5 hover:text-red-500"
+                  >
+                    <X className="w-3 h-3" />
+                  </span>
+                </>
               )}
             </button>
             {categoryDropdownOpen && (
@@ -2388,7 +2552,7 @@ export default function POSPage() {
         )}
 
         {/* Product grid — natural flow on mobile, overflow-y-auto on desktop */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
           {loading ? Array.from({ length: 12 }).map((_, i) => (
             <div key={i} className="bg-white rounded-xl border border-border p-3 animate-pulse"><div className="h-20 bg-muted rounded-lg mb-2" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
           )) : filteredProducts.length === 0 ? (
@@ -2480,7 +2644,7 @@ export default function POSPage() {
         style={cartHeightOverride != null && !cartMaximized ? ({ '--cart-ovh': `${cartHeightOverride}px` } as CSSProperties) : undefined}
         className={`
         ${cartMaximized ? 'fixed inset-0 z-[100]' : 'fixed lg:relative inset-x-0 bottom-0 lg:inset-auto'}
-        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[420px]'}
+        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[480px]'}
         flex flex-col bg-white
         ${cartMaximized ? 'rounded-none lg:rounded-none' : 'rounded-t-3xl lg:rounded-2xl'}
         border border-border shadow-sm overflow-hidden relative
@@ -2769,113 +2933,10 @@ export default function POSPage() {
         </div>
 
         {cart.length > 0 && (
-          <div className="border-t border-border">
-            {/* Collapse toggle */}
-            <button
-              ref={footerToggleRef}
-              onClick={() => toggleCartFooter()}
-              className="w-full flex items-center justify-between px-3 py-2 border border-blue-200 bg-blue-50/60 text-blue-600 hover:bg-blue-100/60 transition text-xs font-medium"
-            >
-              <span className="flex items-center gap-1.5">
-                <Eye className="w-3.5 h-3.5" />
-                {showCartFooter ? 'Hide footer' : 'See more in list (Optional)'}
-              </span>
-              <span className="flex items-center gap-1.5">
-                <kbd className="rounded border border-blue-200 bg-white px-1 text-[10px] font-semibold text-blue-400">⇧L</kbd>
-                {showCartFooter ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              </span>
-            </button>
-
-            {showCartFooter && (
-              <div className="p-2.5 space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Date</label>
-                    <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Reference</label>
-                    <input type="text" value={reference} onChange={e => setReference(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Ref. person (optional)" />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">Cart Discount %</span>
-                    <div className="w-28">
-                      <UnitInput unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="rounded-lg text-xs" />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">Extra Discount ৳</span>
-                    <div className="w-28">
-                      <UnitInput prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-muted-foreground">Shipping /Service Fee ৳</span>
-                    <div className="w-28">
-                      <UnitInput prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-0.5 text-sm">
-                  <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span>{formatCurrency(subtotal + itemDiscountTotal)}</span></div>
-                  {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item Discounts</span><span>-{formatCurrency(itemDiscountTotal)}</span></div>}
-                  {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart Discount ({discount}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>}
-                  {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>}
-                  {shipping > 0 && <div className="flex justify-between text-blue-700"><span>Shipping /Service Fee</span><span>+{formatCurrency(shipping)}</span></div>}
-                  {vatSettings.enabled && (
-                    <div className="flex justify-between items-center pt-1 border-t border-border">
-                      <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={applyVat}
-                          onChange={e => setApplyVat(e.target.checked)}
-                          className="w-3.5 h-3.5 accent-blue-600"
-                        />
-                        VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
-                      </label>
-                      {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(posVat.taxAmount)}</span>}
-                    </div>
-                  )}
-                  <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
-                </div>
-
-                <button
-                  onClick={() => setShowCheckout(true)}
-                  disabled={processing || !selectedCustomer}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl transition disabled:opacity-60 text-sm flex items-center justify-center gap-2"
-                >
-                  <Receipt className="w-4 h-4" />
-                  {processing ? 'Processing...' : `Checkout · ${formatCurrency(grandTotal)}`}
-                </button>
-
-                <button
-                  onClick={() => setShowCartFooter(false)}
-                  className="w-full flex items-center justify-center gap-1 text-sm text-muted-foreground hover:text-foreground transition pb-0.5"
-                >
-                  Turn back <ChevronUp className="w-3 h-3" />
-                </button>
-              </div>
-            )}
-
-            {!showCartFooter && (
-              <div className="px-2.5 py-2 flex items-center justify-between">
-                <div className="flex justify-between font-bold text-sm text-foreground w-full"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
-                <button
-                  onClick={() => setShowCheckout(true)}
-                  disabled={processing || !selectedCustomer}
-                  className="ml-3 shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2.5 rounded-lg transition disabled:opacity-60 text-sm flex items-center gap-1.5"
-                >
-                  <Receipt className="w-4 h-4" />
-                  Pay
-                  <kbd className="rounded bg-white/20 px-1 text-[10px] font-semibold leading-4">⇧P</kbd>
-                </button>
-              </div>
-            )}
-          </div>
+          <>
+            {renderCartFooter(footerPinned ? 'invisible' : '', true)}
+            {footerPinned && createPortal(renderCartFooter('', false), document.body)}
+          </>
         )}
 
         {orderComplete && (
@@ -3077,14 +3138,6 @@ export default function POSPage() {
           </div>
         </div>
       )}
-
-      {/* Quick Sell — non-stock items bought on demand from another shop */}
-      <QuickSellModal
-        open={showQuickSell}
-        onClose={() => setShowQuickSell(false)}
-        isPos
-        onCreated={() => loadProducts(search)}
-      />
 
       {/* Manual batch allocation override (spec §9) */}
       {editingAllocLine && (() => {
