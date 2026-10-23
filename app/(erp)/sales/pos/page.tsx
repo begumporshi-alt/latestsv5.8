@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Keyboard, Tag, LayoutGrid } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Keyboard, Tag, LayoutGrid, Warehouse } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -22,9 +22,13 @@ import {
 import { InsufficientStockDialog, type InsufficientStockInfo } from '@/components/insufficient-stock-dialog';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { BatchAllocationEditor, type EditorBatch } from '@/components/batch-allocation-editor';
+import { BatchAllocationViewer } from '@/components/batch-allocation-viewer';
 import { useGlobalCart } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheGet, cachePut, mutateCache, isNetworkError } from '@/lib/offline/cache';
 import { readData } from '@/lib/offline/read-result';
@@ -282,7 +286,7 @@ export default function POSPage() {
     targetWarehouseId: string | undefined;
     availableWhs: CartItem['available_warehouses'];
   } | null>(null);
-  const [expandedBatchLine, setExpandedBatchLine] = useState<string | null>(null);
+  const [viewingBatchLine, setViewingBatchLine] = useState<string | null>(null);
   const [editingAllocLine, setEditingAllocLine] = useState<string | null>(null);
 
   const defaultWarehouseId = warehouses.find(w => w.is_default)?.id ?? null;
@@ -2537,9 +2541,9 @@ export default function POSPage() {
         </div>
 
         {/* Product grid — natural flow on mobile, overflow-y-auto on desktop */}
-        <div aria-label="Product gallery" aria-busy={loading || loadingMore} className="grid grid-cols-2 md:grid-cols-3 gap-3 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+        <div aria-label="Product gallery" aria-busy={loading || loadingMore} className="grid grid-cols-2 md:grid-cols-3 gap-2.5 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
           {loading ? Array.from({ length: 12 }).map((_, i) => (
-            <div key={i} className="bg-white rounded-xl border border-border p-3 animate-pulse"><div className="h-20 bg-muted rounded-lg mb-2" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
+            <div key={i} className="bg-white rounded-xl border border-border p-2.5 animate-pulse"><div className="h-16 bg-muted rounded-lg mb-1.5" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
           )) : filteredProducts.length === 0 ? (
             <div className="col-span-full text-center py-12 text-muted-foreground">
               {search ? `No products found for "${search}"` : 'No products found'}
@@ -2557,7 +2561,7 @@ export default function POSPage() {
             return (
               <div
                 key={p.id}
-                className="bg-white rounded-xl border border-border p-3 text-left hover:border-blue-400 hover:shadow-md transition-all group relative"
+                className="bg-white rounded-xl border border-border p-2.5 text-left hover:border-blue-400 hover:shadow-md transition-all group relative"
               >
                 {/* group class stays for image-btn opacity; cost overlay uses a separate nested group below */}
                 {/* Image change button (top-right, appears on hover) */}
@@ -2573,7 +2577,7 @@ export default function POSPage() {
                   {multiUnit && (
                     <span className="absolute top-2 left-2 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium z-10">Multi-unit</span>
                   )}
-                  <div className="w-full h-20 bg-muted rounded-lg overflow-hidden mb-2 relative">
+                  <div className="w-full h-16 bg-muted rounded-lg overflow-hidden mb-1.5 relative">
                     {p.image_url || defaultProductImage ? (
                       <img
                         src={p.image_url || defaultProductImage}
@@ -2648,7 +2652,7 @@ export default function POSPage() {
         style={cartHeightOverride != null && !cartMaximized ? ({ '--cart-ovh': `${cartHeightOverride}px` } as CSSProperties) : undefined}
         className={`
         ${cartMaximized ? 'fixed inset-0 z-[100]' : 'fixed lg:relative inset-x-0 bottom-0 lg:inset-auto'}
-        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[480px]'}
+        ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[560px]'}
         flex flex-col bg-white
         ${cartMaximized ? 'rounded-none lg:rounded-none' : 'rounded-t-3xl lg:rounded-2xl'}
         border border-border shadow-sm overflow-hidden relative
@@ -2724,7 +2728,7 @@ export default function POSPage() {
         <div
           ref={cartListRef}
           onScroll={e => setCartListScrolled(e.currentTarget.scrollTop > 4)}
-          className={`grow shrink min-h-0 overflow-y-auto p-3 space-y-2 ${cartMaximized ? 'lg:max-w-4xl lg:mx-auto lg:w-full' : ''}`}
+          className={`grow shrink min-h-0 overflow-y-auto p-2.5 space-y-1.5 ${cartMaximized ? 'lg:max-w-4xl lg:mx-auto lg:w-full' : ''}`}
         >
           <div
             className="sticky top-0 -mb-6 h-6 z-10 pointer-events-none bg-gradient-to-b from-white to-transparent transition-opacity"
@@ -2743,7 +2747,23 @@ export default function POSPage() {
               const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
               const liKey = lineIdOf(item);
               const la = lineAllocation(item);
-              const batchExpanded = expandedBatchLine === liKey;
+              // Warnings worth a red count on the batch button: a ledger
+              // shortfall, and a manual override that no longer fits.
+              const batchWarnCount = (la && la.shortfall > 1e-9 ? 1 : 0) + (la && la.overrideInvalid ? 1 : 0);
+              // The button is the line's only batch affordance, so it also
+              // shows when there is nothing allocated yet but the ledger
+              // cannot cover the line — the warning needs a carrier.
+              const hasBatchButton = !!la && (la.allocations.length > 0 || batchWarnCount > 0);
+              const batchButtonTitle = hasBatchButton
+                ? `Batch allocation — ${la!.allocations.length} batch${la!.allocations.length === 1 ? '' : 'es'} (${la!.usedOverride ? 'manual' : strategy.toUpperCase()})${batchWarnCount > 0 ? ` · ${batchWarnCount} warning${batchWarnCount === 1 ? '' : 's'}` : ''}`
+                : '';
+              const whOptions = item.available_warehouses || [];
+              // A product stocked in one warehouse offers no choice, so the
+              // picker would be a dead control occupying a full row.
+              const multiWarehouse = whOptions.length > 1;
+              const activeWarehouseName = whOptions.find(w => w.warehouse_id === item.warehouse_id)?.warehouse_name
+                || warehouses.find(w => w.id === item.warehouse_id)?.name
+                || '';
               return (
             <div
               key={`${item.id}-${item.selected_unit?.id || 'default'}`}
@@ -2752,7 +2772,7 @@ export default function POSPage() {
               onDragOver={e => { e.preventDefault(); setDragOverItem(index); }}
               onDrop={() => { if (draggedItem !== null && draggedItem !== index) reorderCart(draggedItem, index); setDraggedItem(null); setDragOverItem(null); }}
               onDragEnd={() => { setDraggedItem(null); setDragOverItem(null); }}
-              className={`bg-muted/30 rounded-lg px-3 py-2 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} cursor-grab active:cursor-grabbing`}
+              className={`bg-muted/30 rounded-lg px-2.5 py-1.5 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} cursor-grab active:cursor-grabbing`}
             >
               <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
@@ -2763,8 +2783,13 @@ export default function POSPage() {
                   className="flex-1 min-w-0 text-sm font-semibold text-foreground leading-tight break-words cursor-default"
                 />
                 <span className="text-sm font-bold text-blue-600 shrink-0 whitespace-nowrap">{formatCurrency(lineTotal)}</span>
+                {(item.discount_percent || 0) > 0 && (
+                  <span className="text-[11px] font-semibold text-green-600 bg-green-50 border border-green-200 rounded px-1 py-px shrink-0 whitespace-nowrap">
+                    −{fmtQty(item.discount_percent)}%
+                  </span>
+                )}
               </div>
-              <div className="flex items-end gap-2 mt-1.5 pl-6">
+              <div className="flex items-end gap-1.5 sm:gap-2 mt-1 pl-6">
                 <div className="flex flex-col">
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Price</label>
                   <input
@@ -2774,10 +2799,10 @@ export default function POSPage() {
                     value={item.unit_price}
                     onChange={e => updateCartPrice(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-20 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right tabular-nums bg-white"
+                    className="w-16 sm:w-20 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right tabular-nums bg-white"
                   />
                 </div>
-                {item.selected_unit && <span className="text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
+                {item.selected_unit && <span className="text-[10px] sm:text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
                 <div className="flex flex-col">
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Disc %</label>
                   <input
@@ -2788,14 +2813,36 @@ export default function POSPage() {
                     value={item.discount_percent || 0}
                     onChange={e => updateCartItemDiscount(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-16 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-right tabular-nums bg-amber-50/30"
+                    className="w-14 sm:w-16 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-right tabular-nums bg-amber-50/30"
                     placeholder="0"
                   />
                 </div>
-                {(item.discount_percent || 0) > 0 && (
-                  <span className="text-xs text-green-600 font-semibold whitespace-nowrap pb-1.5">→ {formatCurrency(item.unit_price * (1 - (item.discount_percent || 0) / 100))}</span>
+                {hasBatchButton && (
+                  /* Batch allocation lives in the inputs row: a Layers button
+                     that carries the warning count, so a line never spends a
+                     separate row on batch metadata. */
+                  <div className="flex flex-col ml-auto">
+                    <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Batch</label>
+                    <button
+                      onClick={e => { e.stopPropagation(); setViewingBatchLine(liKey); }}
+                      title={batchButtonTitle}
+                      aria-label={batchButtonTitle}
+                      className={`relative h-[30px] w-7 rounded-md border transition flex items-center justify-center ${
+                        la.usedOverride
+                          ? 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100'
+                          : 'border-blue-200 bg-blue-50/60 text-blue-700 hover:bg-blue-100'
+                      }`}
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      {batchWarnCount > 0 && (
+                        <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center leading-none shadow-sm">
+                          {batchWarnCount}
+                        </span>
+                      )}
+                    </button>
+                  </div>
                 )}
-                <div className="flex flex-col ml-auto">
+                <div className={`flex flex-col ${hasBatchButton ? '' : 'ml-auto'}`}>
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Qty</label>
                   <input
                     type="number"
@@ -2804,74 +2851,54 @@ export default function POSPage() {
                     value={item.quantity}
                     onChange={e => updateCartQuantity(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-20 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white"
+                    className="w-16 sm:w-20 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white"
                   />
                 </div>
               </div>
               {la && la.shortfall > 1e-9 && (
-                <div className="mt-1.5 pl-6 flex items-center gap-1.5">
+                <div className="mt-1 pl-6 flex items-center gap-1.5">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
                   <span className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
                     Batch ledger {fmtQty(la.allocatedQty)} of {fmtQty(item.base_quantity)} — short {fmtQty(la.shortfall)} base units, needs confirmation
                   </span>
                 </div>
               )}
-              {la && la.allocations.length > 0 && (
-                <div className="mt-1 pl-6">
-                  {/* Batch allocation preview (spec §7–§8): informational,
-                      expandable — the normal flow never requires interaction */}
-                  <button
-                    onClick={() => setExpandedBatchLine(v => (v === liKey ? null : liKey))}
-                    className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 font-medium"
-                  >
-                    {batchExpanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                    Batch Allocation ({la.allocations.length} batch{la.allocations.length === 1 ? '' : 'es'})
-                    <span className={`ml-1 px-1 py-px rounded text-[9px] font-semibold ${la.usedOverride ? 'bg-purple-100 text-purple-700' : 'bg-blue-50 text-blue-500'}`}>
-                      {la.usedOverride ? 'MANUAL' : strategy.toUpperCase()}
-                    </span>
-                  </button>
-                  {batchExpanded && (
-                    <div className="mt-1 bg-white border border-border rounded-lg px-2 py-1.5 space-y-0.5">
-                      {la.allocations.map(a => (
-                        <div key={a.batch.id} className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-foreground font-medium truncate max-w-[130px]">{a.batch.batch_number || a.batch.id.slice(0, 8)}</span>
-                          <span className="text-muted-foreground shrink-0">
-                            {fmtQty(a.qty)}{item.selected_unit && item.selected_unit.conversion_factor !== 1 ? ` (${fmtQty(a.qty / item.selected_unit.conversion_factor)} ${item.selected_unit.unit_short || item.selected_unit.unit_name})` : ''}
-                          </span>
-                          <span className="text-muted-foreground shrink-0">@ {formatCurrency(a.batch.unit_cost)}</span>
-                        </div>
-                      ))}
-                      <div className="flex items-center justify-between text-[11px] pt-1 border-t border-border/60">
-                        <span className="text-muted-foreground">Batch COGS (est.)</span>
-                        <span className="font-semibold text-foreground">{formatCurrency(la.allocations.reduce((s, a) => s + a.qty * a.batch.unit_cost, 0))}</span>
-                      </div>
-                      <button onClick={() => setEditingAllocLine(liKey)} className="text-[11px] text-blue-600 hover:underline pt-0.5">
-                        Edit Batch Allocation
+              {/* The warehouse picker only appears when the product is
+                  stocked in more than one warehouse — otherwise the control
+                  would be a dead choice taking a whole row. */}
+              {multiWarehouse && (
+                <div className="mt-1 pl-6 flex items-center gap-1.5 flex-wrap">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        onClick={e => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded-md border border-border bg-white px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground hover:border-emerald-300 transition"
+                      >
+                        <Warehouse className="w-3 h-3 text-emerald-600 shrink-0" />
+                        <span className="max-w-[130px] truncate">{activeWarehouseName}</span>
+                        <ChevronDown className="w-3 h-3 shrink-0" />
                       </button>
-                    </div>
-                  )}
-                </div>
-              )}
-              {item.available_warehouses && item.available_warehouses.length > 0 && (
-                <div className="flex items-center gap-1.5 mt-1.5 pl-6">
-                  <span className="text-[10px] font-medium text-muted-foreground shrink-0">WH</span>
-                  <select
-                    value={item.warehouse_id || ''}
-                    onChange={e => {
-                      const wh = item.available_warehouses?.find(w => w.warehouse_id === e.target.value);
-                      if (wh) {
-                        // New warehouse = new allocation pair: drop any manual
-                        // override so automatic allocation re-runs there.
-                        setCart(prev => prev.map((c, ci) => ci === index ? { ...c, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_available: wh.stock, allocOverride: null } : c));
-                      }
-                    }}
-                    onClick={e => e.stopPropagation()}
-                    className="flex-1 text-xs border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-1.5 py-1 focus:outline-none cursor-pointer"
-                  >
-                    {item.available_warehouses.map(w => (
-                      <option key={w.warehouse_id} value={w.warehouse_id}>{w.warehouse_name} ({w.stock})</option>
-                    ))}
-                  </select>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start" className="min-w-[220px] z-[60]">
+                      <DropdownMenuRadioGroup
+                        value={item.warehouse_id || ''}
+                        onValueChange={v => {
+                          const wh = whOptions.find(w => w.warehouse_id === v);
+                          if (!wh) return;
+                          // New warehouse = new allocation pair: drop any manual
+                          // override so automatic allocation re-runs there.
+                          setCart(prev => prev.map((c, ci) => ci === index ? { ...c, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_available: wh.stock, allocOverride: null } : c));
+                        }}
+                      >
+                        {whOptions.map(w => (
+                          <DropdownMenuRadioItem key={w.warehouse_id} value={w.warehouse_id} className="gap-2">
+                            <span className="flex-1 truncate">{w.warehouse_name}</span>
+                            <span className="shrink-0 text-[10px] text-muted-foreground">{fmtQty(w.stock)}</span>
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               )}
             </div>
@@ -3142,6 +3169,40 @@ export default function POSPage() {
           </div>
         </div>
       )}
+
+      {/* Batch allocation viewer (read-only; spec §7–§8) */}
+      {viewingBatchLine && (() => {
+        const item = cart.find(c => lineIdOf(c) === viewingBatchLine);
+        if (!item) return null;
+        const la = lineAllocation(item);
+        if (!la) return null;
+        // The ledger consumes from the line's warehouse, else the default
+        // one — name the warehouse that will actually be drawn from.
+        const allocWh = resolveWarehouse({ warehouseId: item.warehouse_id }, defaultWarehouseId);
+        const whName = (item.available_warehouses || []).find(w => w.warehouse_id === allocWh)?.warehouse_name
+          || warehouses.find(w => w.id === allocWh)?.name
+          || 'Not assigned';
+        return (
+          <BatchAllocationViewer
+            line={{
+              productName: item.name,
+              sku: item.sku,
+              unitLabel: item.selected_unit ? (item.selected_unit.unit_short || item.selected_unit.unit_name) : undefined,
+              warehouseName: whName,
+              lineQty: item.base_quantity,
+              allocatedQty: la.allocatedQty,
+              shortfall: la.shortfall,
+              usedOverride: la.usedOverride,
+              overrideInvalid: la.overrideInvalid,
+              strategy,
+              allocations: la.allocations,
+              conversionFactor: item.selected_unit?.conversion_factor ?? 1,
+            }}
+            onEdit={() => { setEditingAllocLine(viewingBatchLine); setViewingBatchLine(null); }}
+            onClose={() => setViewingBatchLine(null)}
+          />
+        );
+      })()}
 
       {/* Manual batch allocation override (spec §9) */}
       {editingAllocLine && (() => {
