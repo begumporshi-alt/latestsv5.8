@@ -687,7 +687,7 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [showAddCustomer, setShowAddCustomer] = useState(false);
-  const [showProductGallery, setShowProductGallery] = useState(false);
+  const [showProductGallery, setShowProductGallery] = useState(true);
   const [formTab, setFormTab] = useState<'items' | 'cost'>('items');
 
   // Global bridge: the QuickActionDrawer's Product Catalog dispatches a
@@ -1484,7 +1484,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [markedForPurchase, setMarkedForPurchase] = useState<Set<string>>(new Set());
-  const [showProductGallery, setShowProductGallery] = useState(false);
+  const [showProductGallery, setShowProductGallery] = useState(true);
 
   // Global bridge: the QuickActionDrawer's Product Catalog dispatches a
   // 'quotation:add-product' window event; add it to the open form's items.
