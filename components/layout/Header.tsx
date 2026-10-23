@@ -5,7 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { getInitials } from '@/lib/format';
-import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
+import { tokenizeSearch, applyIlikeTokens, rankRows } from '@/lib/search';
+import HighlightLabel from '@/components/ui/HighlightLabel';
 import { Search, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart, AlertCircle } from 'lucide-react';
 import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
@@ -43,25 +44,6 @@ const searchSources: { table: string; labelCol: string; subCol?: string; searchC
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const kbdHint = isMac ? '⌘K' : 'Ctrl+K';
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function HighlightLabel({ text, query }: { text: string; query: string }) {
-  const tokens = tokenizeSearch(query);
-  if (!tokens.length) return <>{text}</>;
-  const re = new RegExp(`(${tokens.map(escapeRegExp).join('|')})`, 'ig');
-  return (
-    <>
-      {text.split(re).map((part, i) =>
-        tokens.includes(part.toLowerCase())
-          ? <mark key={i} className="bg-blue-100 text-blue-700 rounded-sm px-0.5">{part}</mark>
-          : <span key={i}>{part}</span>
-      )}
-    </>
-  );
-}
 
 export default function Header({ onMenuToggle }: HeaderProps) {
   const router = useRouter();
@@ -173,10 +155,13 @@ export default function Header({ onMenuToggle }: HeaderProps) {
             .select(`${src.labelCol}${src.subCol ? ', ' + src.subCol : ''}, id`),
           src.searchCols,
           tokens,
-        ).limit(3);
+        ).limit(20);
 
         if (error) { failed = true; return; }
-        (data || []).forEach((row: any) => {
+        // Rank before cutting to 3 — the DB limit only bounds transport, so a
+        // name starting with the query outranks alphabetically-earlier rows.
+        const ranked = rankRows((data || []) as any[], (row: any) => [row[src.labelCol], src.subCol ? String(row[src.subCol] || '') : ''], tokens).slice(0, 3);
+        ranked.forEach((row: any) => {
           results.push({
             id: row.id,
             type: src.type,

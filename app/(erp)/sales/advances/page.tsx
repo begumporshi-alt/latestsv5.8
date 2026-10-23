@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
-import { tokenizeSearch, applyIlikeTokens } from '@/lib/search';
+import { tokenizeSearch, applyIlikeTokens, rankRows } from '@/lib/search';
+import HighlightLabel from '@/components/ui/HighlightLabel';
 import { useToast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
@@ -40,7 +41,7 @@ interface Application {
 }
 
 interface PaymentMethod { code: string; name: string; }
-interface Customer { id: string; name: string; code: string; }
+interface Customer { id: string; name: string; code: string; phone?: string; }
 
 export default function CustomerAdvancesPage() {
   const { toast } = useToast();
@@ -463,7 +464,11 @@ function RecordAdvanceModal({ paymentMethods, onClose, onSaved }: {
   const [error, setError] = useState('');
   const [customerSearch, setCustomerSearch] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerError, setCustomerError] = useState(false);
+  const [customerActiveIndex, setCustomerActiveIndex] = useState(-1);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const customerSearchSeqRef = useRef(0);
+  const customerListboxId = `${useId()}-listbox`;
   const [form, setForm] = useState({
     amount: '',
     payment_method: 'cash',
@@ -474,20 +479,55 @@ function RecordAdvanceModal({ paymentMethods, onClose, onSaved }: {
 
   useEffect(() => {
     const tokens = tokenizeSearch(customerSearch);
-    if (tokens.length === 0) { setCustomers([]); return; }
+    if (tokens.length === 0) { setCustomers([]); setCustomerError(false); setCustomerActiveIndex(-1); return; }
     const t = setTimeout(async () => {
-      const { data } = await applyIlikeTokens(
+      const seq = ++customerSearchSeqRef.current;
+      const { data, error } = await applyIlikeTokens(
         supabase
           .from('customers')
-          .select('id, name, code')
+          .select('id, name, code, phone')
           .order('name'),
         ['name', 'code', 'phone'],
         tokens,
-      ).limit(10);
-      setCustomers(data || []);
+      ).limit(200);
+      if (seq !== customerSearchSeqRef.current) return;   // superseded by a newer keystroke
+      if (error) {
+        setCustomers([]); setCustomerError(true); setCustomerActiveIndex(-1);
+      } else {
+        // Rank the full match set first — the DB limit only bounds transport,
+        // otherwise alphabetically-earlier rows would crowd out the best match.
+        const ranked = rankRows((data as Customer[]) || [], c => [c.name, c.code || '', (c as any).phone || ''], tokens).slice(0, 10);
+        setCustomers(ranked);
+        setCustomerError(false);
+        setCustomerActiveIndex(ranked.length > 0 ? 0 : -1);
+      }
     }, 200);
     return () => clearTimeout(t);
   }, [customerSearch]);
+
+  useEffect(() => {
+    if (customerActiveIndex < 0) return;
+    document.getElementById(`${customerListboxId}-option-${customerActiveIndex}`)?.scrollIntoView({ block: 'nearest' });
+  }, [customerActiveIndex, customerListboxId]);
+
+  function handleCustomerKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (customers.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setCustomerActiveIndex(i => Math.min(i + 1, customers.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setCustomerActiveIndex(i => Math.max(i - 1, 0));
+    } else if (e.key === 'Enter') {
+      // Prevent the enclosing form from submitting while picking a result.
+      e.preventDefault();
+      const pick = customers[customerActiveIndex] || customers[0];
+      if (pick) { setSelectedCustomer(pick); setCustomerSearch(''); setCustomers([]); setCustomerActiveIndex(-1); }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setCustomers([]);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -560,23 +600,37 @@ function RecordAdvanceModal({ paymentMethods, onClose, onSaved }: {
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <input
+                  role="combobox"
+                  aria-expanded={customers.length > 0 || customerError}
+                  aria-controls={customerListboxId}
+                  aria-activedescendant={customerActiveIndex >= 0 ? `${customerListboxId}-option-${customerActiveIndex}` : undefined}
+                  aria-autocomplete="list"
                   value={customerSearch}
                   onChange={e => setCustomerSearch(e.target.value)}
-                  placeholder="Search customer by name..."
+                  onKeyDown={handleCustomerKeyDown}
+                  placeholder="Search customer by name, code, or phone..."
                   className="w-full pl-10 pr-4 py-2.5 border border-border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                   autoFocus
                 />
-                {customers.length > 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
-                    {customers.map(c => (
+                {(customers.length > 0 || customerError) && (
+                  <div role="listbox" id={customerListboxId} className="absolute top-full left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
+                    {customerError ? (
+                      <div className="px-3 py-3 text-sm text-red-600 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        Search failed — check your connection and try again
+                      </div>
+                    ) : customers.map((c, i) => (
                       <button
                         key={c.id}
                         type="button"
-                        onClick={() => { setSelectedCustomer(c); setCustomerSearch(''); setCustomers([]); }}
-                        className="w-full text-left px-3 py-2 hover:bg-blue-50 transition text-sm"
+                        role="option"
+                        id={`${customerListboxId}-option-${i}`}
+                        aria-selected={i === customerActiveIndex}
+                        onClick={() => { setSelectedCustomer(c); setCustomerSearch(''); setCustomers([]); setCustomerActiveIndex(-1); }}
+                        className={`w-full text-left px-3 py-2 transition text-sm ${i === customerActiveIndex ? 'bg-blue-50' : 'hover:bg-blue-50'}`}
                       >
-                        <p className="font-medium text-foreground">{c.name}</p>
-                        <p className="text-xs text-muted-foreground">{c.code}</p>
+                        <p className="font-medium text-foreground"><HighlightLabel text={c.name} query={customerSearch} /></p>
+                        <p className="text-xs text-muted-foreground">{c.code}{c.phone ? ` · ${c.phone}` : ''}</p>
                       </button>
                     ))}
                   </div>

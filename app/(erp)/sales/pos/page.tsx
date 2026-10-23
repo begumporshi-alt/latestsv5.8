@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
@@ -38,6 +38,7 @@ import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
 import { QuickSellModal } from '@/components/quick-sell-modal';
 import { tokenizeSearch, applyIlikeTokens, matchesTokens, rankRows } from '@/lib/search';
+import HighlightLabel from '@/components/ui/HighlightLabel';
 import {
   buildPosSettlement, round2, type PosCollectMode, type PosSettlement,
   type PosOutstandingRow, type PosAdvanceRow,
@@ -2027,6 +2028,9 @@ export default function POSPage() {
   const [imageModalIsDefault, setImageModalIsDefault] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
   const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false);
+  // Keyboard-navigable customer dropdown: -1 = Walk-in row, n = customerMatches[n].
+  const [customerActiveIndex, setCustomerActiveIndex] = useState(-1);
+  const customerListboxId = `${useId()}-customer-listbox`;
   const [showCostPrice, setShowCostPrice] = useState<string | null>(null);
   const [draggedItem, setDraggedItem] = useState<number | null>(null);
   const [dragOverItem, setDragOverItem] = useState<number | null>(null);
@@ -2037,6 +2041,51 @@ export default function POSPage() {
     setTimeout(() => window.addEventListener('click', handler), 0);
     return () => window.removeEventListener('click', handler);
   }, [customerDropdownOpen]);
+
+  const customerTokens = tokenizeSearch(customerSearch);
+  const customerMatches = useMemo(
+    () => customerTokens.length === 0
+      ? customers
+      : rankRows(
+          customers.filter(c => matchesTokens(c, ['name', 'code', 'phone'], customerTokens)),
+          c => [c.name, c.code || '', c.phone || ''],
+          customerTokens,
+        ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [customers, customerSearch],
+  );
+  useEffect(() => { setCustomerActiveIndex(customerMatches.length > 0 ? 0 : -1); }, [customerSearch]);  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (customerActiveIndex < 0 || !customerDropdownOpen) return;
+    document.getElementById(`${customerListboxId}-option-${customerActiveIndex}`)?.scrollIntoView({ block: 'nearest' });
+  }, [customerActiveIndex, customerDropdownOpen, customerListboxId]);
+
+  function handleCustomerSelect(id: string) {
+    setSelectedCustomer(id);
+    setCustomerDropdownOpen(false);
+    setCustomerSearch('');
+    setCustomerActiveIndex(-1);
+  }
+
+  function handleCustomerKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Escape' && customerDropdownOpen) {
+      e.preventDefault(); e.stopPropagation();
+      setCustomerDropdownOpen(false);
+      return;
+    }
+    if (customerMatches.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setCustomerActiveIndex(i => Math.min(i + 1, customerMatches.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setCustomerActiveIndex(i => Math.max(i - 1, -1));
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (customerActiveIndex >= 0) handleCustomerSelect(customerMatches[customerActiveIndex].id);
+      else handleCustomerSelect(walkInCustomerId);
+    }
+  }
 
   return (
     <div ref={posRootRef} className="flex flex-col lg:flex-row lg:h-[var(--pos-h,calc(100dvh_-_104px))] transition-[height] duration-300 ease-out gap-4 animate-fade-in">
@@ -2246,34 +2295,45 @@ export default function POSPage() {
                       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
                       <input
                         type="text"
+                        role="combobox"
+                        aria-expanded
+                        aria-controls={customerListboxId}
+                        aria-activedescendant={customerActiveIndex >= 0 ? `${customerListboxId}-option-${customerActiveIndex}` : customerActiveIndex === -1 ? `${customerListboxId}-option-walkin` : undefined}
+                        aria-autocomplete="list"
                         value={customerSearch}
                         onChange={e => setCustomerSearch(e.target.value)}
+                        onKeyDown={handleCustomerKeyDown}
                         placeholder="Search customers..."
                         autoFocus
                         className="w-full pl-8 pr-3 py-2 text-sm border border-border rounded-lg focus:outline-none focus:border-blue-400"
                       />
                     </div>
                   </div>
-                  <div className="max-h-72 overflow-y-auto">
+                  <div role="listbox" id={customerListboxId} className="max-h-72 overflow-y-auto">
                     <button
                       type="button"
-                      onClick={() => { setSelectedCustomer(walkInCustomerId); setCustomerDropdownOpen(false); setCustomerSearch(''); }}
-                      className={`w-full flex flex-col px-3 py-2 hover:bg-blue-50 transition text-left ${selectedCustomer === walkInCustomerId ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
+                      role="option"
+                      id={`${customerListboxId}-option-walkin`}
+                      aria-selected={customerActiveIndex === -1}
+                      onClick={() => handleCustomerSelect(walkInCustomerId)}
+                      className={`w-full flex flex-col px-3 py-2 transition text-left ${customerActiveIndex === -1 || selectedCustomer === walkInCustomerId ? 'bg-blue-50 text-blue-600' : 'text-foreground hover:bg-blue-50'}`}
                     >
                       <span className="text-sm font-medium">Walk-in Customer</span>
                       <span className="text-[10px] text-muted-foreground">CUST-272756</span>
                     </button>
-                    {(customerSearch.trim()
-                      ? customers.filter(c => c.name.toLowerCase().includes(customerSearch.trim().toLowerCase()) || (c.code || '').toLowerCase().includes(customerSearch.trim().toLowerCase()) || (c.phone || '').includes(customerSearch.trim()))
-                      : customers
-                    ).map(c => (
+                    {customerMatches.map((c, i) => (
                       <button
                         key={c.id}
                         type="button"
-                        onClick={() => { setSelectedCustomer(c.id); setCustomerDropdownOpen(false); setCustomerSearch(''); }}
-                        className={`w-full flex flex-col px-3 py-2 hover:bg-blue-50 transition text-left border-t border-border/40 ${selectedCustomer === c.id ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
+                        role="option"
+                        id={`${customerListboxId}-option-${i}`}
+                        aria-selected={i === customerActiveIndex}
+                        onClick={() => handleCustomerSelect(c.id)}
+                        className={`w-full flex flex-col px-3 py-2 transition text-left border-t border-border/40 ${i === customerActiveIndex ? 'bg-blue-50' : 'hover:bg-blue-50'} ${selectedCustomer === c.id ? 'text-blue-600' : 'text-foreground'}`}
                       >
-                        <span className="text-sm font-medium leading-tight break-words">{c.name}</span>
+                        <span className="text-sm font-medium leading-tight break-words">
+                          {customerTokens.length > 0 ? <HighlightLabel text={c.name} query={customerSearch} /> : c.name}
+                        </span>
                         <div className="flex items-center gap-2 mt-0.5">
                           {Number(c.outstanding_balance) > 0 && (
                             <span className="text-[10px] font-medium text-amber-600">
@@ -2285,11 +2345,7 @@ export default function POSPage() {
                         </div>
                       </button>
                     ))}
-                    {customerSearch.trim() && customers.filter(c =>
-                      c.name.toLowerCase().includes(customerSearch.trim().toLowerCase()) ||
-                      (c.code || '').toLowerCase().includes(customerSearch.trim().toLowerCase()) ||
-                      (c.phone || '').includes(customerSearch.trim())
-                    ).length === 0 && (
+                    {customerSearch.trim() && customerMatches.length === 0 && (
                       <div className="px-3 py-4 text-center text-xs text-muted-foreground">No customers found</div>
                     )}
                   </div>

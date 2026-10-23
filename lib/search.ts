@@ -76,8 +76,11 @@ export function matchValues(values: unknown[], tokens: string[]): boolean {
 /**
  * Relevance ordering for already-filtered rows. Substring search can't rank
  * by itself — searching "tee" must not show "s**tee**l nail" alongside real
- * tee products. Scores 2 for word-boundary hits, 1 for mid-word hits, per
- * token; ties keep the caller's original order (stable sort).
+ * tee products. Scores 3 for a token at the very start of a column (prefix
+ * hit — what users mean first), 2 for other word-boundary hits, 1 for
+ * mid-word hits, per token; ties keep the caller's original order (stable
+ * sort). Rank the FULL match set before slicing — ranking a pre-limit slice
+ * hides the best matches behind alphabetically-earlier ones.
  */
 export function rankRows<T>(rows: T[], getColumns: (row: T) => string[], tokens: string[]): T[] {
   if (tokens.length === 0) return rows;
@@ -90,7 +93,7 @@ export function rankRows<T>(rows: T[], getColumns: (row: T) => string[], tokens:
         const i = col.indexOf(token);
         if (i === -1) continue;
         const atBoundary = i === 0 || /[^a-z0-9]/.test(col[i - 1]);
-        best = Math.max(best, atBoundary ? 2 : 1);
+        best = Math.max(best, i === 0 ? 3 : atBoundary ? 2 : 1);
       }
       score += best;
     }
