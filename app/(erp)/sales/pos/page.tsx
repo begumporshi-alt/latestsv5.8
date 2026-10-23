@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap, Keyboard } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Keyboard, Tag, LayoutGrid } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -36,7 +36,6 @@ import { runReplicaQuery } from '@/lib/offline/replica-query';
 import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
-import { QuickSellModal } from '@/components/quick-sell-modal';
 import { tokenizeSearch, applyIlikeTokens, matchesTokens, rankRows } from '@/lib/search';
 import HighlightLabel from '@/components/ui/HighlightLabel';
 import {
@@ -710,6 +709,15 @@ export default function POSPage() {
     void refreshProductSnapshot();
     setLoading(false);
   }
+
+  // Quick Sell now lives in the global header — refresh the grid when a
+  // quick sell completes while this page is mounted.
+  useEffect(() => {
+    const onQuickSellCreated = () => loadProducts(search);
+    window.addEventListener('quick-sell:created', onQuickSellCreated);
+    return () => window.removeEventListener('quick-sell:created', onQuickSellCreated);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   // Full customer list through the offline cache (also feeds the credit-gate
   // fallback and the walk-in resolution). Full rows so updated_at is captured
@@ -1795,7 +1803,6 @@ export default function POSPage() {
   const [cartMaximized, setCartMaximized] = useState(false);
   const [cartTab, setCartTab] = useState<'items' | 'cost'>('items');
   const [showCheckout, setShowCheckout] = useState(false);
-  const [showQuickSell, setShowQuickSell] = useState(false);
   // Each checkout session is a fresh charge intent — a new idempotency key
   // per modal open. Must sit after the showCheckout declaration: the
   // dependency below evaluates during render.
@@ -1988,7 +1995,6 @@ export default function POSPage() {
       if (e.key === 'Escape') {
         if (showShortcuts) { setShowShortcuts(false); return; }
         if (showCheckout) { setShowCheckout(false); return; }
-        if (showQuickSell) { setShowQuickSell(false); return; }
         if (isEditable(e.target)) { (e.target as HTMLElement).blur(); return; }
         if (showCartFooter) { setShowCartFooter(false); return; }
         if (showMobileCart) { setShowMobileCart(false); return; }
@@ -1998,7 +2004,7 @@ export default function POSPage() {
       // Ctrl+Enter never inserts text, so it stays live even while typing;
       // Shift-letters would insert capitals, so they wait until below the
       // isEditable guard, as do "/" and "?".
-      if (showCheckout || showQuickSell) return;
+      if (showCheckout) return;
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         if (cart.length > 0 && !processing) setShowCheckout(true);
@@ -2038,7 +2044,7 @@ export default function POSPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showCheckout, showQuickSell, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, processing]);
+  }, [showCheckout, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, processing]);
   const [defaultProductImage, setDefaultProductImage] = useState('');
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalProduct, setImageModalProduct] = useState<ProductData | null>(null);
@@ -2126,7 +2132,7 @@ export default function POSPage() {
       <div className="flex-1 flex flex-col min-w-0 lg:overflow-hidden">
         {/* Controls row */}
         <div className="flex flex-col gap-2 mb-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
-          <div className="relative flex-1">
+          <div className="relative flex-1 sm:basis-72">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input
               ref={searchInputRef}
@@ -2137,38 +2143,30 @@ export default function POSPage() {
             />
             <kbd className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground pointer-events-none">/</kbd>
           </div>
-          {/* Quick Sell — non-stock items bought on demand, sold immediately */}
-          <button
-            type="button"
-            onClick={() => setShowQuickSell(true)}
-            className="flex items-center gap-1.5 shrink-0 border border-amber-500 text-amber-600 hover:bg-amber-50 rounded-xl px-3 py-2.5 text-sm font-semibold bg-white focus:outline-none focus:border-amber-500 transition whitespace-nowrap"
-            title="Sell an item bought on demand from another shop — no inventory record"
-          >
-            <Zap className="w-4 h-4" />
-            <span className="hidden sm:inline">Quick Sell</span>
-          </button>
-          {/* Brand filter */}
+          {/* Brand filter — icon-only until a brand is picked, then shows its name */}
           <div className="relative shrink-0">
             <button
               type="button"
               onClick={() => setBrandDropdownOpen(!brandDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-xl px-3 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition whitespace-nowrap ${
+              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
                 selectedBrand ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by brand"
             >
-              <Filter className="w-3.5 h-3.5" />
-              <span className="max-w-[100px] truncate">{selectedBrand ? brands.find(b => b.id === selectedBrand)?.name : 'All Brands'}</span>
+              <Tag className="w-4 h-4 shrink-0" />
               {selectedBrand && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); } }}
-                  className="ml-0.5 hover:text-red-500"
-                >
-                  <X className="w-3 h-3" />
-                </span>
+                <>
+                  <span className="max-w-[100px] truncate">{brands.find(b => b.id === selectedBrand)?.name}</span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); } }}
+                    className="ml-0.5 hover:text-red-500"
+                  >
+                    <X className="w-3 h-3" />
+                  </span>
+                </>
               )}
             </button>
             {brandDropdownOpen && (
@@ -2208,28 +2206,30 @@ export default function POSPage() {
               </div>
             )}
           </div>
-          {/* Category filter */}
+          {/* Category filter — icon-only until a category is picked, then shows its name */}
           <div className="relative shrink-0">
             <button
               type="button"
               onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-lg px-3 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition whitespace-nowrap ${
+              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
                 selectedCategory ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by category"
             >
-              <Filter className="w-3.5 h-3.5" />
-              <span className="max-w-[100px] truncate">{selectedCategory ? categories.find(c => c.id === selectedCategory)?.name : 'All Categories'}</span>
+              <LayoutGrid className="w-4 h-4 shrink-0" />
               {selectedCategory && (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); } }}
-                  className="ml-0.5 hover:text-red-500"
-                >
-                  <X className="w-3 h-3" />
-                </span>
+                <>
+                  <span className="max-w-[100px] truncate">{categories.find(c => c.id === selectedCategory)?.name}</span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); } }}
+                    className="ml-0.5 hover:text-red-500"
+                  >
+                    <X className="w-3 h-3" />
+                  </span>
+                </>
               )}
             </button>
             {categoryDropdownOpen && (
@@ -3077,14 +3077,6 @@ export default function POSPage() {
           </div>
         </div>
       )}
-
-      {/* Quick Sell — non-stock items bought on demand from another shop */}
-      <QuickSellModal
-        open={showQuickSell}
-        onClose={() => setShowQuickSell(false)}
-        isPos
-        onCreated={() => loadProducts(search)}
-      />
 
       {/* Manual batch allocation override (spec §9) */}
       {editingAllocLine && (() => {

@@ -1,16 +1,18 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { getInitials } from '@/lib/format';
 import { tokenizeSearch, applyIlikeTokens, rankRows } from '@/lib/search';
 import HighlightLabel from '@/components/ui/HighlightLabel';
-import { Search, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart, AlertCircle } from 'lucide-react';
+import { Search, ChevronDown, User, LogOut, Settings, CircleHelp as HelpCircle, X, Package, Users, Receipt, ShoppingBag, FileText, Truck, FolderKanban, ScanLine, ShoppingCart, AlertCircle, Zap } from 'lucide-react';
 import type { Profile } from '@/lib/types';
 import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
+import { QuickSellModal } from '@/components/quick-sell-modal';
 import OfflineStatusPill from '@/components/offline/OfflineStatusPill';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import InstallButton from '@/components/pwa/InstallButton';
@@ -47,6 +49,7 @@ const kbdHint = isMac ? '⌘K' : 'Ctrl+K';
 
 export default function Header({ onMenuToggle }: HeaderProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -56,6 +59,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   const [searchError, setSearchError] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [showScanner, setShowScanner] = useState(false);
+  const [showQuickSell, setShowQuickSell] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestSeq = useRef(0);
@@ -226,6 +230,15 @@ export default function Header({ onMenuToggle }: HeaderProps) {
             <action.icon className="w-4 h-4" />
           </Link>
         ))}
+        {/* Quick Sell — non-stock items bought on demand, sold immediately */}
+        <button
+          type="button"
+          onClick={() => setShowQuickSell(true)}
+          title="Quick Sell"
+          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-amber-50 hover:text-amber-600 transition-colors"
+        >
+          <Zap className="w-4 h-4" />
+        </button>
       </div>
 
       {/* Global Search */}
@@ -326,6 +339,15 @@ export default function Header({ onMenuToggle }: HeaderProps) {
         <InstallButton />
         <OfflineStatusPill />
         <NotificationBell />
+        {/* Quick-actions row is desktop-only — mobile still needs a Quick Sell entry point */}
+        <button
+          type="button"
+          onClick={() => setShowQuickSell(true)}
+          title="Quick Sell"
+          className="md:hidden w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-amber-50 hover:text-amber-600 transition-colors"
+        >
+          <Zap className="w-4 h-4" />
+        </button>
         <button
           onClick={() => setShowScanner(true)}
           title="Scan Barcode"
@@ -386,6 +408,16 @@ export default function Header({ onMenuToggle }: HeaderProps) {
         </div>
       </div>
 
+      {showQuickSell &&
+        createPortal(
+          <QuickSellModal
+            open={showQuickSell}
+            onClose={() => setShowQuickSell(false)}
+            isPos={pathname === '/sales/pos'}
+            onCreated={() => window.dispatchEvent(new Event('quick-sell:created'))}
+          />,
+          document.body,
+        )}
       {showScanner && (
         <BarcodeScannerModal
           onDetected={async (code) => {
