@@ -861,7 +861,15 @@ export default function POSPage() {
     if (newTotalBase > maxTotalBase + 1e-9) {
       const availableBase = Math.max(0, maxTotalBase - existingBase);
       if (availableBase <= 1e-9) {
-        toast({ title: 'Out of stock', description: `${product.name} has nothing allocatable across its batches`, variant: 'destructive' });
+        // With "Allow selling beyond stock" ON, a 0-stock product is a
+        // deliberate add — the submit gate polices the shortfall (confirm
+        // dialog; DB hard-block when the setting is OFF).
+        if (!invSettings.allow_oversell) {
+          toast({ title: 'Out of stock', description: `${product.name} has nothing allocatable across its batches`, variant: 'destructive' });
+          return;
+        }
+        performAdd(product, unit, qty, targetWarehouseId, availableWhs);
+        setUnitSelectorProduct(null);
         return;
       }
       // Insufficient stock (spec §6): offer what exists — behavior is
@@ -906,7 +914,9 @@ export default function POSPage() {
       // reservation (batch ledger truth; counter fallback without data).
       const extra = pairAvailable(i.id, i.warehouse_id);
       const maxBase = extra !== null ? i.base_quantity + extra : i.stock_available;
-      if (newBaseQty > maxBase + 1e-9) {
+      // With overselling allowed the ceiling is advisory — the submit gate
+      // (and the DB, when the setting is OFF) do the enforcing.
+      if (newBaseQty > maxBase + 1e-9 && !invSettings.allow_oversell) {
         toast({ title: 'Stock limit', description: `Only ${fmtQty(maxBase)} base units available`, variant: 'destructive' });
         return i;
       }
@@ -1086,8 +1096,12 @@ export default function POSPage() {
         );
 
         if (shortfalls.length > 0) {
+          const policy = await fetchOversellPolicy();
           const blocked = shortfalls.filter(s => s.bothEmpty);
-          if (blocked.length > 0 && !gateStock.stale) {
+          // With "Allow selling beyond stock" ON, a 0/ledger-empty line is a
+          // deliberate oversell and gets the normal confirm dialog; treat it
+          // as a suspected data error only when the setting is off or unknown.
+          if (policy !== true && blocked.length > 0 && !gateStock.stale) {
             toast({
               title: 'Cannot sell — no stock record at all',
               description: `${blocked.map(s => s.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`,
@@ -1100,7 +1114,7 @@ export default function POSPage() {
           // that requires the same explicit confirmation as any shortfall.
           // When "Allow selling beyond stock" is OFF, the DB rejects any
           // shortfall, so the dialog opens in hard-block mode instead.
-          setOversellBlocked(await fetchOversellPolicy() === false);
+          setOversellBlocked(policy === false);
           setPendingShortfalls(shortfalls);
           setShortfallConfirmOpen(true);
           return;
@@ -2406,7 +2420,7 @@ export default function POSPage() {
                   <ImagePlus className="w-3.5 h-3.5" />
                 </button>
 
-                <div onClick={() => available > 0 && handleProductClick(p)} className={available <= 0 ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}>
+                <div onClick={() => (available > 0 || invSettings.allow_oversell) && handleProductClick(p)} className={available <= 0 && !invSettings.allow_oversell ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}>
                   {multiUnit && (
                     <span className="absolute top-2 left-2 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium z-10">Multi-unit</span>
                   )}

@@ -2254,15 +2254,19 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
         gateStock
       );
       if (shortfalls.length > 0) {
+        const policy = await fetchOversellPolicy();
         const blocked = shortfalls.filter(x => x.bothEmpty);
-        if (blocked.length > 0) {
+        // With "Allow selling beyond stock" ON, a 0/ledger-empty line is a
+        // deliberate oversell and gets the normal confirm dialog; treat it
+        // as a suspected data error only when the setting is off or unknown.
+        if (policy !== true && blocked.length > 0) {
           setError(`Cannot sell — no stock record at all for ${blocked.map(x => x.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`);
           setSaving(false);
           return;
         }
         // "Allow selling beyond stock" OFF → the DB rejects any shortfall,
         // so the dialog opens in hard-block mode instead of warn-and-confirm.
-        setOversellBlocked(await fetchOversellPolicy() === false);
+        setOversellBlocked(policy === false);
         setPendingShortfalls(shortfalls);
         setShortfallConfirmOpen(true);
         setSaving(false);

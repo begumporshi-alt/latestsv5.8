@@ -38,11 +38,13 @@ export type AllocationStrategy = 'fifo' | 'fefo';
 export interface InventorySettings {
   batch_allocation_method: AllocationStrategy;
   allow_partial_add: boolean;
+  allow_oversell: boolean;
 }
 
 export const DEFAULT_INVENTORY_SETTINGS: InventorySettings = {
   batch_allocation_method: 'fifo',
   allow_partial_add: true,
+  allow_oversell: true,
 };
 
 export interface AllocLineInput {
@@ -117,6 +119,7 @@ export async function fetchInventorySettings(): Promise<InventorySettings> {
   return {
     batch_allocation_method: v.batch_allocation_method === 'fefo' ? 'fefo' : 'fifo',
     allow_partial_add: v.allow_partial_add !== false,
+    allow_oversell: v.allow_oversell !== false,
   };
 }
 
