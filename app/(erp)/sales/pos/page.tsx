@@ -8,7 +8,7 @@ import { toast } from '@/hooks/use-toast';
 import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap, Keyboard } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
-import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
+import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import InvoicePreviewModal from '@/components/InvoicePreviewModal';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
@@ -258,6 +258,7 @@ export default function POSPage() {
   const [allocBatches, setAllocBatches] = useState<Map<string, AllocatableBatch[]> | null>(null);
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const [oversellBlocked, setOversellBlocked] = useState(false);
   const shortfallConfirmedRef = useRef(false);
   const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
   const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
@@ -545,7 +546,7 @@ export default function POSPage() {
   }, [selectedCustomer, walkInCustomerId]);
 
   // Any cart change invalidates a prior "Sell anyway" confirmation.
-  useEffect(() => { shortfallConfirmedRef.current = false; creditConfirmedRef.current = false; }, [cart]);
+  useEffect(() => { shortfallConfirmedRef.current = false; creditConfirmedRef.current = false; setOversellBlocked(false); }, [cart]);
 
   // Allocation strategy + partial-add policy (spec §3, §6) — loaded once.
   useEffect(() => {
@@ -1097,6 +1098,9 @@ export default function POSPage() {
           // With a stale (offline) snapshot, "no record" may just mean "never
           // cached on this device" — downgrade the hard block to a warning
           // that requires the same explicit confirmation as any shortfall.
+          // When "Allow selling beyond stock" is OFF, the DB rejects any
+          // shortfall, so the dialog opens in hard-block mode instead.
+          setOversellBlocked(await fetchOversellPolicy() === false);
           setPendingShortfalls(shortfalls);
           setShortfallConfirmOpen(true);
           return;
@@ -2994,7 +2998,8 @@ export default function POSPage() {
       {shortfallConfirmOpen && (
         <OversellConfirmDialog
           shortfalls={pendingShortfalls}
-          onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+          blocked={oversellBlocked}
+          onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); setOversellBlocked(false); }}
           onConfirm={() => {
             shortfallConfirmedRef.current = true;
             setShortfallConfirmOpen(false);

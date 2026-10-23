@@ -16,7 +16,7 @@ import { cachedQuery } from '@/lib/offline/cache';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
-import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
+import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
@@ -2168,6 +2168,7 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
   // Oversell gate state — same warn-and-confirm as POS / invoice creation.
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const [oversellBlocked, setOversellBlocked] = useState(false);
   const shortfallConfirmedRef = useRef(false);
 
   useEffect(() => {
@@ -2259,6 +2260,9 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
           setSaving(false);
           return;
         }
+        // "Allow selling beyond stock" OFF → the DB rejects any shortfall,
+        // so the dialog opens in hard-block mode instead of warn-and-confirm.
+        setOversellBlocked(await fetchOversellPolicy() === false);
         setPendingShortfalls(shortfalls);
         setShortfallConfirmOpen(true);
         setSaving(false);
@@ -2471,7 +2475,8 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
           <OversellConfirmDialog
             shortfalls={pendingShortfalls}
             confirmLabel="Convert anyway"
-            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+            blocked={oversellBlocked}
+            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); setOversellBlocked(false); }}
             onConfirm={() => {
               shortfallConfirmedRef.current = true;
               setShortfallConfirmOpen(false);

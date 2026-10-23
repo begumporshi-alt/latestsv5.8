@@ -11,7 +11,6 @@ import { cacheGet, cachePut, isNetworkError } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { REPLICA, replicaRows } from '@/lib/offline/replica';
 import { networkMonitor, raceDeadline } from '@/lib/offline/network';
-
 export interface LedgerStock {
   // `${productId}|${warehouseId}` → base-unit qty remaining in FIFO batches
   byPair: Record<string, number>;
@@ -235,4 +234,47 @@ export function shortfallDescription(
   const shortfall = item.base_quantity - Math.max(ledgerQty, 0);
   if (shortfall <= 0) return null;
   return `Ledger shortfall: sold ${item.base_quantity} against ${ledgerQty} in FIFO batches (short ${shortfall} base units) — confirmed at ${where}`;
+}
+
+// Oversell policy from app_settings 'inventory' (the Settings > Inventory
+// toggle). false = the DB rejects any sale past the ledger, so a shortfall
+// must hard-block instead of offering "sell anyway". true = the warn-and-
+// confirm flow. null = the policy could not be read (offline with no cached
+// value, lookup error) — callers fail OPEN, same as the ledger gate, because
+// blocking on unknown policy would lock out offline selling entirely.
+// Successful reads are cached so offline capture time can still enforce the
+// last-known policy (a device that was offline when an admin re-enabled
+// overselling keeps blocking until it next comes online).
+export type OversellPolicy = boolean | null;
+
+export async function fetchOversellPolicy(): Promise<OversellPolicy> {
+  interface InventorySettingRow { setting_value?: { allow_oversell?: boolean } }
+  let data: InventorySettingRow | null = null;
+  let error: unknown = null;
+  if (networkMonitor.getState().online) {
+    const raced = await raceDeadline(
+      supabaseRaw
+        .from('app_settings')
+        .select('setting_value')
+        .eq('setting_key', 'inventory')
+        .single()
+        .then((r) => ({ ok: true as const, r }), (e) => ({ ok: false as const, e })),
+      GATE_DEADLINE_MS
+    );
+    if (raced !== 'timeout' && raced.ok) {
+      data = (raced.r.data ?? null) as InventorySettingRow | null;
+      error = raced.r.error;
+    }
+  }
+
+  if (error || !data) {
+    const cached = await cacheGet<{ allow_oversell?: boolean }>(CACHE_KEYS.inventorySettings);
+    if (cached && typeof cached.allow_oversell === 'boolean') return cached.allow_oversell;
+    return null;
+  }
+
+  const value = data.setting_value?.allow_oversell;
+  if (typeof value !== 'boolean') return null;
+  await cachePut(CACHE_KEYS.inventorySettings, { allow_oversell: value });
+  return value;
 }

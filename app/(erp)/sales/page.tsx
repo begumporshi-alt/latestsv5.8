@@ -15,7 +15,7 @@ import { useRouter } from 'next/navigation';
 import Pagination from '@/components/ui/AppPagination';
 import type { Invoice, InvoiceStatus, Customer, Product, Payment, PaymentMethod, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
-import { fetchLedgerStockFor, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
+import { fetchLedgerStockFor, fetchOversellPolicy, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
@@ -1215,6 +1215,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   const [ledgerStock, setLedgerStock] = useState<LedgerStock | null>(null);
   const [shortfallConfirmOpen, setShortfallConfirmOpen] = useState(false);
   const [pendingShortfalls, setPendingShortfalls] = useState<Shortfall[]>([]);
+  const [oversellBlocked, setOversellBlocked] = useState(false);
   const shortfallConfirmedRef = useRef(false);
   const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
   const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
@@ -1242,6 +1243,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   useEffect(() => {
     shortfallConfirmedRef.current = false;
     creditConfirmedRef.current = false;
+    setOversellBlocked(false);
     if (!itemProductKey) { setLedgerStock(null); return; }
     let stale = false;
     (async () => {
@@ -1554,6 +1556,9 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           setError(`Cannot sell — no stock record at all for ${blocked.map(s => s.name).join(', ')}: 0 in the batch ledger and 0 on hand. Check the product/SKU or receive stock first.`);
           return;
         }
+        // "Allow selling beyond stock" OFF → the DB rejects any shortfall,
+        // so the dialog opens in hard-block mode instead of warn-and-confirm.
+        setOversellBlocked(await fetchOversellPolicy() === false);
         setPendingShortfalls(shortfalls);
         setShortfallConfirmOpen(true);
         return;
@@ -2255,7 +2260,8 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         {shortfallConfirmOpen && (
           <OversellConfirmDialog
             shortfalls={pendingShortfalls}
-            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); }}
+            blocked={oversellBlocked}
+            onGoBack={() => { setShortfallConfirmOpen(false); setPendingShortfalls([]); setOversellBlocked(false); }}
             onConfirm={() => {
               shortfallConfirmedRef.current = true;
               setShortfallConfirmOpen(false);

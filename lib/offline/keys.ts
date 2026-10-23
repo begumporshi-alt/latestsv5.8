@@ -15,6 +15,8 @@ export const CACHE_KEYS = {
   brands: 'brands:all',
   /** rows from get_batch_stock_by_product_warehouse — the oversell gate snapshot */
   gateStock: 'gate:stock',
+  /** app_settings 'inventory' row — the oversell gate's allow_oversell policy */
+  inventorySettings: 'settings:inventory',
   /** the inventory page's full aggregate (products + stock + stats + FIFO values) */
   inventoryPage: 'inventory:page-data',
   /** the CRM page's enriched customers + stats aggregate */
