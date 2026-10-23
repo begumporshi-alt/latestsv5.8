@@ -48,6 +48,47 @@ export function formatStockDisplay(baseQuantity: number, product: Product): stri
   return `${saleQty.toFixed(2)} ${saleUnit.unit_name} (${baseQuantity} ${baseUnit.unit_name})`;
 }
 
+const DECIMAL_UNIT_NAMES = new Set([
+  'meter', 'meters', 'm',
+  'foot', 'feet', 'ft',
+  'kg', 'kgs', 'kilogram', 'kilograms',
+  'gram', 'grams', 'g',
+  'liter', 'litre', 'liters', 'litres', 'l',
+]);
+
+// Client-side fallback when products.allow_decimal is not loaded.
+export function unitAllowsDecimal(unit?: string | null): boolean {
+  if (!unit) return false;
+  return DECIMAL_UNIT_NAMES.has(unit.trim().toLowerCase());
+}
+
+export function allowDecimalFor(allowDecimal?: boolean, unit?: string | null): boolean {
+  return allowDecimal ?? unitAllowsDecimal(unit);
+}
+
+// Round to 3 decimals (matches invoice_items.quantity decimal(15,3)) so
+// float artifacts like 0.30000000000000004 never reach the DB.
+export function clampSaleQty(qty: number, allowDecimal: boolean): number {
+  if (!allowDecimal) return Math.floor(qty);
+  return Math.round(qty * 1000) / 1000;
+}
+
+const UNIT_LABEL_ALIASES: Record<string, string> = {
+  pieces: 'pcs', piece: 'pcs', pc: 'pcs',
+  kilograms: 'kg', kgs: 'kg', kilogram: 'kg',
+  meters: 'meter',
+  feet: 'foot', ft: 'foot',
+  grams: 'gram',
+  liters: 'liter', litres: 'liter',
+};
+
+export function normalizeUnitLabel(unit?: string | null, fallback = 'pcs'): string {
+  if (!unit) return fallback;
+  const trimmed = unit.trim();
+  if (!trimmed) return fallback;
+  return UNIT_LABEL_ALIASES[trimmed.toLowerCase()] || trimmed;
+}
+
 export function isMultiUnitEnabled(product: Product): boolean {
   return product.enable_multi_unit === true && (product.units?.length || 0) > 1;
 }

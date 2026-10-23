@@ -7,7 +7,7 @@ import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Filter, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, ChevronRight, RotateCcw, Layers, TriangleAlert as AlertTriangle, Printer, Zap, Keyboard } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
-import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import InvoicePreviewModal from '@/components/InvoicePreviewModal';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
@@ -100,6 +100,10 @@ interface CartItem {
   selected_unit?: ProductUnit;
   unit_price: number;
   base_quantity: number;
+  // Decimal-allowed units (meter/foot/kg) accept fractional quantities;
+  // everything else is floored to whole numbers at the input boundaries.
+  allow_decimal?: boolean;
+  unit?: string;
   discount_percent: number;
   // Manual batch allocation (spec §9): batchId → base-unit qty. Cleared on
   // any quantity/warehouse change so automatic allocation takes over again.
@@ -118,6 +122,7 @@ interface ProductData {
   image_url?: string;
   unit?: string;
   base_unit?: string;
+  allow_decimal?: boolean;
   enable_multi_unit?: boolean;
   inventory_items: {
     id: string;
@@ -316,7 +321,7 @@ export default function POSPage() {
       const productIds = globalCartItems.map(i => i.id);
       const { data } = await supabase
         .from('products')
-        .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, warranty_months,
+        .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, warranty_months,
           inventory_items(id, warehouse_id, quantity_on_hand),
           units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
         .in('id', productIds);
@@ -346,6 +351,8 @@ export default function POSPage() {
             warranty_months: p.warranty_months,
             inventory_item_id: bestInv?.inventory_item_id, warehouse_id: bestInv?.warehouse_id,
             stock_available: stockAvailableInBase, selected_unit: unit,
+            allow_decimal: allowDecimalFor((p as any).allow_decimal, p.unit),
+            unit: p.unit,
             unit_price: unitPrice, base_quantity: convertToBaseUnit(gci.quantity, unit),
             discount_percent: 0,
             available_warehouses: availableWhs,
@@ -579,7 +586,7 @@ export default function POSPage() {
     void cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, () =>
       fetchAll(() => supabase
         .from('products')
-        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
+        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
           inventory_items(id, warehouse_id, quantity_on_hand),
           units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
         .eq('is_active', true)
@@ -635,7 +642,7 @@ export default function POSPage() {
 
     let query = supabase
       .from('products')
-      .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit, track_inventory, warranty_months,
+      .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months,
         inventory_items(id, warehouse_id, quantity_on_hand),
         units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
       .eq('is_active', true)
@@ -803,6 +810,8 @@ export default function POSPage() {
         warehouse_id: warehouseId,
         stock_available: bestInv?.stock ?? 0,
         track_inventory: product.track_inventory,
+        allow_decimal: allowDecimalFor(product.allow_decimal, product.unit),
+        unit: product.unit,
         selected_unit: unit,
         unit_price: unitPrice,
         base_quantity: convertToBaseUnit(qty, unit),
@@ -814,7 +823,8 @@ export default function POSPage() {
   }
 
   function addToCart(product: ProductData, selectedUnit?: ProductUnit, requestedQty?: number) {
-    const qty = Math.max(requestedQty ?? 1, 0);
+    const allowDecimal = allowDecimalFor(product.allow_decimal, product.unit);
+    const qty = Math.max(clampSaleQty(requestedQty ?? 1, allowDecimal), 0);
     if (qty <= 0) return;
     const unit = selectedUnit || getDefaultSaleUnit(product as any);
     const addBaseQty = convertToBaseUnit(qty, unit);
@@ -887,7 +897,8 @@ export default function POSPage() {
   function updateQty(id: string, unitId: string | undefined, delta: number) {
     setCart(prev => prev.map(i => {
       if (i.id !== id || i.selected_unit?.id !== unitId) return i;
-      const newQty = Math.max(0, i.quantity + delta);
+      const allowDecimal = allowDecimalFor(i.allow_decimal, i.unit);
+      const newQty = clampSaleQty(Math.max(0, i.quantity + delta), allowDecimal);
       const newBaseQty = i.selected_unit ? convertToBaseUnit(newQty, i.selected_unit) : newQty;
       // Ceiling: what the pair can still take beyond this line's own
       // reservation (batch ledger truth; counter fallback without data).
@@ -922,16 +933,18 @@ export default function POSPage() {
     if (isNaN(newQty) || newQty < 0) return;
     setCart(prev => prev.map(i => {
       if (i.id !== id || (unitId && i.selected_unit?.id !== unitId)) return i;
-      const baseQty = i.selected_unit ? convertToBaseUnit(newQty, i.selected_unit) : newQty;
+      const allowDecimal = allowDecimalFor(i.allow_decimal, i.unit);
+      const typedQty = clampSaleQty(newQty, allowDecimal);
+      const baseQty = i.selected_unit ? convertToBaseUnit(typedQty, i.selected_unit) : typedQty;
       const extra = pairAvailable(i.id, i.warehouse_id);
       const maxBase = extra !== null ? i.base_quantity + extra : i.stock_available;
       if (baseQty > maxBase + 1e-9) {
         toast({ title: 'Stock limit', description: `Only ${fmtQty(maxBase)} ${i.selected_unit ? 'base units' : 'units'} available`, variant: 'destructive' });
         const maxQty = i.selected_unit ? maxBase / i.selected_unit.conversion_factor : maxBase;
-        return { ...i, quantity: maxQty, base_quantity: maxBase, allocOverride: null };
+        return { ...i, quantity: clampSaleQty(maxQty, allowDecimal), base_quantity: maxBase, allocOverride: null };
       }
-      return { ...i, quantity: newQty, base_quantity: baseQty, allocOverride: null };
-    }));
+      return { ...i, quantity: typedQty, base_quantity: baseQty, allocOverride: null };
+    }).filter(i => i.quantity > 0));
   }
 
   // ---- Manual batch allocation (spec §9) --------------------------------
@@ -2545,7 +2558,7 @@ export default function POSPage() {
                   <input
                     type="number"
                     min="0"
-                    step="0.01"
+                    step={allowDecimalFor(item.allow_decimal, item.unit) ? '0.01' : '1'}
                     value={item.quantity}
                     onChange={e => updateCartQuantity(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
@@ -2650,7 +2663,7 @@ export default function POSPage() {
                               sku={item.sku}
                               className="text-sm font-medium text-foreground break-words max-w-[160px] cursor-default"
                             />
-                            <p className="text-xs text-muted-foreground">{item.selected_unit?.unit_name || 'pcs'}</p>
+                            <p className="text-xs text-muted-foreground">{item.selected_unit?.unit_name || normalizeUnitLabel(item.unit)}</p>
                           </td>
                           <td className="px-2 py-1.5 text-right text-sm text-foreground">{item.quantity}</td>
                           <td className="px-2 py-1.5 text-right text-sm text-foreground">{formatCurrency(costPerUnit)}</td>
@@ -3093,7 +3106,7 @@ export default function POSPage() {
                   <input
                     type="number"
                     min="0"
-                    step="0.01"
+                    step={allowDecimalFor(unitSelectorProduct.allow_decimal, unitSelectorProduct.unit) ? '0.01' : '1'}
                     value={unitSelectorQty}
                     onChange={e => setUnitSelectorQty(e.target.value)}
                     className="w-24 text-right tabular-nums text-sm font-bold border border-border rounded-lg px-1 py-1.5 focus:outline-none focus:border-blue-400 bg-white"

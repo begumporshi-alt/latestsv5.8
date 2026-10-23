@@ -7,7 +7,7 @@ import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { X, Save, TriangleAlert as AlertTriangle, History, Package, Trash2, Info } from 'lucide-react';
 import type { Invoice, InvoiceStatus, Customer, Product, ProductUnit } from '@/lib/types';
-import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
@@ -31,6 +31,7 @@ interface EditItem {
   product_sku: string;
   product_unit?: string;
   product_base_unit?: string;
+  allow_decimal?: boolean;
   stock_qty: number | null;
   warehouse_id?: string | null;
   quantity: number;
@@ -130,7 +131,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
     setLoadingItems(true);
     const { data } = await supabase
       .from('invoice_items')
-      .select('*, product:products(name, sku, unit, base_unit, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(quantity_on_hand))')
+      .select('*, product:products(name, sku, unit, base_unit, allow_decimal, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(quantity_on_hand))')
       .eq('invoice_id', invoice.id);
 
     const mapped: EditItem[] = (data || []).map((item: any) => {
@@ -146,6 +147,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
         product_sku: product?.sku || '',
         product_unit: product?.unit,
         product_base_unit: product?.base_unit,
+        allow_decimal: (product as any)?.allow_decimal ?? unitAllowsDecimal(product?.unit),
         stock_qty: stock,
         warehouse_id: item.warehouse_id || null,
         quantity: Number(item.quantity),
@@ -223,6 +225,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
       product_sku: product.sku,
       product_unit: product.unit,
       product_base_unit: product.base_unit,
+      allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
       stock_qty: stock,
       warehouse_id: bestWh?.warehouse_id || null,
       quantity: 1,
@@ -243,7 +246,13 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
       const newBaseQty = convertToBaseUnit(updated[index].quantity, unit);
       updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.price, cost_price: unit.cost_price || (updated[index].cost_price / (updated[index].selected_unit?.conversion_factor || 1)) * unit.conversion_factor, base_quantity: newBaseQty, subtotal: updated[index].quantity * unit.price * (1 - (updated[index].discount_percent || 0) / 100) };
     } else if (field === 'quantity') {
-      const qty = parseInt(value) || 1;
+      // Decimal units (meter/foot/kg) accept fractions; discrete units keep
+      // the legacy parseInt behaviour.
+      const allowDecimal = updated[index].allow_decimal ?? unitAllowsDecimal(updated[index].product_unit);
+      const parsed = parseFloat(value);
+      const qty = allowDecimal && !isNaN(parsed) && parsed > 0
+        ? clampSaleQty(parsed, true)
+        : (parseInt(value) || 1);
       const unit = updated[index].selected_unit;
       const newBaseQty = unit ? convertToBaseUnit(qty, unit) : qty;
       updated[index] = { ...updated[index], quantity: qty, base_quantity: newBaseQty, subtotal: qty * updated[index].unit_price * (1 - (updated[index].discount_percent || 0) / 100) };
@@ -498,7 +507,7 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="1" value={item.quantity}
+                          <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity}
                             onChange={e => updateItem(index, 'quantity', e.target.value)}
                             className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                         </td>

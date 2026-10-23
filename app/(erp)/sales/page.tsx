@@ -14,7 +14,7 @@ import EditHistoryPanel from '@/components/EditHistoryPanel';
 import { useRouter } from 'next/navigation';
 import Pagination from '@/components/ui/AppPagination';
 import type { Invoice, InvoiceStatus, Customer, Product, Payment, PaymentMethod, ProductUnit } from '@/lib/types';
-import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit } from '@/lib/unit-utils';
+import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
@@ -1191,6 +1191,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     product_sku: string;
     product_unit?: string;
     product_base_unit?: string;
+    allow_decimal?: boolean;
     stock_qty: number | null;
     warranty_months?: number;
     quantity: number;
@@ -1286,16 +1287,20 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           inventory_item_id: i.id,
         }));
         const warehouse = availableWhs.find((w: { warehouse_id: string }) => w.warehouse_id === row.warehouse_id) || availableWhs.reduce((a: any, b: any) => a.stock > b.stock ? a : b, null);
+        const allowDecimal = (product as any).allow_decimal ?? unitAllowsDecimal(product.unit);
         let quantity = Math.max(1, Number(row.quantity) || 1);
+        if (!allowDecimal) quantity = Math.floor(quantity);
         let baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
         if (warehouse && baseQuantity > warehouse.stock && warehouse.stock > 0) {
           const originalQty = quantity;
           if (selectedUnit) {
-            const maxQty = Math.floor(warehouse.stock / (selectedUnit.conversion_factor || 1));
+            // Decimal products may be capped to a fractional qty; discrete
+            // products floor to whole sale units (legacy behaviour).
+            const maxQty = clampSaleQty(warehouse.stock / (selectedUnit.conversion_factor || 1), allowDecimal);
             quantity = Math.max(1, maxQty);
             baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
           } else {
-            quantity = warehouse.stock;
+            quantity = clampSaleQty(warehouse.stock, allowDecimal);
             baseQuantity = quantity;
           }
           if (quantity < originalQty) cappedCount++;
@@ -1307,7 +1312,9 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           || (selectedUnit ? (product.cost_price || 0) * (selectedUnit.conversion_factor || 1) : (product.cost_price || 0));
         return {
           product_id: product.id, product_name: product.name, product_sku: product.sku,
-          product_unit: product.unit, product_base_unit: product.base_unit, stock_qty: warehouse ? warehouse.stock : (product.inventory_items?.length ? 0 : null),
+          product_unit: product.unit, product_base_unit: product.base_unit,
+          allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
+          stock_qty: warehouse ? warehouse.stock : (product.inventory_items?.length ? 0 : null),
           quantity, unit_price: Number(row.unit_price) || (selectedUnit?.price || product.sale_price || 0), cost_price: saleUnitCost,
           discount_percent: Math.min(100, Math.max(0, Number(row.discount_percent) || 0)), selected_unit: selectedUnit,
           available_units: availableUnits.length ? availableUnits : undefined, base_quantity: baseQuantity,
@@ -1394,6 +1401,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       product_sku: product.sku,
       product_unit: product.unit,
       product_base_unit: product.base_unit,
+      allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
       stock_qty: stock,
       warranty_months: product.warranty_months || 0,
       track_inventory: (product as any).track_inventory !== false,
@@ -1439,7 +1447,13 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         base_quantity: newBaseQty,
       };
     } else if (field === 'quantity') {
-      const qty = parseInt(value) || 1;
+      // Decimal units (meter/foot/kg) accept fractions; discrete units keep
+      // the legacy parseInt behaviour (0.5 typed → 1, 2.7 → 2).
+      const allowDecimal = updated[index].allow_decimal ?? unitAllowsDecimal(updated[index].product_unit);
+      const parsed = parseFloat(value);
+      const qty = allowDecimal && !isNaN(parsed) && parsed > 0
+        ? clampSaleQty(parsed, true)
+        : (parseInt(value) || 1);
       const unit = updated[index].selected_unit;
       const newBaseQty = unit ? convertToBaseUnit(qty, unit) : qty;
       const stockQty = updated[index].stock_qty;
@@ -1944,7 +1958,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="1" value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
+                          <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
                           {item.available_units && item.selected_unit && (
                             <p className="text-[10px] text-muted-foreground text-center mt-0.5">= {item.base_quantity} {item.product_base_unit || 'base'}</p>
                           )}
