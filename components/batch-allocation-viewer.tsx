@@ -23,6 +23,9 @@ export interface BatchViewerLine {
   overrideInvalid: boolean;
   strategy: AllocationStrategy;
   allocations: BatchAllocation[];
+  // Warehouse names per warehouse id — shown on each batch row when the
+  // line draws from more than one warehouse.
+  warehouseNames?: Record<string, string>;
   // Unit conversion used by the sale unit, if the product sells in one.
   conversionFactor?: number;
 }
@@ -33,7 +36,9 @@ export function BatchAllocationViewer({
   onClose,
 }: {
   line: BatchViewerLine;
-  onEdit: () => void;
+  // Omitted for multi-warehouse lines — the manual override editor is
+  // single-warehouse and cannot express a cross-warehouse split.
+  onEdit?: () => void;
   onClose: () => void;
 }) {
   const total = line.allocations.reduce((s, a) => s + a.qty * a.batch.unit_cost, 0);
@@ -92,6 +97,9 @@ export function BatchAllocationViewer({
                   <tr key={a.batch.id}>
                     <td className="py-1.5 pr-2">
                       <p className="text-xs font-medium text-foreground truncate max-w-[150px]">{a.batch.batch_number || a.batch.id.slice(0, 8)}</p>
+                      {line.warehouseNames?.[a.batch.warehouse_id] && (
+                        <p className="text-[10px] text-emerald-700 truncate max-w-[150px]">{line.warehouseNames[a.batch.warehouse_id]}</p>
+                      )}
                       {a.batch.expiry_date && <p className="text-[10px] text-muted-foreground">exp {a.batch.expiry_date}</p>}
                     </td>
                     <td className="py-1.5 pr-2 text-right text-xs text-muted-foreground whitespace-nowrap">
@@ -118,12 +126,14 @@ export function BatchAllocationViewer({
             <button onClick={onClose} className="flex-1 px-4 py-2.5 border border-border rounded-lg text-sm font-medium hover:bg-muted transition">
               Close
             </button>
-            <button
-              onClick={onEdit}
-              className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5"
-            >
-              <Pencil className="w-3.5 h-3.5" /> Edit Allocation
-            </button>
+            {onEdit && (
+              <button
+                onClick={onEdit}
+                className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5"
+              >
+                <Pencil className="w-3.5 h-3.5" /> Edit Allocation
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -22,6 +22,9 @@ export interface LedgerStock {
 export interface OversellItemInput {
   product_id: string;
   warehouse_id?: string | null;
+  // Multi-warehouse lines: when set, the ledger check sums across these
+  // warehouses (the sale may draw from any of them).
+  warehouse_ids?: string[] | null;
   base_quantity: number;
   name: string;
   sku?: string;
@@ -174,13 +177,18 @@ async function resolveDefaultWarehouseId(): Promise<string | null> {
   }
 }
 
-// FIFO ledger qty available to an item. A NULL warehouse falls back to the
-// DEFAULT warehouse — mirroring consume_fifo's COALESCE fallback — NOT a
-// cross-warehouse sum: consume_fifo only ever consumes within one warehouse.
+// FIFO ledger qty available to an item. Multi-warehouse lines sum across
+// their selected warehouses — the sale may draw from any of them. A NULL
+// single-warehouse falls back to the DEFAULT warehouse — mirroring
+// consume_fifo's COALESCE fallback — NOT a cross-warehouse sum.
 export function ledgerQtyFor(
-  item: { product_id: string; warehouse_id?: string | null },
+  item: Pick<OversellItemInput, 'product_id' | 'warehouse_id' | 'warehouse_ids'>,
   stock: LedgerStock
 ): number {
+  const ids = (item.warehouse_ids || []).filter(Boolean);
+  if (ids.length > 0) {
+    return ids.reduce((s, wh) => s + (stock.byPair[`${item.product_id}|${wh}`] ?? 0), 0);
+  }
   if (item.warehouse_id) return stock.byPair[`${item.product_id}|${item.warehouse_id}`] ?? 0;
   if (stock.defaultWarehouseId) return stock.byPair[`${item.product_id}|${stock.defaultWarehouseId}`] ?? 0;
   return 0;
@@ -199,7 +207,10 @@ export function computeShortfalls(items: OversellItemInput[], stock: LedgerStock
     // Quick-sell (non-stock) items have no ledger to check — skip them so a
     // batch-less product can never fire the bothEmpty hard block.
     if (item.track_inventory === false) continue;
-    const key = item.warehouse_id ? `${item.product_id}|${item.warehouse_id}` : item.product_id;
+    const whIds = (item.warehouse_ids || []).filter(Boolean);
+    const key = whIds.length > 0
+      ? `${item.product_id}|multi:${[...whIds].sort().join(',')}`
+      : item.warehouse_id ? `${item.product_id}|${item.warehouse_id}` : item.product_id;
     agg[key] = agg[key] || {
       baseQty: 0,
       ledgerQty: ledgerQtyFor(item, stock),

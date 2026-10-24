@@ -51,6 +51,10 @@ export interface AllocLineInput {
   lineId: string;
   productId: string;
   warehouseId?: string | null;
+  // Multi-warehouse allocation: when non-empty, the engine allocates across
+  // these warehouses largest-available-first (the line's own warehouse wins
+  // ties), and any shortfall lands on the LAST warehouse in that order.
+  warehouseIds?: string[] | null;
   baseQuantity: number;
   // Manual override: batchId → base-unit qty for THIS line. Honored only if
   // it exactly sums to baseQuantity and fits what earlier cart lines leave.
@@ -69,6 +73,10 @@ export interface LineAllocation {
   shortfall: number;
   usedOverride: boolean;
   overrideInvalid: boolean;
+  // Multi-warehouse lines only: the warehouses in allocation order
+  // (largest-available first). The submit split sends any shortfall to the
+  // last entry.
+  warehouseOrder?: string[];
 }
 
 export interface AllocationResult {
@@ -211,34 +219,39 @@ export function allocateCartLines(
   // Remaining qty per batch after earlier cart lines: keyed `${pair}#${batchId}`
   const remainingByBatch = new Map<string, number>();
 
-  // Cart reservations per pair (spec §4, §10): every line's base qty counts
-  // against its pair's availability, regardless of batch snapshot state.
+  // Cart reservations per pair (spec §4, §10): every single-warehouse line's
+  // base qty counts against its pair's availability, regardless of batch
+  // snapshot state. Multi-warehouse lines reserve AFTER allocation instead —
+  // their per-pair reservation is the allocated split, not the whole line.
   for (const line of lines) {
+    const whIds = (line.warehouseIds || []).filter(Boolean);
+    if (whIds.length > 0) continue;
     const wh = resolveWarehouse(line, defaultWarehouseId);
     const key = pairKey(line.productId, wh);
     reservedByPair.set(key, (reservedByPair.get(key) || 0) + Math.max(line.baseQuantity, 0));
   }
 
   for (const line of lines) {
-    const wh = resolveWarehouse(line, defaultWarehouseId);
-    const key = pairKey(line.productId, wh);
-    if (batchesByPair.has(key)) continue;
-    const eligible = sortBatchesForStrategy(
-      // Expired batches are never allocatable (spec §2) — enforced here too,
-      // not just at fetch time, so a stale snapshot can't sell expired stock.
-      (batchesByProduct.get(line.productId) || []).filter(b => wh && b.warehouse_id === wh && !isExpired(b)),
-      strategy
-    );
-    batchesByPair.set(key, eligible);
-    const total = eligible.reduce((s, b) => s + b.quantity_remaining, 0);
-    availableByPair.set(key, total);
-    for (const b of eligible) remainingByBatch.set(`${key}#${b.id}`, b.quantity_remaining);
+    const whIds = (line.warehouseIds || []).filter(Boolean);
+    const pairWhs = whIds.length > 0 ? whIds : [resolveWarehouse(line, defaultWarehouseId)];
+    for (const wh of pairWhs) {
+      const key = pairKey(line.productId, wh);
+      if (batchesByPair.has(key)) continue;
+      const eligible = sortBatchesForStrategy(
+        // Expired batches are never allocatable (spec §2) — enforced here too,
+        // not just at fetch time, so a stale snapshot can't sell expired stock.
+        (batchesByProduct.get(line.productId) || []).filter(b => wh && b.warehouse_id === wh && !isExpired(b)),
+        strategy
+      );
+      batchesByPair.set(key, eligible);
+      const total = eligible.reduce((s, b) => s + b.quantity_remaining, 0);
+      availableByPair.set(key, total);
+      for (const b of eligible) remainingByBatch.set(`${key}#${b.id}`, b.quantity_remaining);
+    }
   }
 
   for (const line of lines) {
-    const wh = resolveWarehouse(line, defaultWarehouseId);
-    const key = pairKey(line.productId, wh);
-    const eligible = batchesByPair.get(key) || [];
+    const whIds = (line.warehouseIds || []).filter(Boolean);
     const need = Math.max(line.baseQuantity, 0);
 
     const result: LineAllocation = {
@@ -249,6 +262,55 @@ export function allocateCartLines(
       usedOverride: false,
       overrideInvalid: false,
     };
+
+    // ---- Multi-warehouse allocation -------------------------------------
+    // Warehouses ordered largest-eligible-first (the line's own warehouse
+    // wins ties, then id for determinism); batches inside each warehouse in
+    // strategy order. Whatever no warehouse can cover is the shortfall, and
+    // the submit split books it on the LAST warehouse in the order.
+    if (whIds.length > 0) {
+      const keyOf = (wh: string) => pairKey(line.productId, wh);
+      const order = [...whIds].sort((a, b) => {
+        const qa = availableByPair.get(keyOf(a)) ?? 0;
+        const qb = availableByPair.get(keyOf(b)) ?? 0;
+        if (qa !== qb) return qb - qa;
+        if (line.warehouseId && (a === line.warehouseId) !== (b === line.warehouseId)) {
+          return a === line.warehouseId ? -1 : 1;
+        }
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+      result.warehouseOrder = order;
+
+      let remaining = need;
+      for (const wh of order) {
+        if (remaining <= EPSILON) break;
+        const key = keyOf(wh);
+        for (const batch of batchesByPair.get(key) || []) {
+          if (remaining <= EPSILON) break;
+          const batchLeft = remainingByBatch.get(`${key}#${batch.id}`) ?? batch.quantity_remaining;
+          if (batchLeft <= EPSILON) continue;
+          const qty = Math.min(batchLeft, remaining);
+          result.allocations.push({ batch, qty });
+          remainingByBatch.set(`${key}#${batch.id}`, batchLeft - qty);
+          remaining -= qty;
+          result.allocatedQty += qty;
+        }
+      }
+      result.shortfall = Math.max(0, remaining);
+
+      // Reserve the actual per-warehouse split so later adds see what this
+      // line really holds (a shortfall reserves nothing — it is not stock).
+      for (const a of result.allocations) {
+        const key = pairKey(line.productId, a.batch.warehouse_id);
+        reservedByPair.set(key, (reservedByPair.get(key) || 0) + a.qty);
+      }
+      byLine.set(line.lineId, result);
+      continue;
+    }
+
+    const wh = resolveWarehouse(line, defaultWarehouseId);
+    const key = pairKey(line.productId, wh);
+    const eligible = batchesByPair.get(key) || [];
 
     // Manual override — honored only when it exactly covers the line qty and
     // every batch still has what the override claims (earlier cart lines

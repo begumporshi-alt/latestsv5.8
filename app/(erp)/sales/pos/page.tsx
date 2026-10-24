@@ -95,6 +95,10 @@ interface CartItem {
   image_url?: string;
   inventory_item_id?: string;
   warehouse_id?: string;
+  // Multi-warehouse allocation: when set (2+ ids), the line draws from all
+  // of them (largest-stock first) and the submit splits it into one invoice
+  // item per warehouse. warehouse_id stays the PRIMARY warehouse.
+  warehouse_ids?: string[];
   stock_available: number;
   // Non-stock (quick-sell) products bypass the oversell gate — carried from
   // ProductData so the gate mapping can skip them.
@@ -282,6 +286,7 @@ export default function POSPage() {
     product: ProductData;
     unit: ProductUnit;
     targetWarehouseId: string | undefined;
+    targetWarehouseIds?: string[];
     availableWhs: CartItem['available_warehouses'];
   } | null>(null);
   const [viewingBatchLine, setViewingBatchLine] = useState<string | null>(null);
@@ -296,11 +301,19 @@ export default function POSPage() {
     return `${item.id}|${item.selected_unit?.id || 'default'}|${item.warehouse_id ?? ''}`;
   }
 
+  // Selected warehouses of a line (multi mode) — null when the line draws
+  // from a single warehouse.
+  function lineWarehouseIds(item: CartItem): string[] | null {
+    const ids = (item.warehouse_ids || []).filter(Boolean);
+    return ids.length > 0 ? ids : null;
+  }
+
   const cartLineInputs: AllocLineInput[] = useMemo(
     () => cart.map(item => ({
       lineId: `${item.id}|${item.selected_unit?.id || 'default'}|${item.warehouse_id ?? ''}`,
       productId: item.id,
       warehouseId: item.warehouse_id,
+      warehouseIds: lineWarehouseIds(item),
       baseQuantity: item.base_quantity,
       allocOverride: item.allocOverride,
     })),
@@ -350,6 +363,11 @@ export default function POSPage() {
             }));
           const bestInv = availableWhs.length > 0 ? availableWhs.reduce((a, b) => a.stock > b.stock ? a : b) : null;
           const stockAvailableInBase = bestInv ? bestInv.stock : 0;
+          // Same multi-warehouse default as addToCart: a scan of a product
+          // stocked in 2+ warehouses draws from all of them, largest first.
+          const scanWhIds = availableWhs.length > 1
+            ? [...availableWhs].sort((a, b) => b.stock - a.stock).map(w => w.warehouse_id)
+            : undefined;
           const unit = getDefaultSaleUnit(p as any);
           const unitPrice = gci.unit_price || unit.price || p.sale_price;
           newCartItems.push({
@@ -358,6 +376,7 @@ export default function POSPage() {
             quantity: gci.quantity, image_url: p.image_url,
             warranty_months: p.warranty_months,
             inventory_item_id: bestInv?.inventory_item_id, warehouse_id: bestInv?.warehouse_id,
+            warehouse_ids: scanWhIds,
             stock_available: stockAvailableInBase, selected_unit: unit,
             allow_decimal: allowDecimalFor((p as any).allow_decimal, p.unit),
             unit: p.unit,
@@ -787,10 +806,89 @@ export default function POSPage() {
     return availableWhs.reduce((a, b) => (a.stock > b.stock ? a : b)).warehouse_id;
   }
 
+  // Stocked warehouses of a product, largest first — the default multi-
+  // warehouse selection. Ledger-ordered when batch data exists for the
+  // product, counters otherwise. Only warehouses holding something return.
+  function stockedWarehouseIds(productId: string, availableWhs: { warehouse_id: string; stock: number }[]): string[] {
+    const ledgerKnown = !!allocBatches && allocBatches.has(productId);
+    const qtyOf = (wh: string) => ledgerKnown
+      ? ledgerQtyForPair(productId, wh, allocBatches, defaultWarehouseId)
+      : (availableWhs.find(w => w.warehouse_id === wh)?.stock ?? 0);
+    return availableWhs
+      .map(w => w.warehouse_id)
+      .filter(wh => qtyOf(wh) > 1e-9)
+      .sort((a, b) => {
+        const qa = qtyOf(a), qb = qtyOf(b);
+        if (qa !== qb) return qb - qa;
+        // Ties: the default warehouse serves first, then id order.
+        if (defaultWarehouseId && (a === defaultWarehouseId) !== (b === defaultWarehouseId)) {
+          return a === defaultWarehouseId ? -1 : 1;
+        }
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+  }
+
+  // What a multi-warehouse line can still take across ALL its selected
+  // warehouses (single-warehouse lines keep the per-pair ceiling). Null when
+  // no batch snapshot exists — the counter fallback applies instead.
+  function lineAvailableExtra(item: CartItem): number | null {
+    const ids = lineWarehouseIds(item);
+    if (!ids) return pairAvailable(item.id, item.warehouse_id);
+    if (!allocBatches || !allocBatches.has(item.id) || !allocation) return null;
+    return ids.reduce((s, wh) => s + availableForNewAdd(item.id, wh, allocation, defaultWarehouseId), 0);
+  }
+
+  interface SubmitSplit {
+    warehouse_id: string | null;
+    quantity: number;
+    base_quantity: number;
+    subtotal: number;
+  }
+
+  // Expand a cart line into the invoice items it becomes at submit. Multi-
+  // warehouse lines split one item per warehouse from the derived allocation
+  // (any shortfall books on the last warehouse in allocation order); single
+  // lines and lines without allocation data stay whole on their primary
+  // warehouse. All downstream triggers are per-invoice-item, so returns,
+  // edits and restores of the split lines work unchanged.
+  function splitLineForSubmit(item: CartItem): SubmitSplit[] {
+    const cf = item.selected_unit?.conversion_factor || 1;
+    const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
+    const ids = lineWarehouseIds(item);
+    const la = ids ? lineAllocation(item) : null;
+    if (!ids || !la || la.allocations.length === 0) {
+      return [{
+        warehouse_id: item.warehouse_id || null,
+        quantity: item.quantity,
+        base_quantity: item.base_quantity,
+        subtotal: lineTotal,
+      }];
+    }
+    const byWh = new Map<string, number>();
+    for (const a of la.allocations) {
+      byWh.set(a.batch.warehouse_id, (byWh.get(a.batch.warehouse_id) || 0) + a.qty);
+    }
+    if (la.shortfall > 1e-9) {
+      const last = la.warehouseOrder?.[la.warehouseOrder.length - 1] || ids[ids.length - 1];
+      byWh.set(last, (byWh.get(last) || 0) + la.shortfall);
+    }
+    const splits = Array.from(byWh.entries()).map(([wh, base]) => ({
+      warehouse_id: wh,
+      quantity: base / cf,
+      base_quantity: base,
+      subtotal: (base / cf) * item.unit_price * (1 - (item.discount_percent || 0) / 100),
+    }));
+    // Kill cent drift from fractional splits: the last item absorbs the
+    // residual so the invoice totals match the cart line exactly.
+    const drift = lineTotal - splits.reduce((s, sp) => s + sp.subtotal, 0);
+    if (Math.abs(drift) > 1e-9) splits[splits.length - 1].subtotal += drift;
+    return splits;
+  }
+
   // Pure cart mutation: merge into the product+unit+warehouse line, or push
   // a new line. Quantity changes clear any manual allocation override so
   // automatic allocation takes over again (spec §11).
-  function performAdd(product: ProductData, unit: ProductUnit, qty: number, warehouseId: string | undefined, availableWhs: CartItem['available_warehouses']) {
+  function performAdd(product: ProductData, unit: ProductUnit, qty: number, warehouseId: string | undefined, availableWhs: CartItem['available_warehouses'], warehouseIds?: string[]) {
     const unitPrice = unit.price || product.sale_price;
     setCart(prev => {
       const idx = prev.findIndex(i => i.id === product.id && i.selected_unit?.id === unit.id && (i.warehouse_id ?? '') === (warehouseId ?? ''));
@@ -813,6 +911,7 @@ export default function POSPage() {
         warranty_months: product.warranty_months,
         inventory_item_id: bestInv?.inventory_item_id,
         warehouse_id: warehouseId,
+        warehouse_ids: warehouseIds && warehouseIds.length > 1 ? warehouseIds : undefined,
         stock_available: bestInv?.stock ?? 0,
         track_inventory: product.track_inventory,
         allow_decimal: allowDecimalFor(product.allow_decimal, product.unit),
@@ -845,18 +944,26 @@ export default function POSPage() {
       }));
 
     // Merge target: an existing line for the same product+unit keeps its
-    // warehouse (spec §12 — update the line, don't duplicate).
+    // warehouses (spec §12 — update the line, don't duplicate). A NEW line
+    // defaults to ALL stocked warehouses (largest first) when the product
+    // lives in 2+ of them, so a sale draws from every warehouse instead of
+    // one; the warehouse modal can narrow the selection.
     const existing = cart.find(i => i.id === product.id && i.selected_unit?.id === unit.id);
-    const targetWarehouseId = existing?.warehouse_id ?? pickBestWarehouse(product.id, availableWhs);
+    const stockedIds = existing ? [] : stockedWarehouseIds(product.id, availableWhs);
+    const targetWarehouseIds = stockedIds.length > 1 ? stockedIds : undefined;
+    const targetWarehouseId = existing?.warehouse_id
+      ?? targetWarehouseIds?.[0]
+      ?? pickBestWarehouse(product.id, availableWhs);
 
-    // Ceiling in base units for this pair: batch-ledger available (cart
-    // reservations subtracted) when batch data exists for the product,
-    // otherwise the counter stock of the target warehouse (legacy products).
+    // Ceiling in base units: batch-ledger available (cart reservations
+    // subtracted) when batch data exists for the product — combined across
+    // all selected warehouses for multi-warehouse lines — otherwise the
+    // counter stock (legacy products).
     const batchKnown = !!allocBatches && allocBatches.has(product.id);
-    const key = pairKey(product.id, targetWarehouseId || defaultWarehouseId);
+    const combinedSelected = targetWarehouseIds || [targetWarehouseId || defaultWarehouseId];
     const maxTotalBase = batchKnown
-      ? (allocation?.availableByPair.get(key) ?? 0)
-      : (availableWhs.find(w => w.warehouse_id === targetWarehouseId)?.stock ?? 0);
+      ? combinedSelected.reduce((s, wh) => s + (allocation?.availableByPair.get(pairKey(product.id, wh)) ?? 0), 0)
+      : combinedSelected.reduce((s, wh) => s + (availableWhs.find(w => w.warehouse_id === wh)?.stock ?? 0), 0);
 
     const existingBase = existing?.base_quantity ?? 0;
     const newTotalBase = existingBase + addBaseQty;
@@ -871,7 +978,7 @@ export default function POSPage() {
           toast({ title: 'Out of stock', description: `${product.name} has nothing allocatable across its batches`, variant: 'destructive' });
           return;
         }
-        performAdd(product, unit, qty, targetWarehouseId, availableWhs);
+        performAdd(product, unit, qty, targetWarehouseId, availableWhs, targetWarehouseIds);
         setUnitSelectorProduct(null);
         return;
       }
@@ -888,13 +995,14 @@ export default function POSPage() {
         product,
         unit,
         targetWarehouseId,
+        targetWarehouseIds,
         availableWhs,
       });
       setUnitSelectorProduct(null);
       return;
     }
 
-    performAdd(product, unit, qty, targetWarehouseId, availableWhs);
+    performAdd(product, unit, qty, targetWarehouseId, availableWhs, targetWarehouseIds);
     setUnitSelectorProduct(null);
   }
 
@@ -913,9 +1021,10 @@ export default function POSPage() {
       const allowDecimal = allowDecimalFor(i.allow_decimal, i.unit);
       const newQty = clampSaleQty(Math.max(0, i.quantity + delta), allowDecimal);
       const newBaseQty = i.selected_unit ? convertToBaseUnit(newQty, i.selected_unit) : newQty;
-      // Ceiling: what the pair can still take beyond this line's own
-      // reservation (batch ledger truth; counter fallback without data).
-      const extra = pairAvailable(i.id, i.warehouse_id);
+      // Ceiling: what the line's warehouse selection can still take beyond
+      // this line's own reservation (batch ledger truth; counter fallback
+      // without data). Multi-warehouse lines combine all selected pairs.
+      const extra = lineAvailableExtra(i);
       const maxBase = extra !== null ? i.base_quantity + extra : i.stock_available;
       // With overselling allowed the ceiling is advisory — the submit gate
       // (and the DB, when the setting is OFF) do the enforcing.
@@ -951,7 +1060,7 @@ export default function POSPage() {
       const allowDecimal = allowDecimalFor(i.allow_decimal, i.unit);
       const typedQty = clampSaleQty(newQty, allowDecimal);
       const baseQty = i.selected_unit ? convertToBaseUnit(typedQty, i.selected_unit) : typedQty;
-      const extra = pairAvailable(i.id, i.warehouse_id);
+      const extra = lineAvailableExtra(i);
       const maxBase = extra !== null ? i.base_quantity + extra : i.stock_available;
       if (baseQty > maxBase + 1e-9) {
         toast({ title: 'Stock limit', description: `Only ${fmtQty(maxBase)} ${i.selected_unit ? 'base units' : 'units'} available`, variant: 'destructive' });
@@ -974,7 +1083,7 @@ export default function POSPage() {
     const eligible = allocation.batchesByPair.get(key) || [];
     const others = cart
       .filter(c => lineIdOf(c) !== liKey)
-      .map(c => ({ lineId: lineIdOf(c), productId: c.id, warehouseId: c.warehouse_id, baseQuantity: c.base_quantity, allocOverride: c.allocOverride }));
+      .map(c => ({ lineId: lineIdOf(c), productId: c.id, warehouseId: c.warehouse_id, warehouseIds: lineWarehouseIds(c), baseQuantity: c.base_quantity, allocOverride: c.allocOverride }));
     const othersResult = allocateCartLines(others, allocBatches, strategy, defaultWarehouseId);
     const usedByOthers = new Map<string, number>();
     if (othersResult) {
@@ -998,14 +1107,27 @@ export default function POSPage() {
     toast({ title: 'Batch allocation updated', description: 'Manual allocation saved for this line' });
   }
 
-  function selectWarehouseForLine(liKey: string, warehouseId: string) {
+  // Warehouse selection for a line (single or multi). A new selection means
+  // a new allocation: drop any manual override so automatic allocation
+  // re-runs across the chosen warehouses.
+  function setWarehousesForLine(liKey: string, warehouseIds: string[]) {
     setCart(prev => prev.map(c => {
       if (lineIdOf(c) !== liKey) return c;
-      const wh = (c.available_warehouses || []).find(w => w.warehouse_id === warehouseId);
-      if (!wh) return c;
-      // New warehouse = new allocation pair: drop any manual override so
-      // automatic allocation re-runs there.
-      return { ...c, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_available: wh.stock, allocOverride: null };
+      const whs = c.available_warehouses || [];
+      const selected = whs.filter(w => warehouseIds.includes(w.warehouse_id));
+      if (selected.length === 0) return c;
+      const primary = selected.find(w => w.warehouse_id === warehouseIds[0]) || selected[0];
+      const ids = selected.map(w => w.warehouse_id);
+      // One warehouse selected: collapse back to the single-warehouse shape.
+      const single = ids.length <= 1;
+      return {
+        ...c,
+        warehouse_id: primary.warehouse_id,
+        warehouse_ids: single ? undefined : ids,
+        inventory_item_id: primary.inventory_item_id,
+        stock_available: primary.stock,
+        allocOverride: null,
+      };
     }));
   }
 
@@ -1096,16 +1218,25 @@ export default function POSPage() {
     if (!shortfallConfirmedRef.current) {
       if (gateStock) {
         const shortfalls = computeShortfalls(
-          cart.map(item => ({
-            product_id: item.id,
-            warehouse_id: item.warehouse_id,
-            base_quantity: item.base_quantity,
-            name: item.name,
-            sku: item.sku || '',
-            cost_price: item.cost_price || 0,
-            stock_available: item.stock_available ?? 0,
-            track_inventory: item.track_inventory,
-          })),
+          cart.map(item => {
+            const ids = lineWarehouseIds(item);
+            const counters = item.available_warehouses || [];
+            return {
+              product_id: item.id,
+              warehouse_id: item.warehouse_id,
+              warehouse_ids: ids,
+              base_quantity: item.base_quantity,
+              name: item.name,
+              sku: item.sku || '',
+              cost_price: item.cost_price || 0,
+              // Multi-warehouse lines are checked against the COMBINED
+              // counter stock of their selected warehouses.
+              stock_available: ids
+                ? counters.filter(w => ids.includes(w.warehouse_id)).reduce((s, w) => s + w.stock, 0)
+                : (item.stock_available ?? 0),
+              track_inventory: item.track_inventory,
+            };
+          }),
           gateStock
         );
 
@@ -1257,29 +1388,32 @@ export default function POSPage() {
       if (invError) throw invError;
       if (!invoice) throw new Error('Invoice not created');
 
-      const invoiceItems = cart.map(item => {
-        return {
+      // One cart line can split into several invoice items (multi-warehouse
+      // allocation) — each item carries its own warehouse so the per-item
+      // triggers (deduct, FIFO consumption, COGS) land on the right pair.
+      const invoiceItems = cart.flatMap(item =>
+        splitLineForSubmit(item).map(sp => ({
           invoice_id: invoice.id,
           product_id: item.id,
-          quantity: item.quantity,
+          quantity: sp.quantity,
           unit_price: item.unit_price,
           cost_price: item.cost_price || 0,
           discount_percent: item.discount_percent || 0,
           tax_rate: 0,
-          subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
+          subtotal: sp.subtotal,
           unit_name: item.selected_unit?.unit_name,
           unit_conversion_factor: item.selected_unit?.conversion_factor,
-          base_quantity: item.base_quantity,
-          warehouse_id: item.warehouse_id || null,
+          base_quantity: sp.base_quantity,
+          warehouse_id: sp.warehouse_id,
           description: gateStock
             ? shortfallDescription(
-                { product_id: item.id, warehouse_id: item.warehouse_id, base_quantity: item.base_quantity },
+                { product_id: item.id, warehouse_id: sp.warehouse_id, base_quantity: sp.base_quantity },
                 gateStock,
                 'POS'
               )
             : null,
-        };
-      });
+        }))
+      );
 
       const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems);
       if (itemsError) {
@@ -1299,24 +1433,24 @@ export default function POSPage() {
         throw itemsError;
       }
 
-      // Record cost price history snapshot for each item at time of sale
-      const costHistoryRecords = cart.map(item => {
+      // Record cost price history snapshot for each item at time of sale —
+      // split per warehouse the same way the invoice items are.
+      const costHistoryRecords = cart.flatMap(item => {
         const unitName = item.selected_unit?.unit_name || 'pcs';
         const costPerUnit = item.cost_price || 0;
-        const totalCostAdded = costPerUnit * item.quantity;
-        return {
+        return splitLineForSubmit(item).map(sp => ({
           product_id: item.id,
           product_name: item.name,
           product_sku: item.sku || '',
           invoice_id: invoice.id,
           unit: unitName,
-          quantity: item.quantity,
+          quantity: sp.quantity,
           unit_price: item.unit_price,
           cost_price_per_qty: costPerUnit,
-          cost_price_for_added_qty: totalCostAdded,
+          cost_price_for_added_qty: costPerUnit * sp.quantity,
           total_cost_price_single: costPerUnit,
-          total_cost_price_added: totalCostAdded,
-        };
+          total_cost_price_added: costPerUnit * sp.quantity,
+        }));
       });
       if (costHistoryRecords.length > 0) {
         await supabase.from('cost_price_history').insert(costHistoryRecords);
@@ -1548,37 +1682,41 @@ export default function POSPage() {
     const tempNumber = `OFF-${Date.now().toString().slice(-8)}`;
     const customerName = customers.find(c => c.id === customerId)?.name || 'customer';
 
-    const items = cart.map(item => ({
-      product_id: item.id,
-      quantity: item.quantity,
-      unit_price: item.unit_price,
-      cost_price: item.cost_price || 0,
-      discount_percent: item.discount_percent || 0,
-      tax_rate: 0,
-      subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
-      unit_name: item.selected_unit?.unit_name ?? null,
-      unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
-      base_quantity: item.base_quantity,
-      warehouse_id: item.warehouse_id || null,
-      description: null,
-    }));
+    // Split per warehouse exactly like the online path (multi-warehouse
+    // allocation) — sync_invoice_create replays the same item shape and the
+    // per-item triggers fire at replay.
+    const items = cart.flatMap(item =>
+      splitLineForSubmit(item).map(sp => ({
+        product_id: item.id,
+        quantity: sp.quantity,
+        unit_price: item.unit_price,
+        cost_price: item.cost_price || 0,
+        discount_percent: item.discount_percent || 0,
+        tax_rate: 0,
+        subtotal: sp.subtotal,
+        unit_name: item.selected_unit?.unit_name ?? null,
+        unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
+        base_quantity: sp.base_quantity,
+        warehouse_id: sp.warehouse_id,
+        description: null,
+      }))
+    );
 
-    const cost_history = cart.map(item => {
+    const cost_history = cart.flatMap(item => {
       const unitName = item.selected_unit?.unit_name || 'pcs';
       const costPerUnit = item.cost_price || 0;
-      const totalCostAdded = costPerUnit * item.quantity;
-      return {
+      return splitLineForSubmit(item).map(sp => ({
         product_id: item.id,
         product_name: item.name,
         product_sku: item.sku || '',
         unit: unitName,
-        quantity: item.quantity,
+        quantity: sp.quantity,
         unit_price: item.unit_price,
         cost_price_per_qty: costPerUnit,
-        cost_price_for_added_qty: totalCostAdded,
+        cost_price_for_added_qty: costPerUnit * sp.quantity,
         total_cost_price_single: costPerUnit,
-        total_cost_price_added: totalCostAdded,
-      };
+        total_cost_price_added: costPerUnit * sp.quantity,
+      }));
     });
 
     // Client-generated invoice id: the server honors it (sync_invoice_create),
@@ -2768,18 +2906,28 @@ export default function POSPage() {
                 ? `Batch allocation — ${la!.allocations.length} batch${la!.allocations.length === 1 ? '' : 'es'} (${la!.usedOverride ? 'manual' : strategy.toUpperCase()})${batchWarnCount > 0 ? ` · ${batchWarnCount} warning${batchWarnCount === 1 ? '' : 's'}` : ''}`
                 : '';
               const whOptions = item.available_warehouses || [];
+              const lineWhIds = lineWarehouseIds(item);
+              const selectedWhs = lineWhIds
+                ? lineWhIds.map(id => whOptions.find(w => w.warehouse_id === id)).filter((w): w is NonNullable<typeof w> => !!w)
+                : [];
               // A product stocked in one warehouse offers no choice, so the
               // picker would be a dead control occupying a full row.
               const multiWarehouse = whOptions.length > 1;
-              const activeWarehouseName = whOptions.find(w => w.warehouse_id === item.warehouse_id)?.warehouse_name
-                || warehouses.find(w => w.id === item.warehouse_id)?.name
-                || '';
-              // The chosen warehouse must hold what the line needs; when it
-              // does not, the picker carries a warning count.
-              const activeWhStock = whOptions.find(w => w.warehouse_id === item.warehouse_id)?.stock;
+              const activeWarehouseName = lineWhIds
+                ? selectedWhs.map(w => w.warehouse_name).join(' + ')
+                : whOptions.find(w => w.warehouse_id === item.warehouse_id)?.warehouse_name
+                  || warehouses.find(w => w.id === item.warehouse_id)?.name
+                  || '';
+              // The chosen warehouse(s) must hold what the line needs; when
+              // they do not, the picker carries a warning count.
+              const activeWhStock = lineWhIds
+                ? selectedWhs.reduce((s, w) => s + (w.stock || 0), 0)
+                : whOptions.find(w => w.warehouse_id === item.warehouse_id)?.stock;
               const warehouseShort = activeWhStock != null ? Math.max(0, item.base_quantity - activeWhStock) : 0;
               const warehouseWarnCount = warehouseShort > 1e-9 ? 1 : 0;
-              const warehouseButtonTitle = `Warehouse — ${activeWarehouseName || 'not set'}${warehouseWarnCount > 0 ? ` · short ${fmtQty(warehouseShort)}` : ''}`;
+              const warehouseButtonTitle = lineWhIds
+                ? `Warehouses — ${selectedWhs.map(w => `${w.warehouse_name} ${fmtQty(w.stock)}`).join(' · ')}${warehouseWarnCount > 0 ? ` · short ${fmtQty(warehouseShort)}` : ''}`
+                : `Warehouse — ${activeWarehouseName || 'not set'}${warehouseWarnCount > 0 ? ` · short ${fmtQty(warehouseShort)}` : ''}`;
               return (
             <div
               key={`${item.id}-${item.selected_unit?.id || 'default'}`}
@@ -3124,7 +3272,7 @@ export default function POSPage() {
           info={insufficient.info}
           allowPartial={invSettings.allow_partial_add}
           onAddPartial={(partialQty) => {
-            performAdd(insufficient.product, insufficient.unit, partialQty, insufficient.targetWarehouseId, insufficient.availableWhs);
+            performAdd(insufficient.product, insufficient.unit, partialQty, insufficient.targetWarehouseId, insufficient.availableWhs, insufficient.targetWarehouseIds);
             setInsufficient(null);
           }}
           onCancel={() => setInsufficient(null)}
@@ -3167,12 +3315,22 @@ export default function POSPage() {
         if (!item) return null;
         const la = lineAllocation(item);
         if (!la) return null;
-        // The ledger consumes from the line's warehouse, else the default
-        // one — name the warehouse that will actually be drawn from.
-        const allocWh = resolveWarehouse({ warehouseId: item.warehouse_id }, defaultWarehouseId);
-        const whName = (item.available_warehouses || []).find(w => w.warehouse_id === allocWh)?.warehouse_name
-          || warehouses.find(w => w.id === allocWh)?.name
-          || 'Not assigned';
+        // Name what the line draws from: the selected warehouses (multi) or
+        // the single consumption warehouse.
+        const lineWhIds = lineWarehouseIds(item);
+        const whName = lineWhIds
+          ? lineWhIds.map(id =>
+              (item.available_warehouses || []).find(w => w.warehouse_id === id)?.warehouse_name
+              || warehouses.find(w => w.id === id)?.name
+              || 'Unknown'
+            ).join(' + ')
+          : (() => {
+              const allocWh = resolveWarehouse({ warehouseId: item.warehouse_id }, defaultWarehouseId);
+              return (item.available_warehouses || []).find(w => w.warehouse_id === allocWh)?.warehouse_name
+                || warehouses.find(w => w.id === allocWh)?.name
+                || 'Not assigned';
+            })();
+        const whNameMap = Object.fromEntries((item.available_warehouses || []).map(w => [w.warehouse_id, w.warehouse_name]));
         return (
           <BatchAllocationViewer
             line={{
@@ -3187,15 +3345,17 @@ export default function POSPage() {
               overrideInvalid: la.overrideInvalid,
               strategy,
               allocations: la.allocations,
+              warehouseNames: lineWhIds ? whNameMap : undefined,
               conversionFactor: item.selected_unit?.conversion_factor ?? 1,
             }}
-            onEdit={() => { setEditingAllocLine(viewingBatchLine); setViewingBatchLine(null); }}
+            onEdit={lineWhIds ? undefined : () => { setEditingAllocLine(viewingBatchLine); setViewingBatchLine(null); }}
             onClose={() => setViewingBatchLine(null)}
           />
         );
       })()}
 
-      {/* Warehouse picker (spec §12) */}
+      {/* Warehouse picker (spec §12) — multi-select so a line can draw from
+          every stocked warehouse instead of one */}
       {pickingWarehouseLine && (() => {
         const item = cart.find(c => lineIdOf(c) === pickingWarehouseLine);
         if (!item) return null;
@@ -3210,9 +3370,14 @@ export default function POSPage() {
               warehouse_name: w.warehouse_name,
               stock: w.stock,
             }))}
-            selectedId={item.warehouse_id || null}
+            multi
+            selectedIds={lineWarehouseIds(item) || (item.warehouse_id ? [item.warehouse_id] : [])}
             onSelect={(wid) => {
-              selectWarehouseForLine(pickingWarehouseLine, wid);
+              setWarehousesForLine(pickingWarehouseLine, [wid]);
+              setPickingWarehouseLine(null);
+            }}
+            onDone={(ids) => {
+              setWarehousesForLine(pickingWarehouseLine, ids);
               setPickingWarehouseLine(null);
             }}
             onClose={() => setPickingWarehouseLine(null)}
