@@ -380,6 +380,89 @@ export function availableForNewAdd(
   return Math.max(0, (result.availableByPair.get(key) ?? 0) - (result.reservedByPair.get(key) ?? 0));
 }
 
+// Stocked warehouses of a product, largest first — the default multi-
+// warehouse selection. Ledger-ordered when a batch snapshot exists for the
+// product, counters otherwise. Only warehouses holding something return.
+export function stockedWarehouseIds(
+  productId: string,
+  availableWhs: { warehouse_id: string; stock: number }[],
+  batchesByProduct: Map<string, AllocatableBatch[]> | null,
+  defaultWarehouseId?: string | null
+): string[] {
+  const ledgerKnown = !!batchesByProduct && batchesByProduct.has(productId);
+  const qtyOf = (wh: string) => ledgerKnown
+    ? ledgerQtyForPair(productId, wh, batchesByProduct, defaultWarehouseId)
+    : (availableWhs.find(w => w.warehouse_id === wh)?.stock ?? 0);
+  return availableWhs
+    .map(w => w.warehouse_id)
+    .filter(wh => qtyOf(wh) > 1e-9)
+    .sort((a, b) => {
+      const qa = qtyOf(a), qb = qtyOf(b);
+      if (qa !== qb) return qb - qa;
+      // Ties: the default warehouse serves first, then id order.
+      if (defaultWarehouseId && (a === defaultWarehouseId) !== (b === defaultWarehouseId)) {
+        return a === defaultWarehouseId ? -1 : 1;
+      }
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+}
+
+export interface SubmitSplit {
+  warehouse_id: string | null;
+  quantity: number;
+  base_quantity: number;
+  subtotal: number;
+}
+
+export interface SplittableLine {
+  warehouse_id?: string | null;
+  warehouse_ids?: string[] | null;
+  quantity: number;
+  base_quantity: number;
+  unit_price: number;
+  discount_percent?: number;
+  conversion_factor?: number;
+}
+
+// Expand a sell line into the invoice items it becomes at submit. Multi-
+// warehouse lines split one item per warehouse from the derived allocation
+// (any shortfall books on the last warehouse in allocation order); single
+// lines and lines without allocation data stay whole on their primary
+// warehouse. All downstream triggers are per-invoice-item, so returns,
+// edits and restores of the split lines work unchanged.
+export function splitLineByWarehouse(line: SplittableLine, la: LineAllocation | null): SubmitSplit[] {
+  const cf = line.conversion_factor || 1;
+  const lineTotal = line.quantity * line.unit_price * (1 - (line.discount_percent || 0) / 100);
+  const ids = (line.warehouse_ids || []).filter(Boolean);
+  if (ids.length <= 1 || !la || la.allocations.length === 0) {
+    return [{
+      warehouse_id: line.warehouse_id || null,
+      quantity: line.quantity,
+      base_quantity: line.base_quantity,
+      subtotal: lineTotal,
+    }];
+  }
+  const byWh = new Map<string, number>();
+  for (const a of la.allocations) {
+    byWh.set(a.batch.warehouse_id, (byWh.get(a.batch.warehouse_id) || 0) + a.qty);
+  }
+  if (la.shortfall > 1e-9) {
+    const last = la.warehouseOrder?.[la.warehouseOrder.length - 1] || ids[ids.length - 1];
+    byWh.set(last, (byWh.get(last) || 0) + la.shortfall);
+  }
+  const splits = Array.from(byWh.entries()).map(([wh, base]) => ({
+    warehouse_id: wh,
+    quantity: base / cf,
+    base_quantity: base,
+    subtotal: (base / cf) * line.unit_price * (1 - (line.discount_percent || 0) / 100),
+  }));
+  // Kill cent drift from fractional splits: the last item absorbs the
+  // residual so the invoice totals match the sell line exactly.
+  const drift = lineTotal - splits.reduce((s, sp) => s + sp.subtotal, 0);
+  if (Math.abs(drift) > 1e-9) splits[splits.length - 1].subtotal += drift;
+  return splits;
+}
+
 // Format a base-unit qty for display: up to 3 decimals, trailing zeros trimmed.
 export function fmtQty(n: number): string {
   if (!isFinite(n)) return '0';

@@ -16,8 +16,9 @@ import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/cred
 import {
   allocateCartLines, availableForNewAdd, fetchAllocatableBatches, fetchInventorySettings,
   ledgerQtyAllWarehouses, ledgerQtyForPair, pairKey, fmtQty, resolveWarehouse,
+  stockedWarehouseIds, splitLineByWarehouse,
   DEFAULT_INVENTORY_SETTINGS,
-  type AllocationResult, type AllocLineInput, type AllocatableBatch, type InventorySettings,
+  type AllocationResult, type AllocLineInput, type AllocatableBatch, type InventorySettings, type SubmitSplit,
 } from '@/lib/batch-allocation';
 import { InsufficientStockDialog, type InsufficientStockInfo } from '@/components/insufficient-stock-dialog';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
@@ -806,28 +807,6 @@ export default function POSPage() {
     return availableWhs.reduce((a, b) => (a.stock > b.stock ? a : b)).warehouse_id;
   }
 
-  // Stocked warehouses of a product, largest first — the default multi-
-  // warehouse selection. Ledger-ordered when batch data exists for the
-  // product, counters otherwise. Only warehouses holding something return.
-  function stockedWarehouseIds(productId: string, availableWhs: { warehouse_id: string; stock: number }[]): string[] {
-    const ledgerKnown = !!allocBatches && allocBatches.has(productId);
-    const qtyOf = (wh: string) => ledgerKnown
-      ? ledgerQtyForPair(productId, wh, allocBatches, defaultWarehouseId)
-      : (availableWhs.find(w => w.warehouse_id === wh)?.stock ?? 0);
-    return availableWhs
-      .map(w => w.warehouse_id)
-      .filter(wh => qtyOf(wh) > 1e-9)
-      .sort((a, b) => {
-        const qa = qtyOf(a), qb = qtyOf(b);
-        if (qa !== qb) return qb - qa;
-        // Ties: the default warehouse serves first, then id order.
-        if (defaultWarehouseId && (a === defaultWarehouseId) !== (b === defaultWarehouseId)) {
-          return a === defaultWarehouseId ? -1 : 1;
-        }
-        return a < b ? -1 : a > b ? 1 : 0;
-      });
-  }
-
   // What a multi-warehouse line can still take across ALL its selected
   // warehouses (single-warehouse lines keep the per-pair ceiling). Null when
   // no batch snapshot exists — the counter fallback applies instead.
@@ -838,51 +817,18 @@ export default function POSPage() {
     return ids.reduce((s, wh) => s + availableForNewAdd(item.id, wh, allocation, defaultWarehouseId), 0);
   }
 
-  interface SubmitSplit {
-    warehouse_id: string | null;
-    quantity: number;
-    base_quantity: number;
-    subtotal: number;
-  }
-
-  // Expand a cart line into the invoice items it becomes at submit. Multi-
-  // warehouse lines split one item per warehouse from the derived allocation
-  // (any shortfall books on the last warehouse in allocation order); single
-  // lines and lines without allocation data stay whole on their primary
-  // warehouse. All downstream triggers are per-invoice-item, so returns,
-  // edits and restores of the split lines work unchanged.
+  // Expand a cart line into the invoice items it becomes at submit — thin
+  // wrapper over the shared splitter, fed from the derived allocation.
   function splitLineForSubmit(item: CartItem): SubmitSplit[] {
-    const cf = item.selected_unit?.conversion_factor || 1;
-    const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
-    const ids = lineWarehouseIds(item);
-    const la = ids ? lineAllocation(item) : null;
-    if (!ids || !la || la.allocations.length === 0) {
-      return [{
-        warehouse_id: item.warehouse_id || null,
-        quantity: item.quantity,
-        base_quantity: item.base_quantity,
-        subtotal: lineTotal,
-      }];
-    }
-    const byWh = new Map<string, number>();
-    for (const a of la.allocations) {
-      byWh.set(a.batch.warehouse_id, (byWh.get(a.batch.warehouse_id) || 0) + a.qty);
-    }
-    if (la.shortfall > 1e-9) {
-      const last = la.warehouseOrder?.[la.warehouseOrder.length - 1] || ids[ids.length - 1];
-      byWh.set(last, (byWh.get(last) || 0) + la.shortfall);
-    }
-    const splits = Array.from(byWh.entries()).map(([wh, base]) => ({
-      warehouse_id: wh,
-      quantity: base / cf,
-      base_quantity: base,
-      subtotal: (base / cf) * item.unit_price * (1 - (item.discount_percent || 0) / 100),
-    }));
-    // Kill cent drift from fractional splits: the last item absorbs the
-    // residual so the invoice totals match the cart line exactly.
-    const drift = lineTotal - splits.reduce((s, sp) => s + sp.subtotal, 0);
-    if (Math.abs(drift) > 1e-9) splits[splits.length - 1].subtotal += drift;
-    return splits;
+    return splitLineByWarehouse({
+      warehouse_id: item.warehouse_id,
+      warehouse_ids: lineWarehouseIds(item),
+      quantity: item.quantity,
+      base_quantity: item.base_quantity,
+      unit_price: item.unit_price,
+      discount_percent: item.discount_percent,
+      conversion_factor: item.selected_unit?.conversion_factor,
+    }, lineAllocation(item));
   }
 
   // Pure cart mutation: merge into the product+unit+warehouse line, or push
@@ -949,7 +895,7 @@ export default function POSPage() {
     // lives in 2+ of them, so a sale draws from every warehouse instead of
     // one; the warehouse modal can narrow the selection.
     const existing = cart.find(i => i.id === product.id && i.selected_unit?.id === unit.id);
-    const stockedIds = existing ? [] : stockedWarehouseIds(product.id, availableWhs);
+    const stockedIds = existing ? [] : stockedWarehouseIds(product.id, availableWhs, allocBatches, defaultWarehouseId);
     const targetWarehouseIds = stockedIds.length > 1 ? stockedIds : undefined;
     const targetWarehouseId = existing?.warehouse_id
       ?? targetWarehouseIds?.[0]
