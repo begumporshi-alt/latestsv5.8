@@ -353,7 +353,7 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
                         {s > 0 ? `${s} in stock` : 'Out of stock'}
                       </p>
                     )}
-                    {p.warranty_months && p.warranty_months > 0 && (
+                    {(p.warranty_months ?? 0) > 0 && (
                       <p className="text-[10px] font-medium text-purple-600">{p.warranty_months}mo warranty</p>
                     )}
                     {p.days_to_expiry !== undefined && (
