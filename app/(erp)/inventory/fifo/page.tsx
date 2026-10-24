@@ -50,20 +50,22 @@ export default function FifoLedgerPage() {
     load();
   }, []);
 
-  // Group by product; only products with remaining qty appear.
+  // Group by product; products with any non-zero layer appear — net-negative
+  // products (open oversell IOU debt) must not vanish from the ledger.
   const products = useMemo(() => {
-    const map = new Map<string, { product: Batch['product']; value: number; remaining: number; received: number }>();
+    const map = new Map<string, { product: Batch['product']; value: number; remaining: number; received: number; hasIou: boolean }>();
     for (const b of batches) {
       const key = b.product_id as unknown as string;
       if (!key) continue;
-      const cur = map.get(key) || { product: b.product, value: 0, remaining: 0, received: 0 };
+      const cur = map.get(key) || { product: b.product, value: 0, remaining: 0, received: 0, hasIou: false };
       cur.remaining += Number(b.quantity_remaining);
       cur.received += Number(b.quantity_received);
       cur.value += Number(b.quantity_remaining) * Number(b.unit_cost);
+      if (Number(b.quantity_remaining) < 0) cur.hasIou = true;
       map.set(key, cur);
     }
     return Array.from(map.entries())
-      .filter(([, v]) => v.remaining > 0)
+      .filter(([, v]) => v.remaining !== 0)
       .sort((a, b) => (a[1].product?.name || '').localeCompare(b[1].product?.name || ''));
   }, [batches]);
 
@@ -125,7 +127,7 @@ export default function FifoLedgerPage() {
       totalRemaining,
       productCount: productIds.size,
       byWarehouse: Array.from(byWarehouse.entries())
-        .filter(([, v]) => v.remaining > 0)
+        .filter(([, v]) => v.remaining !== 0)
         .sort((a, b) => b[1].value - a[1].value),
       byType: Array.from(byType.entries()).sort((a, b) => b[1].value - a[1].value),
     };
@@ -247,11 +249,18 @@ export default function FifoLedgerPage() {
                 className={`w-full flex items-center justify-between px-4 py-3 text-left transition hover:bg-muted/40 ${selectedProduct === id ? 'bg-blue-50' : ''}`}
               >
                 <div>
-                  <p className="text-sm font-semibold text-foreground">{v.product?.name || 'Unknown'}</p>
+                  <p className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+                    {v.product?.name || 'Unknown'}
+                    {v.hasIou && (
+                      <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
+                        IOU
+                      </span>
+                    )}
+                  </p>
                   <p className="text-xs text-muted-foreground">{v.product?.sku}</p>
                 </div>
                 <div className="text-right shrink-0 ml-3">
-                  <p className="text-sm font-semibold text-foreground">{formatCurrency(v.value)}</p>
+                  <p className={`text-sm font-semibold ${v.value < 0 ? 'text-red-600' : 'text-foreground'}`}>{formatCurrency(v.value)}</p>
                   <p className="text-xs text-muted-foreground whitespace-nowrap">
                     Recv {v.received.toLocaleString()} · Rem {v.remaining.toLocaleString()}
                   </p>
@@ -260,7 +269,7 @@ export default function FifoLedgerPage() {
             ))}
             {filteredProducts.length === 0 && (
               <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                No products with remaining stock.
+                No products with remaining or outstanding IOU stock.
               </div>
             )}
           </div>
@@ -335,7 +344,7 @@ export default function FifoLedgerPage() {
                       <td className="px-4 py-2 capitalize">{b.batch_type}</td>
                       <td className="px-4 py-2 text-sm">{b.warehouse?.name || '—'}</td>
                       <td className="px-4 py-2 text-right">{Number(b.quantity_received).toLocaleString()}</td>
-                      <td className="px-4 py-2 text-right">{Number(b.quantity_remaining).toLocaleString()}</td>
+                      <td className={`px-4 py-2 text-right font-mono ${Number(b.quantity_remaining) < 0 ? 'text-red-600 font-semibold' : ''}`}>{Number(b.quantity_remaining).toLocaleString()}</td>
                       <td className="px-4 py-2 text-right">{formatCurrency(Number(b.unit_cost))}</td>
                       <td className="px-4 py-2 text-right font-semibold">
                         {formatCurrency(Number(b.quantity_remaining) * Number(b.unit_cost))}
