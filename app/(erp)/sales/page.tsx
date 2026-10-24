@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
@@ -16,6 +16,13 @@ import Pagination from '@/components/ui/AppPagination';
 import type { Invoice, InvoiceStatus, Customer, Product, Payment, PaymentMethod, ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, ledgerQtyFor, computeShortfalls, shortfallDescription, type LedgerStock, type Shortfall } from '@/lib/oversell-gate';
+import {
+  allocateCartLines, fetchAllocatableBatches, fetchInventorySettings,
+  stockedWarehouseIds, splitLineByWarehouse,
+  DEFAULT_INVENTORY_SETTINGS,
+  type AllocLineInput, type AllocatableBatch, type InventorySettings, type LineAllocation,
+} from '@/lib/batch-allocation';
+import { WarehouseSelectModal } from '@/components/warehouse-select-modal';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
@@ -1202,6 +1209,9 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     available_units?: ProductUnit[];
     base_quantity: number;
     warehouse_id?: string;
+    // Multi-warehouse line: draws from every listed warehouse (largest stock
+    // first), split into one invoice item per warehouse at submit.
+    warehouse_ids?: string[];
     inventory_item_id?: string;
     available_warehouses?: { warehouse_id: string; warehouse_name: string; stock: number; inventory_item_id: string }[];
   }[]>([]);
@@ -1222,6 +1232,47 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
   useEffect(() => {
     fetchOversellPolicy().then(p => setOversellAllowed(p !== false));
   }, []);
+  // Batch-allocation engine — the same derivation the POS cart uses. The
+  // cart lines keep only product/qty/warehouse; the per-warehouse split is
+  // recomputed from the batch snapshot on every change and materialized
+  // into one invoice_items row per warehouse at submit.
+  const [invSettings, setInvSettings] = useState<InventorySettings>(DEFAULT_INVENTORY_SETTINGS);
+  const [allocBatches, setAllocBatches] = useState<Map<string, AllocatableBatch[]> | null>(null);
+  const [pickingWhIndex, setPickingWhIndex] = useState<number | null>(null);
+  useEffect(() => {
+    fetchInventorySettings().then(setInvSettings);
+  }, []);
+  const defaultWarehouseId = warehouses[0]?.id;
+
+  function lineWarehouseIds(item: { warehouse_ids?: string[] | null }): string[] | null {
+    const ids = (item.warehouse_ids || []).filter(Boolean);
+    return ids.length > 1 ? ids : null;
+  }
+  // Combined counter stock across the line's warehouses (multi) or its
+  // single warehouse's stock.
+  function lineStockQty(item: { stock_qty: number | null; warehouse_ids?: string[] | null; available_warehouses?: { warehouse_id: string; stock: number }[]; warehouse_id?: string }): number | null {
+    const ids = lineWarehouseIds(item);
+    if (!ids) return item.stock_qty;
+    return ids.reduce((s, id) => s + (item.available_warehouses?.find(w => w.warehouse_id === id)?.stock || 0), 0);
+  }
+  function setWarehousesForLine(index: number, ids: string[]) {
+    const updated = [...items];
+    const item = updated[index];
+    if (ids.length <= 1) {
+      const wh = item.available_warehouses?.find(w => w.warehouse_id === ids[0]);
+      if (!wh) return;
+      const newBaseQty = item.selected_unit ? convertToBaseUnit(item.quantity, item.selected_unit) : item.quantity;
+      if (newBaseQty > wh.stock && !oversellAllowed) {
+        toast({ title: 'Stock limit', description: `Only ${wh.stock} ${item.product_base_unit || 'units'} in ${wh.warehouse_name}`, variant: 'destructive' });
+        return;
+      }
+      updated[index] = { ...item, warehouse_id: wh.warehouse_id, inventory_item_id: wh.inventory_item_id, stock_qty: wh.stock, warehouse_ids: undefined };
+    } else {
+      const combined = ids.reduce((s, id) => s + (item.available_warehouses?.find(w => w.warehouse_id === id)?.stock || 0), 0);
+      updated[index] = { ...item, warehouse_ids: ids, warehouse_id: ids[0], stock_qty: combined };
+    }
+    setItems(updated);
+  }
   const shortfallConfirmedRef = useRef(false);
   const [creditConfirmOpen, setCreditConfirmOpen] = useState(false);
   const [pendingCreditCheck, setPendingCreditCheck] = useState<CreditCheck | null>(null);
@@ -1250,11 +1301,16 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     shortfallConfirmedRef.current = false;
     creditConfirmedRef.current = false;
     setOversellBlocked(false);
-    if (!itemProductKey) { setLedgerStock(null); return; }
+    if (!itemProductKey) { setLedgerStock(null); setAllocBatches(null); return; }
     let stale = false;
     (async () => {
-      const stock = await fetchLedgerStockFor(itemProductKey.split(','));
-      if (!stale && stock) setLedgerStock(stock);
+      const [stock, batches] = await Promise.all([
+        fetchLedgerStockFor(itemProductKey.split(',')),
+        fetchAllocatableBatches(itemProductKey.split(',')),
+      ]);
+      if (stale) return;
+      if (stock) setLedgerStock(stock);
+      setAllocBatches(batches);
     })();
     return () => { stale = true; };
   }, [itemProductKey]);
@@ -1295,16 +1351,24 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           inventory_item_id: i.id,
         }));
         const warehouse = availableWhs.find((w: { warehouse_id: string }) => w.warehouse_id === row.warehouse_id) || availableWhs.reduce((a: any, b: any) => a.stock > b.stock ? a : b, null);
+        // Stocked in 2+ warehouses → paste defaults to all of them, capped
+        // against the combined stock (same default as a fresh add).
+        const stockedIds = stockedWarehouseIds(product.id, availableWhs, allocBatches, defaultWarehouseId);
+        const targetWarehouseIds = stockedIds.length > 1 ? stockedIds : undefined;
+        const combinedStock = targetWarehouseIds
+          ? stockedIds.reduce((s: number, id: string) => s + (availableWhs.find((w: any) => w.warehouse_id === id)?.stock || 0), 0)
+          : null;
+        const capStock = targetWarehouseIds ? combinedStock : (warehouse?.stock ?? 0);
         const allowDecimal = (product as any).allow_decimal ?? unitAllowsDecimal(product.unit);
         let quantity = Math.max(1, Number(row.quantity) || 1);
         if (!allowDecimal) quantity = Math.floor(quantity);
         let baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
-        if (warehouse && baseQuantity > warehouse.stock && warehouse.stock > 0) {
+        if (capStock > 0 && baseQuantity > capStock) {
           const originalQty = quantity;
           if (selectedUnit) {
             // Decimal products may be capped to a fractional qty; discrete
             // products floor to whole sale units (legacy behaviour).
-            const maxQty = clampSaleQty(warehouse.stock / (selectedUnit.conversion_factor || 1), allowDecimal);
+            const maxQty = clampSaleQty(capStock / (selectedUnit.conversion_factor || 1), allowDecimal);
             quantity = Math.max(1, maxQty);
             baseQuantity = selectedUnit ? convertToBaseUnit(quantity, selectedUnit) : quantity;
           } else {
@@ -1322,11 +1386,13 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           product_id: product.id, product_name: product.name, product_sku: product.sku,
           product_unit: product.unit, product_base_unit: product.base_unit,
           allow_decimal: (product as any).allow_decimal ?? unitAllowsDecimal(product.unit),
-          stock_qty: warehouse ? warehouse.stock : (product.inventory_items?.length ? 0 : null),
+          stock_qty: targetWarehouseIds ? combinedStock : (warehouse ? warehouse.stock : (product.inventory_items?.length ? 0 : null)),
           quantity, unit_price: Number(row.unit_price) || (selectedUnit?.price || product.sale_price || 0), cost_price: saleUnitCost,
           discount_percent: Math.min(100, Math.max(0, Number(row.discount_percent) || 0)), selected_unit: selectedUnit,
           available_units: availableUnits.length ? availableUnits : undefined, base_quantity: baseQuantity,
-          warehouse_id: warehouse?.warehouse_id, inventory_item_id: warehouse?.inventory_item_id, available_warehouses: availableWhs,
+          warehouse_id: targetWarehouseIds ? targetWarehouseIds[0] : warehouse?.warehouse_id,
+          warehouse_ids: targetWarehouseIds,
+          inventory_item_id: warehouse?.inventory_item_id, available_warehouses: availableWhs,
         };
       }).filter(Boolean);
       if (!pastedItems.length) {
@@ -1357,7 +1423,12 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       .then(({ data }) => { if (data) setPaymentMethods(data); });
   }, []);
 
-  function addProductToItems(product: any) {
+  function addProductToItems(searchResult: any) {
+    // ProductSearchInput hands back its own thin fetch whose inventory_items
+    // carry only quantity_on_hand — resolve the full product record (the
+    // parent loads inventory_items with ids and warehouse_id) or every
+    // warehouse option would come out nameless and unusable.
+    const product = products.find((p: any) => p.id === searchResult?.id) || searchResult;
     const multiUnit = product.enable_multi_unit && product.units && product.units.filter((u: any) => u.is_active).length > 0;
     const defaultUnit: ProductUnit | undefined = multiUnit ? getDefaultSaleUnit(product) : undefined;
     const unitPrice = defaultUnit ? defaultUnit.price : (product.sale_price || 0);
@@ -1376,7 +1447,16 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     const bestWh = availableWhs.length > 0
       ? availableWhs.reduce((a, b) => a.stock > b.stock ? a : b)
       : null;
-    const stock = bestWh ? bestWh.stock : (invItems.length > 0 ? 0 : null);
+    // Stocked in 2+ warehouses → the line draws from all of them by default
+    // (largest stock first), same default as the POS cart.
+    const stockedIds = stockedWarehouseIds(product.id, availableWhs, allocBatches, defaultWarehouseId);
+    const targetWarehouseIds = stockedIds.length > 1 ? stockedIds : undefined;
+    const targetWarehouse = targetWarehouseIds
+      ? availableWhs.find(w => w.warehouse_id === targetWarehouseIds[0])
+      : bestWh;
+    const stock = targetWarehouseIds
+      ? targetWarehouseIds.reduce((s, id) => s + (availableWhs.find(w => w.warehouse_id === id)?.stock || 0), 0)
+      : (bestWh ? bestWh.stock : (invItems.length > 0 ? 0 : null));
 
     // Stock validation - prevent adding out of stock items
     if (stock !== null && stock <= 0 && !oversellAllowed) {
@@ -1384,9 +1464,9 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       return;
     }
 
-    // If same product+unit+warehouse already in list, increment qty instead
+    // If same product+unit already in list, increment qty instead
     const existingIndex = items.findIndex(
-      i => i.product_id === product.id && (i.selected_unit?.id ?? '') === (defaultUnit?.id ?? '') && (i.warehouse_id ?? '') === (bestWh?.warehouse_id ?? '')
+      i => i.product_id === product.id && (i.selected_unit?.id ?? '') === (defaultUnit?.id ?? '')
     );
     if (existingIndex >= 0) {
       const updated = [...items];
@@ -1420,8 +1500,9 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       selected_unit: defaultUnit,
       available_units: multiUnit ? product.units.filter((u: any) => u.is_active) : undefined,
       base_quantity: baseQty,
-      warehouse_id: bestWh?.warehouse_id,
-      inventory_item_id: bestWh?.inventory_item_id,
+      warehouse_id: targetWarehouse?.warehouse_id,
+      warehouse_ids: targetWarehouseIds,
+      inventory_item_id: targetWarehouse?.inventory_item_id,
       available_warehouses: availableWhs,
     }, ...prev]);
   }
@@ -1441,7 +1522,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
     } else if (field === 'selected_unit') {
       const unit = value as ProductUnit;
       const newBaseQty = convertToBaseUnit(updated[index].quantity, unit);
-      const stockQty = updated[index].stock_qty;
+      const stockQty = lineStockQty(updated[index]);
       // Check stock limit when changing unit
       if (stockQty !== null && newBaseQty > stockQty && !oversellAllowed) {
         toast({ title: 'Stock limit', description: `Only ${stockQty} ${updated[index].product_base_unit || 'units'} available`, variant: 'destructive' });
@@ -1464,7 +1545,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         : (parseInt(value) || 1);
       const unit = updated[index].selected_unit;
       const newBaseQty = unit ? convertToBaseUnit(qty, unit) : qty;
-      const stockQty = updated[index].stock_qty;
+      const stockQty = lineStockQty(updated[index]);
       // Check stock limit when changing quantity
       if (stockQty !== null && newBaseQty > stockQty && !oversellAllowed) {
         toast({ title: 'Stock limit', description: `Only ${stockQty} ${updated[index].product_base_unit || 'units'} available`, variant: 'destructive' });
@@ -1481,6 +1562,24 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
 
   function removeItem(index: number) {
     setItems(items.filter((_, i) => i !== index));
+  }
+
+  // Engine inputs — cart order is consumption order, so the earliest line of
+  // a product gets the oldest batch stock.
+  const lineInputs: AllocLineInput[] = items.map((item, index) => ({
+    lineId: `${item.product_id}#${index}`,
+    productId: item.product_id,
+    warehouseId: item.warehouse_id || null,
+    warehouseIds: item.warehouse_ids ?? null,
+    baseQuantity: item.base_quantity,
+  }));
+  const allocation = useMemo(
+    () => allocateCartLines(lineInputs, allocBatches, invSettings.batch_allocation_method, defaultWarehouseId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [items, allocBatches, invSettings.batch_allocation_method, defaultWarehouseId]
+  );
+  function lineAllocation(index: number): LineAllocation | null {
+    return allocation?.byLine.get(`${items[index].product_id}#${index}`) ?? null;
   }
 
   const subtotal = items.reduce((sum, item) => {
@@ -1547,6 +1646,7 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         items.map(item => ({
           product_id: item.product_id,
           warehouse_id: item.warehouse_id,
+          warehouse_ids: lineWarehouseIds(item),
           base_quantity: item.base_quantity,
           name: item.product_name,
           sku: item.product_sku || '',
@@ -1615,43 +1715,63 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
           status: amountPaid >= grandTotal ? 'paid' : (amountPaid > 0 ? 'partially_paid' : 'draft'),
           notes: form.notes || null,
           reference: form.reference || null,
-          items: items.map(item => ({
-            product_id: item.product_id,
-            quantity: item.quantity,
-            unit_price: item.unit_price,
-            cost_price: item.cost_price || 0,
-            discount_percent: item.discount_percent || 0,
-            tax_rate: 0,
-            subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
-            unit_name: item.selected_unit?.unit_name || item.product_unit || null,
-            unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
-            base_quantity: item.base_quantity,
-            warehouse_id: item.warehouse_id || null,
-            description: gateStock
-              ? shortfallDescription(
-                  { product_id: item.product_id, warehouse_id: item.warehouse_id, base_quantity: item.base_quantity },
-                  gateStock,
-                  'invoice creation'
-                )
-              : null,
-          })),
-          cost_history: items.map(item => {
-            const unitName = item.selected_unit?.unit_name || item.product_unit || 'pcs';
-            const costPerUnit = item.cost_price || 0;
-            const totalCostAdded = costPerUnit * item.quantity;
-            return {
-              product_id: item.product_id,
-              product_name: item.product_name,
-              product_sku: item.product_sku || '',
-              unit: unitName,
+          items: items.flatMap((item, index) =>
+            splitLineByWarehouse({
+              warehouse_id: item.warehouse_id,
+              warehouse_ids: item.warehouse_ids ?? null,
               quantity: item.quantity,
+              base_quantity: item.base_quantity,
               unit_price: item.unit_price,
-              cost_price_per_qty: costPerUnit,
-              cost_price_for_added_qty: totalCostAdded,
-              total_cost_price_single: costPerUnit,
-              total_cost_price_added: totalCostAdded,
-            };
-          }),
+              discount_percent: item.discount_percent,
+              conversion_factor: item.selected_unit?.conversion_factor,
+            }, lineAllocation(index)).map(sp => ({
+              product_id: item.product_id,
+              quantity: sp.quantity,
+              unit_price: item.unit_price,
+              cost_price: item.cost_price || 0,
+              discount_percent: item.discount_percent || 0,
+              tax_rate: 0,
+              subtotal: sp.subtotal,
+              unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+              unit_conversion_factor: item.selected_unit?.conversion_factor ?? null,
+              base_quantity: sp.base_quantity,
+              warehouse_id: sp.warehouse_id,
+              description: gateStock
+                ? shortfallDescription(
+                    { product_id: item.product_id, warehouse_id: sp.warehouse_id, base_quantity: sp.base_quantity },
+                    gateStock,
+                    'invoice creation'
+                  )
+                : null,
+            }))
+          ),
+          cost_history: items.flatMap((item, index) =>
+            splitLineByWarehouse({
+              warehouse_id: item.warehouse_id,
+              warehouse_ids: item.warehouse_ids ?? null,
+              quantity: item.quantity,
+              base_quantity: item.base_quantity,
+              unit_price: item.unit_price,
+              discount_percent: item.discount_percent,
+              conversion_factor: item.selected_unit?.conversion_factor,
+            }, lineAllocation(index)).map(sp => {
+              const unitName = item.selected_unit?.unit_name || item.product_unit || 'pcs';
+              const costPerUnit = item.cost_price || 0;
+              const totalCostAdded = costPerUnit * sp.quantity;
+              return {
+                product_id: item.product_id,
+                product_name: item.product_name,
+                product_sku: item.product_sku || '',
+                unit: unitName,
+                quantity: sp.quantity,
+                unit_price: item.unit_price,
+                cost_price_per_qty: costPerUnit,
+                cost_price_for_added_qty: totalCostAdded,
+                total_cost_price_single: costPerUnit,
+                total_cost_price_added: totalCostAdded,
+              };
+            })
+          ),
           cash_payment: amountPaid > 0 ? {
             amount: amountPaid,
             method: form.payment_method,
@@ -1705,27 +1825,37 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
 
     if (invError) { setError(invError.message); setSaving(false); return; }
 
-    const invoiceItems = items.map(item => ({
-      invoice_id: invoice.id,
-      product_id: item.product_id,
-      quantity: item.quantity,
-      unit_price: item.unit_price,
-      cost_price: item.cost_price || 0,
-      discount_percent: item.discount_percent || 0,
-      tax_rate: 0,
-      subtotal: item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100),
-      unit_name: item.selected_unit?.unit_name || item.product_unit || null,
-      unit_conversion_factor: item.selected_unit?.conversion_factor,
-      base_quantity: item.base_quantity,
-      warehouse_id: item.warehouse_id || null,
-      description: gateStock
-        ? shortfallDescription(
-            { product_id: item.product_id, warehouse_id: item.warehouse_id, base_quantity: item.base_quantity },
-            gateStock,
-            'invoice creation'
-          )
-        : null,
-    }));
+    const invoiceItems = items.flatMap((item, index) =>
+      splitLineByWarehouse({
+        warehouse_id: item.warehouse_id,
+        warehouse_ids: item.warehouse_ids ?? null,
+        quantity: item.quantity,
+        base_quantity: item.base_quantity,
+        unit_price: item.unit_price,
+        discount_percent: item.discount_percent,
+        conversion_factor: item.selected_unit?.conversion_factor,
+      }, lineAllocation(index)).map(sp => ({
+        invoice_id: invoice.id,
+        product_id: item.product_id,
+        quantity: sp.quantity,
+        unit_price: item.unit_price,
+        cost_price: item.cost_price || 0,
+        discount_percent: item.discount_percent || 0,
+        tax_rate: 0,
+        subtotal: sp.subtotal,
+        unit_name: item.selected_unit?.unit_name || item.product_unit || null,
+        unit_conversion_factor: item.selected_unit?.conversion_factor,
+        base_quantity: sp.base_quantity,
+        warehouse_id: sp.warehouse_id,
+        description: gateStock
+          ? shortfallDescription(
+              { product_id: item.product_id, warehouse_id: sp.warehouse_id, base_quantity: sp.base_quantity },
+              gateStock,
+              'invoice creation'
+            )
+          : null,
+      }))
+    );
 
     const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems);
     if (itemsError) {
@@ -1750,26 +1880,37 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
       return;
     }
 
-    // Record cost price history snapshot for each item at time of sale
-    const costHistoryRecords = items.map(item => {
-      const unitName = item.selected_unit?.unit_name || item.product_unit || 'pcs';
-      const convFactor = item.selected_unit?.conversion_factor || 1;
-      const costPerUnit = item.cost_price || 0;
-      const totalCostAdded = costPerUnit * item.quantity;
-      return {
-        product_id: item.product_id,
-        product_name: item.product_name,
-        product_sku: item.product_sku || '',
-        invoice_id: invoice.id,
-        unit: unitName,
+    // Record cost price history snapshot for each item at time of sale.
+    // Multi-warehouse lines record one row per warehouse split so the added
+    // quantity matches the invoice_items rows.
+    const costHistoryRecords = items.flatMap((item, index) =>
+      splitLineByWarehouse({
+        warehouse_id: item.warehouse_id,
+        warehouse_ids: item.warehouse_ids ?? null,
         quantity: item.quantity,
+        base_quantity: item.base_quantity,
         unit_price: item.unit_price,
-        cost_price_per_qty: costPerUnit,
-        cost_price_for_added_qty: totalCostAdded,
-        total_cost_price_single: costPerUnit,
-        total_cost_price_added: totalCostAdded,
-      };
-    });
+        discount_percent: item.discount_percent,
+        conversion_factor: item.selected_unit?.conversion_factor,
+      }, lineAllocation(index)).map(sp => {
+        const unitName = item.selected_unit?.unit_name || item.product_unit || 'pcs';
+        const costPerUnit = item.cost_price || 0;
+        const totalCostAdded = costPerUnit * sp.quantity;
+        return {
+          product_id: item.product_id,
+          product_name: item.product_name,
+          product_sku: item.product_sku || '',
+          invoice_id: invoice.id,
+          unit: unitName,
+          quantity: sp.quantity,
+          unit_price: item.unit_price,
+          cost_price_per_qty: costPerUnit,
+          cost_price_for_added_qty: totalCostAdded,
+          total_cost_price_single: costPerUnit,
+          total_cost_price_added: totalCostAdded,
+        };
+      })
+    );
     if (costHistoryRecords.length > 0) {
       const { error: costHistoryError } = await supabase.from('cost_price_history').insert(costHistoryRecords);
       if (costHistoryError) { setError(costHistoryError.message); setSaving(false); return; }
@@ -1929,11 +2070,19 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                             </p>
                           )}
                           {ledgerStock && item.base_quantity - Math.max(
-                            ledgerQtyFor({ product_id: item.product_id, warehouse_id: item.warehouse_id }, ledgerStock), 0
+                            ledgerQtyFor({
+                              product_id: item.product_id,
+                              warehouse_id: item.warehouse_id,
+                              warehouse_ids: lineWarehouseIds(item),
+                            }, ledgerStock), 0
                           ) > 0 && (
                             <p className="mt-1 flex items-center gap-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 w-fit">
                               <AlertTriangle className="w-3 h-3 shrink-0" />
-                              Ledger stock {ledgerQtyFor({ product_id: item.product_id, warehouse_id: item.warehouse_id }, ledgerStock)} of {item.base_quantity} — needs confirmation
+                              Ledger stock {ledgerQtyFor({
+                                product_id: item.product_id,
+                                warehouse_id: item.warehouse_id,
+                                warehouse_ids: lineWarehouseIds(item),
+                              }, ledgerStock)} of {item.base_quantity} — needs confirmation
                             </p>
                           )}
                           {item.available_units && item.selected_unit && (
@@ -1955,7 +2104,24 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                           )}
                         </td>
                         <td className="px-3 py-2 align-top">
-                          {item.available_warehouses && item.available_warehouses.length > 0 ? (
+                          {item.available_warehouses && item.available_warehouses.length > 1 ? (
+                            (() => {
+                              const ids = lineWarehouseIds(item) || (item.warehouse_id ? [item.warehouse_id] : []);
+                              const names = ids
+                                .map(id => warehouses.find(w => w.id === id)?.name || id)
+                                .join(' + ');
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => setPickingWhIndex(index)}
+                                  className="w-full border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-2 py-1.5 text-xs font-medium text-left truncate hover:bg-emerald-100 transition"
+                                  title="Select warehouses this line draws from"
+                                >
+                                  {names || 'Select warehouses'}
+                                </button>
+                              );
+                            })()
+                          ) : item.available_warehouses && item.available_warehouses.length > 0 ? (
                             <select
                               value={item.warehouse_id || ''}
                               onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
@@ -2266,6 +2432,29 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
             onSaved={(id) => { handleAddCustomer(id); setShowAddCustomer(false); }}
           />
         )}
+
+        {pickingWhIndex !== null && items[pickingWhIndex] && (() => {
+          const item = items[pickingWhIndex];
+          const opts = (item.available_warehouses || []).map(w => ({
+            warehouse_id: w.warehouse_id,
+            warehouse_name: warehouses.find(wh => wh.id === w.warehouse_id)?.name || w.warehouse_name,
+            stock: w.stock,
+          }));
+          return (
+            <WarehouseSelectModal
+              productName={item.product_name}
+              unitLabel={item.product_base_unit}
+              needBaseQty={item.base_quantity}
+              conversionFactor={item.selected_unit?.conversion_factor}
+              options={opts}
+              multi
+              selectedIds={lineWarehouseIds(item) || (item.warehouse_id ? [item.warehouse_id] : [])}
+              onSelect={() => {}}
+              onDone={(ids) => { setWarehousesForLine(pickingWhIndex, ids); setPickingWhIndex(null); }}
+              onClose={() => setPickingWhIndex(null)}
+            />
+          );
+        })()}
 
         {shortfallConfirmOpen && (
           <OversellConfirmDialog
