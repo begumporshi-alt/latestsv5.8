@@ -367,6 +367,15 @@ const scenarios: JournalScenario[] = [
         amount: 'Total GRN Value (qty × unit cost)',
         explanation: 'Inventory increases (debit) because goods have arrived. AP increases (credit) because you owe the supplier money.',
       },
+      {
+        description: 'When the receipt absorbs oversell IOU (negative stock), the same entry credits AP for the FULL received value; the inventory debit is the ledger valuation gain (net receipt value + IOU reversal at the IOU batches\u2019 own cost) and the cost-basis difference lands on 3900',
+        debitAccount: 'Inventory Asset + Opening Balance Equity',
+        debitCode: '1200 + 3900',
+        creditAccount: 'Accounts Payable',
+        creditCode: '2000',
+        amount: 'Gross received value (never the net after IOU absorption)',
+        explanation: 'Receive 2 @ 300 into an IOU of 2 units expensed @ 200: AP credited 600 (you owe the supplier for 2 units), Inventory debited 400 (the IOU reversal), Equity debited 200 (replacement costed 100/unit more than the IOU was expensed at).',
+      },
     ],
     example: {
       context: 'GRN for 100 units at 500 BDT each = 50,000 BDT from supplier "XYZ Trading"',
@@ -378,6 +387,7 @@ const scenarios: JournalScenario[] = [
     notes: [
       'Stock is also added to inventory_items for the received warehouse.',
       'A stock_movements row of type "purchase" is created with positive quantity.',
+      'Each line lands in the warehouse its PO line was raised for ("Receive Into"), so a PO raised against a warehouse with an IOU heals that IOU; the GRN header follows when all lines share one warehouse.',
     ],
   },
   {

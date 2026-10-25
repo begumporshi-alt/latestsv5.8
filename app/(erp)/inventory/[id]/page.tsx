@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
+import { parseOversellTag } from '@/lib/oversell-gate';
 import { useToast } from '@/hooks/use-toast';
 import { ArrowLeft, Package, TrendingUp, TrendingDown, ShoppingCart, ShoppingBag, Truck, RotateCcw, Boxes, DollarSign, ChartBar as BarChart3, Warehouse, Calendar, CircleAlert as AlertCircle, CircleArrowUp as ArrowUpCircle, CircleArrowDown as ArrowDownCircle, Eye, FileText } from 'lucide-react';
 
@@ -538,15 +539,29 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
                 <tbody className="divide-y divide-border">
                   {movementData.length === 0 ? (
                     <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">No stock movements recorded</td></tr>
-                  ) : movementData.map((m: any) => (
+                  ) : movementData.map((m: any) => {
+                    const oversellTag = parseOversellTag(m.notes);
+                    return (
                     <tr key={m.id} className="hover:bg-muted/20">
                       <td className="px-4 py-3 text-sm text-muted-foreground">{new Date(m.created_at).toLocaleDateString()}</td>
                       <td className="px-4 py-3 text-sm">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                          m.movement_type === 'purchase' || m.movement_type === 'transfer_in' || m.movement_type === 'return_in' || m.movement_type === 'opening' ? 'bg-green-50 text-green-700' :
-                          m.movement_type === 'sale' || m.movement_type === 'transfer_out' || m.movement_type === 'return_out' ? 'bg-red-50 text-red-700' :
-                          'bg-amber-50 text-amber-700'
-                        }`}>{m.movement_type.replace(/_/g, ' ')}</span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                            m.movement_type === 'purchase' || m.movement_type === 'transfer_in' || m.movement_type === 'return_in' || m.movement_type === 'opening' ? 'bg-green-50 text-green-700' :
+                            m.movement_type === 'sale' || m.movement_type === 'transfer_out' || m.movement_type === 'return_out' ? 'bg-red-50 text-red-700' :
+                            'bg-amber-50 text-amber-700'
+                          }`}>{m.movement_type.replace(/_/g, ' ')}</span>
+                          {oversellTag?.kind === 'created' && (
+                            <span className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200" title={m.notes || undefined}>
+                              Oversold {oversellTag.units}
+                            </span>
+                          )}
+                          {oversellTag?.kind === 'absorbed' && (
+                            <span className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-200" title={m.notes || undefined}>
+                              IOU absorbed {oversellTag.units}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-sm text-foreground">{m.warehouse?.name || '—'}</td>
                       <td className={`px-4 py-3 text-sm text-right font-medium ${Number(m.quantity) > 0 ? 'text-green-600' : 'text-red-600'}`}>
@@ -556,7 +571,8 @@ export default function ProductDetailPage({ params }: { params: { id: string } }
                       <td className="px-4 py-3 text-sm text-blue-600">{m.reference_number || '—'}</td>
                       <td className="px-4 py-3 text-sm text-muted-foreground max-w-xs truncate">{m.notes || '—'}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
