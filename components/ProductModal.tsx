@@ -380,6 +380,36 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
             const diff = newQty - currentQty;
 
             if (diff !== 0) {
+              // Ledger RPC first: it enforces the oversell policy (a decrease
+              // beyond stock throws when allow_oversell is OFF) and resyncs
+              // the counter to the ledger sum. Writing the counter first
+              // would diverge it from the ledger if the RPC failed.
+              if (diff > 0) {
+                const { error } = await supabase.rpc('create_opening_batch', {
+                  p_product_id: productId,
+                  p_warehouse_id: warehouseId,
+                  p_quantity: diff,
+                  p_unit_cost: Number(form.cost_price) || 0,
+                  p_batch_type: 'adjustment',
+                  p_reference_type: 'stock_adjustment',
+                  p_reference_id: productId,
+                  p_notes: 'Stock increase adjustment',
+                });
+                if (error) throw error;
+              } else {
+                // Stock decrease: post Dr 3900 / Cr 1200 (equity — quantity corrections are not P&L)
+                const { error } = await supabase.rpc('create_stock_reduction', {
+                  p_product_id: productId,
+                  p_warehouse_id: warehouseId,
+                  p_quantity: Math.abs(diff),
+                  p_unit_cost: Number(form.cost_price) || 0,
+                  p_reference_type: 'stock_adjustment',
+                  p_reference_id: productId,
+                  p_notes: 'Stock decrease adjustment',
+                });
+                if (error) throw error;
+              }
+
               // Try update first; if no row exists, insert
               const { data: existingInv } = await supabase
                 .from('inventory_items')
@@ -413,30 +443,6 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                 reference_id: productId,
                 notes: diff > 0 ? 'Stock increase adjustment' : 'Stock decrease adjustment',
               });
-
-              if (diff > 0) {
-                await supabase.rpc('create_opening_batch', {
-                  p_product_id: productId,
-                  p_warehouse_id: warehouseId,
-                  p_quantity: diff,
-                  p_unit_cost: Number(form.cost_price) || 0,
-                  p_batch_type: 'adjustment',
-                  p_reference_type: 'stock_adjustment',
-                  p_reference_id: productId,
-                  p_notes: 'Stock increase adjustment',
-                });
-              } else if (diff < 0) {
-                // Stock decrease: post Dr 3900 / Cr 1200 (equity — quantity corrections are not P&L)
-                await supabase.rpc('create_stock_reduction', {
-                  p_product_id: productId,
-                  p_warehouse_id: warehouseId,
-                  p_quantity: Math.abs(diff),
-                  p_unit_cost: Number(form.cost_price) || 0,
-                  p_reference_type: 'stock_adjustment',
-                  p_reference_id: productId,
-                  p_notes: 'Stock decrease adjustment',
-                });
-              }
             }
           }
         }
@@ -831,7 +837,10 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                       <div className="flex items-center gap-2">
                         <input
                           type="number"
-                          min="0"
+                          // No min: a warehouse can legitimately sit negative
+                          // (oversold IOU), and min="0" makes the browser's
+                          // constraint validation silently block the whole
+                          // form submit.
                           step={stockAllowDecimal ? '0.001' : '1'}
                           value={stockByWarehouse[wh.id] || '0'}
                           onChange={e => setStockByWarehouse({ ...stockByWarehouse, [wh.id]: e.target.value })}
