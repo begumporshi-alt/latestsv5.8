@@ -31,6 +31,7 @@ interface PurchaseOrderItem {
   received_quantity: number;
   unit_cost: number;
   discount_percent: number;
+  warehouse_id?: string | null;
 }
 
 // What the buyer actually pays per unit: PO unit cost minus the line discount.
@@ -518,6 +519,9 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
             quantity: Number(qty),
             unit_cost: effectiveUnitCost(item),
             expiry_date: expiryDates[itemId] || null,
+            // Each line lands in the warehouse its PO line was raised for
+            // ("Receive Into"); receive_grn resolves this server-side too.
+            warehouse_id: directMode ? null : (item as any).warehouse_id || null,
           };
         })
         .filter(Boolean);
