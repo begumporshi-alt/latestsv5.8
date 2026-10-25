@@ -289,3 +289,15 @@ export async function fetchOversellPolicy(): Promise<OversellPolicy> {
   await cachePut(CACHE_KEYS.inventorySettings, { allow_oversell: value });
   return value;
 }
+
+// Movement-note markers written by the DB (deduct_stock_on_invoice_item and
+// receive_grn). Parsed here so list UIs can show a visible tag instead of
+// relying on the hover tooltip.
+export function parseOversellTag(note?: string | null): { kind: 'created' | 'absorbed'; units: string } | null {
+  if (!note) return null;
+  const absorbed = note.match(/absorbed\s+(\d+(?:\.\d+)?)\s+base unit\(s\) of OVERSOLD IOU/);
+  if (absorbed) return { kind: 'absorbed', units: absorbed[1] };
+  const created = note.match(/OVERSOLD\s+by\s+(\d+(?:\.\d+)?)/);
+  if (created) return { kind: 'created', units: created[1] };
+  return null;
+}

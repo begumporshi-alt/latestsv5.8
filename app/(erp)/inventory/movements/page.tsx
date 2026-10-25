@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { tokenizeSearch } from '@/lib/search';
+import { parseOversellTag } from '@/lib/oversell-gate';
 import { formatRelativeTime } from '@/lib/format';
 import { ArrowUpDown, TrendingUp, TrendingDown, Package, Search, X, Filter, ChevronLeft, ChevronRight, Calendar, Download, FileText } from 'lucide-react';
 import Link from 'next/link';
@@ -215,6 +216,7 @@ export default function StockMovementsPage() {
     // 'sale' rows normally carry a generic id-only note; the DB appends an
     // "OVERSOLD by N" marker when the line went beyond the batch ledger.
     const showTooltip = !!m.notes && (TOOLTIP_TYPES.has(m.movement_type) || m.notes.includes('OVERSOLD'));
+    const oversellTag = parseOversellTag(m.notes);
     return (
       <tr key={m.id} className="hover:bg-muted/30 transition-colors">
         <td className={`py-3 text-sm font-medium text-foreground ${grouped ? 'pl-9 pr-4' : 'px-4'}`}>
@@ -238,12 +240,24 @@ export default function StockMovementsPage() {
         <td className="px-4 py-3 text-xs font-mono text-muted-foreground">{m.product?.sku || '—'}</td>
         <td className="px-4 py-3 text-sm text-foreground">{m.warehouse?.name || '—'}</td>
         <td className="px-4 py-3">
-          <span
-            className={`badge-status ${cfg.bg} ${cfg.color} ${showTooltip ? 'cursor-help border border-dashed border-current/30' : ''}`}
-            title={showTooltip ? `${cfg.label}: ${m.notes}` : undefined}
-          >
-            {cfg.label}
-          </span>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span
+              className={`badge-status ${cfg.bg} ${cfg.color} ${showTooltip ? 'cursor-help border border-dashed border-current/30' : ''}`}
+              title={showTooltip ? `${cfg.label}: ${m.notes}` : undefined}
+            >
+              {cfg.label}
+            </span>
+            {oversellTag?.kind === 'created' && (
+              <span className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200" title={m.notes || undefined}>
+                Oversold {oversellTag.units}
+              </span>
+            )}
+            {oversellTag?.kind === 'absorbed' && (
+              <span className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-200" title={m.notes || undefined}>
+                IOU absorbed {oversellTag.units}
+              </span>
+            )}
+          </div>
         </td>
         <td className="px-4 py-3 text-sm font-bold"><span className={qty > 0 ? 'text-green-600' : 'text-red-600'}>{qty > 0 ? '+' : qty < 0 ? '-' : '±'}{Math.abs(qty)}</span></td>
         {/* reference and time live on the group header for grouped rows */}
