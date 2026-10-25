@@ -5,6 +5,7 @@ import { Search, Check, ChevronDown, Package } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { getDefaultSaleUnit } from '@/lib/unit-utils';
+import { matchValues, rankRows, tokenizeSearch } from '@/lib/search';
 import type { Product } from '@/lib/types';
 
 /** Compact POS-style searchable filter dropdown (brand / category). */
@@ -122,15 +123,16 @@ export function ProductGalleryBody({ products, onPick }: {
     return (p.inventory_items || []).reduce((s, i) => s + Number(i.quantity_on_hand || 0), 0);
   }
 
-  const filtered = products.filter(p => {
+  // Same search semantics as the POS gallery (lib/search): multi-token,
+  // order-independent ("test 003" finds "test3 / test-003"), every token must
+  // match name / SKU / barcode, results ranked prefix > word-boundary > mid-word.
+  const tokens = tokenizeSearch(search);
+  const matched = products.filter(p => {
     if (category && p.category_id !== category) return false;
     if (brand && (p as any).brand_id !== brand) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      if (!p.name.toLowerCase().includes(q) && !(p.sku || '').toLowerCase().includes(q) && !(p.barcode || '').toLowerCase().includes(q)) return false;
-    }
-    return true;
+    return matchValues([p.name, p.sku, p.barcode], tokens);
   });
+  const filtered = rankRows(matched, p => [p.name, p.sku || '', p.barcode || ''], tokens);
 
   return (
     <div className="flex flex-col max-h-full">

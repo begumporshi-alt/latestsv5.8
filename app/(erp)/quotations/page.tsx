@@ -18,7 +18,6 @@ import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
-import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import CustomerSearchInput from '@/components/ui/CustomerSearchInput';
 import ProductFilterDropdown from '@/components/ui/ProductFilterDropdown';
 import PrintTemplate from '@/components/PrintTemplate';
@@ -749,12 +748,9 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
     }
   }
 
-  function addProductToItems(searchResult: any) {
-    // ProductSearchInput hands back its own thin fetch whose inventory_items
-    // carry only quantity_on_hand — resolve the full product record (the
-    // parent loads inventory_items with ids and warehouse_id) or the line's
-    // warehouse would come out undefined and save as NULL.
-    const product = products.find((p: any) => p.id === searchResult?.id) || searchResult;
+  function addProductToItems(product: any) {
+    // Callers (gallery onPick, QuickActionDrawer event) pass the parent's
+    // full product records whose inventory_items carry warehouse ids.
     const multiUnit = product.enable_multi_unit && product.units && product.units.filter((u: any) => u.is_active).length > 0;
     const defaultUnit: ProductUnit | undefined = multiUnit ? getDefaultSaleUnit(product) : undefined;
     const unitPrice = defaultUnit ? defaultUnit.price : (product.sale_price || 0);
@@ -1101,26 +1097,27 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
           <form onSubmit={handleSave} className="p-6 space-y-4">
             {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
 
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs font-medium mb-1">Customer *</label>
-                <div className="flex gap-1.5">
-                  <CustomerSearchInput
-                    onSelect={(c) => setForm({ ...form, customer_id: c.id })}
-                    selectedName={customers.find(c => c.id === form.customer_id)?.name}
-                    placeholder="Search customer..."
-                    className="flex-1 min-w-0"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowAddCustomer(true)}
-                    title="Add new customer"
-                    className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg border border-border hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 text-muted-foreground transition"
-                  >
-                    <UserPlus className="w-4 h-4" />
-                  </button>
-                </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Customer *</label>
+              <div className="flex gap-1.5">
+                <CustomerSearchInput
+                  onSelect={(c) => setForm({ ...form, customer_id: c.id })}
+                  selectedName={customers.find(c => c.id === form.customer_id)?.name}
+                  placeholder="Search customer..."
+                  className="flex-1 min-w-0"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAddCustomer(true)}
+                  title="Add new customer"
+                  className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg border border-border hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 text-muted-foreground transition"
+                >
+                  <UserPlus className="w-4 h-4" />
+                </button>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="block text-xs font-medium mb-1">Issue Date</label>
                 <input type="date" value={form.issue_date} onChange={e => setForm({ ...form, issue_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
@@ -1129,15 +1126,10 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                 <label className="block text-xs font-medium mb-1">Expiry Date</label>
                 <input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
               </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium mb-1">Reference</label>
-              <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name (e.g. who referred this quotation)" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium mb-1">Notes</label>
-              <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y" placeholder="Optional notes — shown on the printed quotation" />
+              <div>
+                <label className="block text-xs font-medium mb-1">Reference</label>
+                <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name (e.g. who referred this quotation)" />
+              </div>
             </div>
 
             <div>
@@ -1153,12 +1145,6 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                 {items.length > 0 && <span className="text-xs text-muted-foreground">{items.length} item{items.length !== 1 ? 's' : ''}</span>}
               </div>
               <div className="flex items-center gap-2 mb-3">
-                <ProductSearchInput
-                  onSelect={addProductToItems}
-                  showStock
-                  placeholder="Search and add products..."
-                  className="flex-1"
-                />
                 <button type="button" onClick={pasteProductList} className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Paste products copied from an invoice or quotation">
                   <ClipboardPaste className="w-3.5 h-3.5" />Paste Products
                 </button>
@@ -1421,6 +1407,11 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
               </div>
             </div>
 
+            <div>
+              <label className="block text-xs font-medium mb-1">Notes</label>
+              <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y" placeholder="Optional notes — shown on the printed quotation" />
+            </div>
+
             <div className="flex items-center justify-end gap-3 pt-2">
               <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
               <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
@@ -1430,12 +1421,27 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
           </form>
           </div>
           {showProductGallery && (
-            <div className="w-[380px] shrink-0 border-l border-border max-h-[90vh] overflow-y-auto bg-muted/10">
+            <>
+            <div className="hidden lg:block w-[380px] shrink-0 border-l border-border max-h-[90vh] overflow-y-auto bg-muted/10">
               <ProductGalleryBody
                 products={products}
                 onPick={(product) => { addProductToItems(product); toast({ title: 'Added', description: `${product.name} added to the quotation` }); }}
               />
             </div>
+            {/* Narrow screens: the side column would squeeze the form, so the
+                gallery opens as a bottom sheet instead. */}
+            <div className="lg:hidden fixed inset-0 z-[60] bg-black/50" onClick={() => setShowProductGallery(false)}>
+              <div className="absolute inset-x-0 bottom-0 top-10 bg-white rounded-t-2xl overflow-y-auto" onClick={e => e.stopPropagation()}>
+                <div className="sticky top-0 z-10 bg-white flex justify-end px-3 py-2 border-b border-border">
+                  <button type="button" onClick={() => setShowProductGallery(false)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+                </div>
+                <ProductGalleryBody
+                  products={products}
+                  onPick={(product) => { addProductToItems(product); toast({ title: 'Added', description: `${product.name} added to the quotation` }); }}
+                />
+              </div>
+            </div>
+            </>
           )}
         </div>
       </div>
@@ -1591,10 +1597,9 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     })();
   }, [quotation.id]);
 
-  function addProductToItems(searchResult: any) {
-    // Same thin-fetch guard as CreateQuotationModal: resolve the full product
-    // so inventory_items carry warehouse ids.
-    const product = products.find((p: any) => p.id === searchResult?.id) || searchResult;
+  function addProductToItems(product: any) {
+    // Callers pass the parent's full product records whose inventory_items
+    // carry warehouse ids.
     const multiUnit = product.enable_multi_unit && product.units && product.units.filter((u: any) => u.is_active).length > 0;
     const defaultUnit: ProductUnit | undefined = multiUnit ? getDefaultSaleUnit(product) : undefined;
     const unitPrice = defaultUnit ? defaultUnit.price : (product.sale_price || 0);
@@ -1895,16 +1900,16 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
         </div>
         <form onSubmit={handleSave} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-medium mb-1">Customer *</label>
-              <CustomerSearchInput
-                onSelect={(c) => setForm({ ...form, customer_id: c.id })}
-                selectedName={customers.find(c => c.id === form.customer_id)?.name}
-                placeholder="Search customer..."
-                className="w-full"
-              />
-            </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Customer *</label>
+            <CustomerSearchInput
+              onSelect={(c) => setForm({ ...form, customer_id: c.id })}
+              selectedName={customers.find(c => c.id === form.customer_id)?.name}
+              placeholder="Search customer..."
+              className="w-full"
+            />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Issue Date</label>
               <input type="date" value={form.issue_date} onChange={e => setForm({ ...form, issue_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
@@ -1913,14 +1918,10 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               <label className="block text-xs font-medium mb-1">Expiry Date</label>
               <input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
             </div>
-          </div>
-          <div>
-            <label className="block text-xs font-medium mb-1">Reference</label>
-            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name" />
-          </div>
-          <div>
-            <label className="block text-xs font-medium mb-1">Notes</label>
-            <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y" placeholder="Optional notes — shown on the printed quotation" />
+            <div>
+              <label className="block text-xs font-medium mb-1">Reference</label>
+              <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name" />
+            </div>
           </div>
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -1928,12 +1929,6 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               {items.length > 0 && <span className="text-xs text-muted-foreground">{items.length} item{items.length !== 1 ? 's' : ''}</span>}
             </div>
             <div className="flex items-center gap-2 mb-3">
-              <ProductSearchInput
-                onSelect={addProductToItems}
-                showStock
-                placeholder="Search and add products..."
-                className="flex-1"
-              />
               <button type="button" onClick={pasteProductList} className="flex items-center gap-1.5 px-3 py-2 border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Paste products copied from an invoice or quotation">
                 <ClipboardPaste className="w-3.5 h-3.5" />Paste Products
               </button>
@@ -2046,6 +2041,10 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               <div className="flex justify-between items-center pt-1 border-t border-border"><p className="text-xs font-medium text-muted-foreground">Total</p><p className="text-lg font-bold text-foreground">{formatCurrency(quoteGrandTotal)}</p></div>
             </div>
           </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Notes</label>
+            <textarea value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} rows={2} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-y" placeholder="Optional notes — shown on the printed quotation" />
+          </div>
           <div className="flex items-center justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
             <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">{saving ? 'Saving...' : 'Save Changes'}</button>
@@ -2053,12 +2052,27 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
         </form>
         </div>
         {showProductGallery && (
-          <div className="w-[380px] shrink-0 border-l border-border max-h-[90vh] overflow-y-auto bg-muted/10">
+          <>
+          <div className="hidden lg:block w-[380px] shrink-0 border-l border-border max-h-[90vh] overflow-y-auto bg-muted/10">
             <ProductGalleryBody
               products={products}
               onPick={(product) => { addProductToItems(product); toast({ title: 'Added', description: `${product.name} added to the quotation` }); }}
             />
           </div>
+          {/* Narrow screens: the side column would squeeze the form, so the
+              gallery opens as a bottom sheet instead. */}
+          <div className="lg:hidden fixed inset-0 z-[60] bg-black/50" onClick={() => setShowProductGallery(false)}>
+            <div className="absolute inset-x-0 bottom-0 top-10 bg-white rounded-t-2xl overflow-y-auto" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-10 bg-white flex justify-end px-3 py-2 border-b border-border">
+                <button type="button" onClick={() => setShowProductGallery(false)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+              </div>
+              <ProductGalleryBody
+                products={products}
+                onPick={(product) => { addProductToItems(product); toast({ title: 'Added', description: `${product.name} added to the quotation` }); }}
+              />
+            </div>
+          </div>
+          </>
         )}
       </div>
     </div>
