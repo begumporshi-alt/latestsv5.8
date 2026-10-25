@@ -749,7 +749,12 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
     }
   }
 
-  function addProductToItems(product: any) {
+  function addProductToItems(searchResult: any) {
+    // ProductSearchInput hands back its own thin fetch whose inventory_items
+    // carry only quantity_on_hand — resolve the full product record (the
+    // parent loads inventory_items with ids and warehouse_id) or the line's
+    // warehouse would come out undefined and save as NULL.
+    const product = products.find((p: any) => p.id === searchResult?.id) || searchResult;
     const multiUnit = product.enable_multi_unit && product.units && product.units.filter((u: any) => u.is_active).length > 0;
     const defaultUnit: ProductUnit | undefined = multiUnit ? getDefaultSaleUnit(product) : undefined;
     const unitPrice = defaultUnit ? defaultUnit.price : (product.sale_price || 0);
@@ -1586,7 +1591,10 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     })();
   }, [quotation.id]);
 
-  function addProductToItems(product: any) {
+  function addProductToItems(searchResult: any) {
+    // Same thin-fetch guard as CreateQuotationModal: resolve the full product
+    // so inventory_items carry warehouse ids.
+    const product = products.find((p: any) => p.id === searchResult?.id) || searchResult;
     const multiUnit = product.enable_multi_unit && product.units && product.units.filter((u: any) => u.is_active).length > 0;
     const defaultUnit: ProductUnit | undefined = multiUnit ? getDefaultSaleUnit(product) : undefined;
     const unitPrice = defaultUnit ? defaultUnit.price : (product.sale_price || 0);
@@ -2236,15 +2244,17 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
     // compare against the FIFO batch ledger (the counter can drift and is
     // not the truth). A shortfall is sellable only after explicit
     // confirmation; ledger AND counter both empty is a data error (wrong
-    // SKU / 10x quantity typo) and blocks outright. Quotation items carry
-    // no warehouse, so consume_fifo will draw from the default warehouse —
-    // the gate compares against that same warehouse.
+    // SKU / 10x quantity typo) and blocks outright. The gate checks each
+    // quotation line's own warehouse — convert_quotation_to_invoice copies
+    // warehouse_id onto the invoice items, so consume_fifo draws from that
+    // same warehouse (legacy NULL-warehouse lines fall back to the default,
+    // matching the RPC's COALESCE).
     const gateStock = await fetchLedgerStockFor(Array.from(new Set(items.map((i: any) => i.product_id))));
     if (!shortfallConfirmedRef.current && gateStock) {
       const shortfalls = computeShortfalls(
         stockChecks.map(s => ({
           product_id: s.item.product_id,
-          warehouse_id: null as string | null,
+          warehouse_id: s.item.warehouse_id || null,
           base_quantity: s.baseQty,
           name: s.productName || s.item.product_id,
           sku: '',
@@ -2281,7 +2291,7 @@ function ConvertToInvoiceModal({ quotation, onClose, onConverted }: {
     if (gateStock) {
       for (const item of items) {
         const note = shortfallDescription(
-          { product_id: item.product_id, warehouse_id: null, base_quantity: (item as any).base_quantity || item.quantity },
+          { product_id: item.product_id, warehouse_id: item.warehouse_id || null, base_quantity: (item as any).base_quantity || item.quantity },
           gateStock,
           'quote conversion'
         );
