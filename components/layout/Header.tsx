@@ -64,6 +64,31 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestSeq = useRef(0);
   const { count: cartCount, addToCart } = useGlobalCart();
+  const showDrop = showResults && !!searchQuery;
+  // The listbox is portaled to body (fixed) so it can rise above page
+  // panels like the POS cart, which otherwise out-stack the header's
+  // sticky z-30 context.
+  const [searchDropPos, setSearchDropPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  useEffect(() => {
+    if (!showDrop) {
+      setSearchDropPos(null);
+      return;
+    }
+    const measure = () => {
+      const el = searchRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setSearchDropPos({ top: r.bottom + 6, left: r.left, width: r.width });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+  }, [showDrop]);
 
   useEffect(() => {
     async function loadProfile() {
@@ -89,6 +114,11 @@ export default function Header({ onMenuToggle }: HeaderProps) {
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
+      const t = e.target as Element;
+      // The results listbox is portaled to body, so a mousedown inside it
+      // must not count as "outside" (it would unmount the option before
+      // the click navigates).
+      if (t.closest?.('#global-search-results')) return;
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setShowResults(false);
       }
@@ -285,12 +315,13 @@ export default function Header({ onMenuToggle }: HeaderProps) {
           )}
         </div>
 
-        {showResults && searchQuery && (
+        {showDrop && searchDropPos && createPortal(
           <div
             id="global-search-results"
             role="listbox"
             aria-label="Search results"
-            className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-border rounded-xl shadow-xl z-50 overflow-hidden"
+            className="fixed bg-white border border-border rounded-xl shadow-xl z-[70] overflow-hidden"
+            style={{ top: searchDropPos.top, left: searchDropPos.left, width: searchDropPos.width }}
           >
             {searching ? (
               <div className="px-4 py-3 text-xs text-muted-foreground flex items-center gap-2">
@@ -330,7 +361,8 @@ export default function Header({ onMenuToggle }: HeaderProps) {
                 ))}
               </div>
             )}
-          </div>
+          </div>,
+          document.body
         )}
       </div>
 
