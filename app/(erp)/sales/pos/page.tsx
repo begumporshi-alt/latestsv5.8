@@ -773,15 +773,17 @@ export default function POSPage() {
   // truth minus everything already reserved in the cart, falling back to the
   // counter when the product has no batch rows at all (legacy data) or the
   // batch lookup failed (fail open, same policy as the oversell gate).
+  // Negative values (IOU / oversold) are shown as-is so the badge matches
+  // the products page and quotation gallery.
   function getProductAvailable(product: ProductData): { available: number; batches: number } {
     const cartQty = cart.filter(c => c.id === product.id).reduce((s, c) => s + c.base_quantity, 0);
     if (allocBatches && allocBatches.has(product.id)) {
       return {
-        available: Math.max(0, ledgerQtyAllWarehouses(product.id, allocBatches) - cartQty),
+        available: ledgerQtyAllWarehouses(product.id, allocBatches) - cartQty,
         batches: (allocBatches.get(product.id) || []).length,
       };
     }
-    return { available: Math.max(0, getStockInBaseUnits(product) - cartQty), batches: 0 };
+    return { available: getStockInBaseUnits(product) - cartQty, batches: 0 };
   }
 
   // Batch-ledger qty this pair can still take (cart reservations already
