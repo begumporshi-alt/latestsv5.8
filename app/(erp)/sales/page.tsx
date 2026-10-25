@@ -96,13 +96,14 @@ const deliveryStatusConfig: Record<string, { label: string; color: string; bg: s
   delivered: { label: 'Delivered', color: 'text-green-600', bg: 'bg-green-100' },
   failed: { label: 'Failed', color: 'text-red-600', bg: 'bg-red-100' },
   returned: { label: 'Returned', color: 'text-purple-600', bg: 'bg-purple-100' },
+  cancelled: { label: 'Cancelled', color: 'text-gray-500', bg: 'bg-gray-100' },
 };
 
 interface InvoiceWithCustomer extends Omit<Invoice, 'customer'> {
   customer?: { name: string; code: string; phone?: string; address?: string };
   sales_returns?: { id: string; return_number: string; total_refund_amount: number; items: { quantity_returned: number }[] }[];
   payments?: { id: string; payment_method: string; amount: number; payment_date: string }[];
-  deliveries?: { id: string; delivery_number: string; status: string }[];
+  deliveries?: { id: string; delivery_number: string; status: string; was_edited?: boolean; edit_note?: string }[];
 }
 
 interface InvoiceItem {
@@ -253,7 +254,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
       }),
       fetchAll(() => supabase.from('sales_returns').select('id, invoice_id, return_number, total_refund_amount, items:sales_return_items(quantity_returned)')),
       fetchAll(() => supabase.from('payments').select('id, reference_id, payment_method, amount, payment_date').eq('reference_type', 'invoice')),
-      fetchAll(() => supabase.from('deliveries').select('id, invoice_id, delivery_number, status')),
+      fetchAll(() => supabase.from('deliveries').select('id, invoice_id, delivery_number, status, was_edited, edit_note')),
       fetchAll(() => {
         let q = supabase.from('payments')
           .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
@@ -930,6 +931,14 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
                               >
                                 <Truck className="w-2.5 h-2.5" />
                                 {del.delivery_number}
+                                {del.was_edited && (
+                                  <span
+                                    className="ml-0.5 px-1 rounded-full bg-amber-100 text-amber-700 text-[9px] font-semibold"
+                                    title={del.edit_note || 'This challan was updated by an invoice edit'}
+                                  >
+                                    Edited
+                                  </span>
+                                )}
                               </button>
                             );
                           })}

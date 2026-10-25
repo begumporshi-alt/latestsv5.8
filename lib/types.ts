@@ -394,7 +394,8 @@ export type DeliveryStatus =
   | 'in_transit'
   | 'delivered'
   | 'failed'
-  | 'returned';
+  | 'returned'
+  | 'cancelled';
 
 export interface Delivery {
   id: string;
@@ -407,6 +408,9 @@ export interface Delivery {
   delivery_address?: string;
   delivery_city?: string;
   vehicle_number?: string;
+  was_edited?: boolean;
+  edited_at?: string;
+  edit_note?: string;
   created_at: string;
   updated_at: string;
   customer?: Customer;

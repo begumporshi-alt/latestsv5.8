@@ -22,6 +22,7 @@ const statusConfig: Record<DeliveryStatus, { label: string; color: string; bg: s
   delivered: { label: 'Delivered', color: 'text-green-600', bg: 'bg-green-100', icon: CheckCircle2 },
   failed: { label: 'Failed', color: 'text-red-600', bg: 'bg-red-100', icon: XCircle },
   returned: { label: 'Returned', color: 'text-purple-600', bg: 'bg-purple-100', icon: Package },
+  cancelled: { label: 'Cancelled', color: 'text-gray-500', bg: 'bg-gray-100', icon: XCircle },
 };
 
 interface DeliveryWithCustomer extends Omit<Delivery, 'customer'> {
@@ -341,6 +342,14 @@ export default function DeliveryPage() {
                         <Icon className="w-3 h-3" />
                         {cfg.label}
                       </div>
+                      {d.was_edited && (
+                        <span
+                          className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-medium text-amber-700 bg-amber-100"
+                          title={d.edit_note || 'This challan was updated by an invoice edit'}
+                        >
+                          Edited
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1 sm:gap-2">
