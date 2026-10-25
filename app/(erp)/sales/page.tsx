@@ -1968,40 +1968,38 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
         <form onSubmit={handleSave} className="p-6 space-y-4">
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
 
-          <div className="grid grid-cols-3 gap-4">
-            <div className="col-span-2">
-              <label className="block text-xs font-medium mb-1">Customer *</label>
-              <div className="flex gap-2">
-                <CustomerSearchInput
-                  onSelect={(c) => setForm({ ...form, customer_id: c.id })}
-                  selectedName={customerList.find(c => c.id === form.customer_id)?.name}
-                  placeholder="Search customer by name, code, or phone..."
-                  className="flex-1"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowAddCustomer(true)}
-                  className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-medium transition shrink-0"
-                >
-                  <UserPlus className="w-4 h-4" /> New
-                </button>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-xs font-medium mb-1">Invoice Date</label>
-                <input type="date" value={form.invoice_date} onChange={e => setForm({ ...form, invoice_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Due Date</label>
-                <input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-              </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Customer *</label>
+            <div className="flex gap-2">
+              <CustomerSearchInput
+                onSelect={(c) => setForm({ ...form, customer_id: c.id })}
+                selectedName={customerList.find(c => c.id === form.customer_id)?.name}
+                placeholder="Search customer by name, code, or phone..."
+                className="flex-1 min-w-0"
+              />
+              <button
+                type="button"
+                onClick={() => setShowAddCustomer(true)}
+                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-3 py-2 text-sm font-medium transition shrink-0"
+              >
+                <UserPlus className="w-4 h-4" /> New
+              </button>
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium mb-1">Reference</label>
-            <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name (e.g. who referred this sale)" />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Invoice Date</label>
+              <input type="date" value={form.invoice_date} onChange={e => setForm({ ...form, invoice_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Due Date</label>
+              <input type="date" value={form.due_date} onChange={e => setForm({ ...form, due_date: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Reference</label>
+              <input type="text" value={form.reference} onChange={e => setForm({ ...form, reference: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Reference person name (e.g. who referred this sale)" />
+            </div>
           </div>
 
           <div>
