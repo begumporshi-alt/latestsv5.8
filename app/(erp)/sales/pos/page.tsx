@@ -29,7 +29,7 @@ import { useGlobalCart } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { networkMonitor } from '@/lib/offline/network';
-import { cachedQuery, cacheGet, cachePut, mutateCache, isNetworkError } from '@/lib/offline/cache';
+import { cachedQuery, cacheGet, cachePut, cacheDelete, mutateCache, isNetworkError } from '@/lib/offline/cache';
 import { readData } from '@/lib/offline/read-result';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { enqueueOp } from '@/lib/offline/outbox';
@@ -616,19 +616,27 @@ export default function POSPage() {
   }, [search, selectedBrand, selectedCategory]);
 
   // TTL for the full-product offline snapshot (also used by the inventory
-  // page). While online, a stale snapshot refreshes in the background.
-  const PRODUCT_SNAPSHOT_TTL = 10 * 60_000;
+  // page). The grid always renders from this snapshot locally, so the TTL
+  // bounds the whole catalog's re-download frequency — never per search.
+  const PRODUCT_SNAPSHOT_TTL = 30 * 60_000;
 
-  async function refreshProductSnapshot() {
-    void cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, () =>
-      fetchAll(() => supabase
-        .from('products')
-        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
-          inventory_items(id, warehouse_id, quantity_on_hand),
-          units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
-        .eq('is_active', true)
-        .order('name').order('id')))
-      .catch(() => {});
+  // Build/refresh the full-catalog snapshot through the offline cache:
+  // fresh within the TTL → instant local read, no network; stale or
+  // missing → one full download. Returns the snapshot or null.
+  async function refreshProductSnapshot(): Promise<ProductData[] | null> {
+    try {
+      const res = await cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, () =>
+        fetchAll(() => supabase
+          .from('products')
+          .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
+            inventory_items(id, warehouse_id, quantity_on_hand),
+            units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
+          .eq('is_active', true)
+          .order('name').order('id')));
+      return (res.data as ProductData[]) || null;
+    } catch {
+      return null;
+    }
   }
 
   async function loadProducts(q: string, append = false) {
@@ -655,6 +663,18 @@ export default function POSPage() {
       setHasMoreProducts(page.length === POS_GRID_PAGE_SIZE && (count === null || offset + page.length < count));
     }
 
+    // Filter + rank + paginate the full-catalog snapshot locally — the same
+    // code path online and offline, so searching never touches the network.
+    function applySnapshotPage(list: ProductData[]) {
+      let filtered = list.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
+      if (selectedBrand) filtered = filtered.filter(p => (p as any).brand_id === selectedBrand);
+      if (selectedCategory) filtered = filtered.filter(p => (p as any).category_id === selectedCategory);
+      filtered = filtered.filter(p => (p as any).track_inventory !== false);
+      filtered.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      const ranked = rankRows(filtered, posRankColumns, tokens);
+      applyPage(ranked.slice(offset, offset + POS_GRID_PAGE_SIZE), filtered.length);
+    }
+
     async function loadCachedPage() {
       let cached = await cacheGet<ProductData[]>(CACHE_KEYS.products).catch(() => null);
       if (!cached || cached.length === 0) {
@@ -667,13 +687,7 @@ export default function POSPage() {
       if (!cached || cached.length === 0) {
         throw new Error('Offline — no product cache yet. Open the POS once while online to build its offline product list.');
       }
-      let list = cached.filter(p => matchesTokens(p, POS_SEARCH_COLUMNS, tokens));
-      if (selectedBrand) list = list.filter(p => (p as any).brand_id === selectedBrand);
-      if (selectedCategory) list = list.filter(p => (p as any).category_id === selectedCategory);
-      list = list.filter(p => (p as any).track_inventory !== false);
-      list.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
-      const ranked = rankRows(list, posRankColumns, tokens);
-      applyPage(ranked.slice(offset, offset + POS_GRID_PAGE_SIZE), list.length);
+      applySnapshotPage(cached);
     }
 
     try {
@@ -682,6 +696,17 @@ export default function POSPage() {
         return;
       }
 
+      // Online: serve the grid from the locally cached full-catalog snapshot
+      // (refreshed on its own TTL, never per keystroke). Identical results to
+      // a server query with none of the per-search downloads.
+      const snapshot = await refreshProductSnapshot();
+      if (snapshot && snapshot.length > 0) {
+        applySnapshotPage(snapshot);
+        return;
+      }
+
+      // No snapshot could be built (e.g. first-ever visit whose catalog fetch
+      // failed) — fall back to a server-side grid page so the shelf isn't empty.
       let query = supabase
         .from('products')
         .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months,
@@ -703,7 +728,6 @@ export default function POSPage() {
       }
       if (error) throw error;
       applyPage(rankRows((data || []) as ProductData[], posRankColumns, tokens), count ?? null);
-      if (seq === searchSeqRef.current && !append) void refreshProductSnapshot();
     } catch (error) {
       if (seq !== searchSeqRef.current) return;
       if (!append) {
@@ -725,10 +749,56 @@ export default function POSPage() {
     }
   }
 
+  // Decrement the cached product snapshot (counter stock) and the
+  // oversell-gate ledger snapshot by exactly what a sale drew. Shared by the
+  // online checkout and the offline-queue path so a completed sale updates
+  // the grid locally instead of triggering a full catalog re-download; the
+  // next TTL refresh (or replica sync) self-corrects any FIFO/warehouse drift.
+  async function applySaleToSnapshot(lines: Pick<CartItem, 'id' | 'base_quantity' | 'warehouse_id'>[]) {
+    await mutateCache<ProductData[]>(CACHE_KEYS.products, list => {
+      if (!list) return list;
+      return list.map(p => {
+        const sold = lines.filter(i => i.id === p.id);
+        if (sold.length === 0) return p;
+        const perWh: Record<string, number> = {};
+        for (const l of sold) {
+          const wh = l.warehouse_id || defaultWarehouseId;
+          if (wh) perWh[wh] = (perWh[wh] || 0) + l.base_quantity;
+        }
+        let touched = false;
+        const inventory_items = (p.inventory_items || []).map(inv => {
+          if (perWh[inv.warehouse_id] != null) {
+            touched = true;
+            return { ...inv, quantity_on_hand: Number(inv.quantity_on_hand) - perWh[inv.warehouse_id] };
+          }
+          return inv;
+        });
+        return touched ? { ...p, inventory_items } : p;
+      });
+    });
+    await mutateCache<LedgerStock>(CACHE_KEYS.gateStock, stock => {
+      const base = stock ?? { byPair: {}, defaultWarehouseId };
+      const byPair = { ...base.byPair };
+      for (const l of lines) {
+        const wh = l.warehouse_id || defaultWarehouseId;
+        if (!wh) continue;
+        const key = `${l.id}|${wh}`;
+        byPair[key] = (byPair[key] ?? 0) - l.base_quantity;
+      }
+      return { ...base, byPair };
+    });
+  }
+
   // Quick Sell now lives in the global header — refresh the grid when a
-  // quick sell completes while this page is mounted.
+  // quick sell completes while this page is mounted. An online quick sell
+  // reduced stock server-side with no local patch, so force the snapshot to
+  // rebuild (offline quick sells can't refetch — the grid self-corrects on
+  // the next TTL refresh).
   useEffect(() => {
-    const onQuickSellCreated = () => loadProducts(search);
+    const onQuickSellCreated = () => {
+      if (networkMonitor.getState().online) void cacheDelete(CACHE_KEYS.products);
+      loadProducts(search);
+    };
     window.addEventListener('quick-sell:created', onQuickSellCreated);
     return () => window.removeEventListener('quick-sell:created', onQuickSellCreated);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1598,6 +1668,9 @@ export default function POSPage() {
       creditConfirmedRef.current = false;
       setOrderComplete(true);
       toast({ title: 'Success', description: `Order ${invoiceNumber} completed successfully` });
+      // The sale drew stock server-side — patch the local snapshot instead of
+      // re-downloading the whole catalog.
+      await applySaleToSnapshot(cart);
       loadProducts(search);
     } catch (error: any) {
       console.error('POS error:', error);
@@ -1766,38 +1839,7 @@ export default function POSPage() {
     // Optimistic local effects so this session stays consistent: decrement
     // the cached product snapshot (counter stock) and the oversell-gate
     // ledger snapshot by exactly what was sold.
-    await mutateCache<ProductData[]>(CACHE_KEYS.products, list => {
-      if (!list) return list;
-      return list.map(p => {
-        const lines = cart.filter(i => i.id === p.id);
-        if (lines.length === 0) return p;
-        const perWh: Record<string, number> = {};
-        for (const l of lines) {
-          const wh = l.warehouse_id || defaultWarehouseId;
-          if (wh) perWh[wh] = (perWh[wh] || 0) + l.base_quantity;
-        }
-        let touched = false;
-        const inventory_items = (p.inventory_items || []).map(inv => {
-          if (perWh[inv.warehouse_id] != null) {
-            touched = true;
-            return { ...inv, quantity_on_hand: Number(inv.quantity_on_hand) - perWh[inv.warehouse_id] };
-          }
-          return inv;
-        });
-        return touched ? { ...p, inventory_items } : p;
-      });
-    });
-    await mutateCache<LedgerStock>(CACHE_KEYS.gateStock, stock => {
-      const base = stock ?? { byPair: {}, defaultWarehouseId };
-      const byPair = { ...base.byPair };
-      for (const l of cart) {
-        const wh = l.warehouse_id || defaultWarehouseId;
-        if (!wh) continue;
-        const key = `${l.id}|${wh}`;
-        byPair[key] = (byPair[key] ?? 0) - l.base_quantity;
-      }
-      return { ...base, byPair };
-    });
+    await applySaleToSnapshot(cart);
 
     // Receipt snapshot — taken while the cart is still populated. The number
     // is the device's temporary reference; the printout carries the

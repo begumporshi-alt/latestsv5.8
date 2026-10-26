@@ -3,8 +3,9 @@
  *
  * Every integrated page loads its data through cachedQuery():
  *
- *   online + cache fresh (< ttl)  → return cached instantly, refresh in
- *                                   the background (stale-while-revalidate)
+ *   online + cache fresh (< ttl)  → return cached instantly, no network —
+ *                                   the TTL bounds egress; the next stale
+ *                                   read past the TTL refreshes
  *   online + cache stale/missing  → await the live fetch, cache, return
  *   online but fetch fails        → fall back to cache (marked stale) —
  *                                   silent network drops are treated as
@@ -134,8 +135,9 @@ export async function cachedQuery<T>(
   }
 
   if (cached !== null && row && Date.now() - row.updatedAt < ttlMs) {
-    // Fresh enough — hand it back immediately and refresh behind the curtain.
-    void refresh<T>(key, fetcher).catch(() => {})
+    // Fresh enough — hand it back and touch nothing. The TTL is the egress
+    // budget: a background refresh here would re-download the payload on
+    // every mount/keystroke, which is exactly what the cache exists to stop.
     return { data: cached, fresh: true, cachedAt: row.updatedAt, offline: false }
   }
 
