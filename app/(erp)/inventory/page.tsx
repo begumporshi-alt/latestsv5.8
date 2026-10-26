@@ -258,6 +258,7 @@ export default function InventoryPage() {
       const matchWarehouse = !filterWarehouse || (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0) > 0;
       const matchStockTracking = !filterNonStockOnly ? true : (p as any).track_inventory === false;
       const matchStatus = !filterStatus || (
+        filterStatus === 'negative' ? (p.total_stock || 0) < 0 :
         filterStatus === 'low' ? (p.total_stock || 0) <= p.min_stock_level && (p.total_stock || 0) > 0 :
         filterStatus === 'out' ? (p.total_stock || 0) === 0 :
         filterStatus === 'sold_out' ? (p.total_stock || 0) === 0 && (p.total_sold || 0) > 0 :
@@ -302,6 +303,7 @@ export default function InventoryPage() {
       }, 0), [filtered, filterWarehouse, fifoValueMap, inventoryByWarehouse]);
 
   function getStockBadge(qty: number, min: number) {
+    if (qty < 0) return <span className="badge-status bg-red-100 text-red-700 border border-red-200">Oversold (IOU)</span>;
     if (qty === 0) return <span className="badge-status bg-red-50 text-red-600">Out of Stock</span>;
     if (qty <= min) return <span className="badge-status bg-amber-50 text-amber-600">Low Stock</span>;
     return <span className="badge-status bg-green-50 text-green-600">In Stock</span>;
@@ -462,6 +464,7 @@ export default function InventoryPage() {
           <option value="has_stock">Has Stock</option>
           <option value="out">Out of Stock</option>
           <option value="sold_out">Sold Out (Zero after Sales)</option>
+          <option value="negative">Negative (Oversold IOU)</option>
         </select>
         <button
           type="button"
@@ -588,7 +591,7 @@ export default function InventoryPage() {
                           type="button"
                           onClick={() => setBatchesProduct(p)}
                           title="View batches"
-                          className={`text-sm font-bold rounded px-1 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${(p.total_stock || 0) === 0 ? 'text-red-500' : (p.total_stock || 0) <= p.min_stock_level ? 'text-amber-500' : 'text-foreground'}`}
+                          className={`text-sm font-bold rounded px-1 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${(p.total_stock || 0) <= 0 ? 'text-red-500' : (p.total_stock || 0) <= p.min_stock_level ? 'text-amber-500' : 'text-foreground'}`}
                         >
                           {p.total_stock || 0}
                         </button>
