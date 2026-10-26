@@ -22,7 +22,7 @@ interface ProductResult {
   base_unit?: string;
   enable_multi_unit?: boolean;
   image_url?: string;
-  inventory_items?: { quantity_on_hand: number }[];
+  inventory_items?: { quantity_on_hand: number; warehouse?: { name: string } | null }[];
   units?: ProductUnit[];
   warranty_months: number;
   has_expiring_batches?: boolean;
@@ -101,7 +101,7 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
         supabase
           .from('products')
           .select(`id, name, sku, barcode, sale_price, cost_price, unit, base_unit, enable_multi_unit, image_url, warranty_months,
-          inventory_items(quantity_on_hand),
+          inventory_items(quantity_on_hand, warehouse:warehouses(name)),
           units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
           .eq('is_active', true)
           .order('name'),
@@ -165,6 +165,13 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
 
   const stock = (p: ProductResult) =>
     p.inventory_items?.reduce((s, i) => s + Number(i.quantity_on_hand), 0) ?? null;
+
+  // Warehouses carrying an IOU (negative counter) even when the product's
+  // all-warehouse total is fine — receiving into that warehouse heals the IOU.
+  const oversoldWarehouses = (p: ProductResult) =>
+    (p.inventory_items || [])
+      .filter(i => Number(i.quantity_on_hand) < 0)
+      .map(i => ({ name: i.warehouse?.name || 'Unknown', qty: Number(i.quantity_on_hand) }));
 
   const selectedBrandName = brands.find(b => b.id === selectedBrand)?.name;
   const filteredBrands = brandSearch.trim()
@@ -326,6 +333,7 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
               <div className="px-4 py-3 text-sm text-muted-foreground">No products found for &quot;{query}&quot;</div>
             ) : results.map((p, i) => {
               const s = showStock ? stock(p) : null;
+              const oversoldWhs = showStock ? oversoldWarehouses(p) : [];
               return (
                 <button
                   key={p.id}
@@ -349,9 +357,27 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
                   <div className="text-right shrink-0">
                     <p className="text-sm font-semibold text-blue-600">{formatCurrency(p.sale_price)}</p>
                     {showStock && s !== null && (
-                      <p className={`text-[10px] font-medium ${s > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        {s > 0 ? `${s} in stock` : 'Out of stock'}
-                      </p>
+                      s < 0 ? (
+                        <>
+                          <p className="text-[10px] font-medium text-red-500">Oversold — IOU of {Math.abs(s)}</p>
+                          <span className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200">Oversold (IOU)</span>
+                        </>
+                      ) : (
+                        <>
+                          <p className={`text-[10px] font-medium ${s > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                            {s > 0 ? `${s} in stock` : 'Out of stock'}
+                          </p>
+                          {oversoldWhs.length > 0 && (
+                            <div className="flex flex-wrap justify-end gap-1 mt-0.5">
+                              {oversoldWhs.map(w => (
+                                <span key={w.name} className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200" title="Oversold (IOU) in this warehouse">
+                                  {w.name} {w.qty}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )
                     )}
                     {(p.warranty_months ?? 0) > 0 && (
                       <p className="text-[10px] font-medium text-purple-600">{p.warranty_months}mo warranty</p>
