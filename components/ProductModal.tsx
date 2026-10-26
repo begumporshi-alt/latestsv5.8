@@ -54,6 +54,10 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   const [stockByWarehouse, setStockByWarehouse] = useState<Record<string, string>>(
     warehouses.reduce((acc, w) => ({ ...acc, [w.id]: '0' }), {})
   );
+  // Reason rides along on every adjustment movement this edit produces.
+  const [stockReason, setStockReason] = useState('');
+  // Edits that change stock pause on a review step before writing.
+  const [confirmAdjust, setConfirmAdjust] = useState(false);
   // Tracks the original DB stock to compute diffs accurately (not the stale prop)
   const originalStockRef = useRef<Record<string, number>>({});
   // Stock fields follow the same decimal rule as selling: unit_types flag
@@ -98,6 +102,8 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
     });
     setStockByWarehouse(stockMap);
     originalStockRef.current = origMap;
+    setStockReason('');
+    setConfirmAdjust(false);
   }
 
   function addColor() {
@@ -184,7 +190,36 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
     setUnits(units.filter((_, i) => i !== index));
   }
 
+  // Warehouses whose stock this edit changes, computed exactly like the save
+  // path (clamped new qty vs the fresh DB baseline).
+  function adjustedWarehouses() {
+    if (!isEdit || !form.track_inventory) return [];
+    return Object.entries(stockByWarehouse)
+      .map(([warehouseId, newQtyStr]) => {
+        const newQty = clampSaleQty(Number(newQtyStr) || 0, stockAllowDecimal);
+        const currentQty = originalStockRef.current[warehouseId] ?? 0;
+        return { warehouseId, currentQty, newQty, diff: newQty - currentQty };
+      })
+      .filter(d => d.diff !== 0);
+  }
+
+  function adjustmentNote(diff: number) {
+    const base = diff > 0 ? 'Stock increase adjustment' : 'Stock decrease adjustment';
+    const reason = stockReason.trim();
+    return reason ? `${base} — ${reason}` : base;
+  }
+
   async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (adjustedWarehouses().length > 0 && !confirmAdjust) {
+      setError('');
+      setConfirmAdjust(true);
+      return;
+    }
+    await doSave(e);
+  }
+
+  async function doSave(e: React.FormEvent) {
     e.preventDefault();
 
     if (form.enable_multi_unit) {
@@ -239,6 +274,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
           warehouse_id: warehouseId,
           quantity: clampSaleQty(Number(qty) || 0, stockAllowDecimal),
           unit_cost: Number(form.cost_price) || 0,
+          reason: stockReason.trim() || null,
         }))
         .filter(s => (isEdit ? true : s.quantity > 0));
 
@@ -393,7 +429,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                   p_batch_type: 'adjustment',
                   p_reference_type: 'stock_adjustment',
                   p_reference_id: productId,
-                  p_notes: 'Stock increase adjustment',
+                  p_notes: adjustmentNote(diff),
                 });
                 if (error) throw error;
               } else {
@@ -405,7 +441,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                   p_unit_cost: Number(form.cost_price) || 0,
                   p_reference_type: 'stock_adjustment',
                   p_reference_id: productId,
-                  p_notes: 'Stock decrease adjustment',
+                  p_notes: adjustmentNote(diff),
                 });
                 if (error) throw error;
               }
@@ -441,7 +477,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                 unit_cost: Number(form.cost_price) || 0,
                 reference_type: 'stock_adjustment',
                 reference_id: productId,
-                notes: diff > 0 ? 'Stock increase adjustment' : 'Stock decrease adjustment',
+                notes: adjustmentNote(diff),
               });
             }
           }
@@ -460,6 +496,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
       }
 
       toast({ title: 'Success', description: isEdit ? 'Product updated successfully' : 'Product created successfully' });
+      setConfirmAdjust(false);
       onSaved();
       onClose();
     } catch (err: any) {
@@ -471,12 +508,50 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-2xl w-full max-w-3xl shadow-2xl max-h-[90vh] overflow-y-auto relative">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border sticky top-0 bg-white z-10">
-          <h2 className="text-base font-bold">{isEdit ? 'Edit Product' : 'Add New Product'}</h2>
+          <h2 className="text-base font-bold">{confirmAdjust ? 'Confirm Stock Adjustments' : isEdit ? 'Edit Product' : 'Add New Product'}</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSave} className="p-6 space-y-4">
+          {confirmAdjust && adjustedWarehouses().length > 0 && (
+            <div className="absolute inset-0 bg-white z-[5] p-6 pt-16 overflow-y-auto flex flex-col">
+              <p className="text-sm text-muted-foreground">Saving this edit will write these stock changes to the ledger. Review them before confirming.</p>
+              <div className="space-y-2 mt-4">
+                {adjustedWarehouses().map(d => {
+                  const wh = warehouses.find(w => w.id === d.warehouseId);
+                  const wasIou = d.currentQty < 0;
+                  return (
+                    <div key={d.warehouseId} className="p-3 border border-border rounded-lg">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="text-sm font-medium">{wh?.name || 'Warehouse'}</span>
+                        <span className="text-sm">{d.currentQty} → <span className="font-semibold">{d.newQty}</span></span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${d.diff > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                          {d.diff > 0 ? `+${d.diff}` : d.diff}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{d.diff > 0 ? 'increase posts a new adjustment batch' : 'decrease reduces FIFO layers'}</span>
+                        {wasIou && d.newQty >= 0 && <span className="text-xs font-medium text-green-600">repays the oversold IOU</span>}
+                        {d.newQty < 0 && <span className="text-xs font-medium text-red-500">{wasIou ? `IOU of ${Math.abs(d.newQty)} remains` : `creates an IOU of ${Math.abs(d.newQty)}`}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="p-3 bg-muted/30 rounded-lg text-sm mt-3">
+                <span className="text-muted-foreground">Reason: </span>
+                {stockReason.trim() || <span className="italic">none given</span>}
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">Quantity corrections post to Opening Balance Equity (3900), not P&amp;L.</p>
+              <div className="mt-auto flex items-center justify-end gap-3 pt-4">
+                <button type="button" onClick={() => setConfirmAdjust(false)} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Back to edit</button>
+                <button type="submit" disabled={saving} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">
+                  {saving ? 'Saving...' : 'Confirm & Save'}
+                </button>
+              </div>
+            </div>
+          )}
           {error && <div className="p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
 
           <div className="grid grid-cols-2 gap-4">
@@ -826,13 +901,24 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                 {warehouses.map(wh => {
                   // Use originalStockRef (fresh from DB) for current qty, not stale product prop
                   const currentQty = originalStockRef.current[wh.id] ?? 0;
-                  const newQty = Number(stockByWarehouse[wh.id] || 0);
+                  const newQty = clampSaleQty(Number(stockByWarehouse[wh.id] || 0), stockAllowDecimal);
                   const diff = newQty - currentQty;
+                  const iou = currentQty < 0;
                   return (
                     <div key={wh.id} className="flex items-center justify-between p-2 bg-muted/30 rounded-lg">
-                      <div className="flex-1">
-                        <span className="text-sm">{wh.name}</span>
-                        <span className="text-xs text-muted-foreground ml-2">(Current: {currentQty})</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm">{wh.name}</span>
+                          {iou && (
+                            <span className="inline-flex items-center whitespace-nowrap px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-100 text-red-700 border border-red-200">Oversold (IOU)</span>
+                          )}
+                          {iou && diff !== 0 && (
+                            <span className={`text-xs ${newQty >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                              {newQty >= 0 ? 'will repay the IOU' : `IOU of ${Math.abs(newQty)} remains`}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-muted-foreground">(Current: {currentQty})</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <input
@@ -857,6 +943,19 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                   );
                 })}
               </div>
+              {adjustedWarehouses().length > 0 && (
+                <div className="mt-3">
+                  <label className="block text-xs font-medium mb-1">Reason for adjustment</label>
+                  <input
+                    type="text"
+                    value={stockReason}
+                    onChange={e => setStockReason(e.target.value)}
+                    placeholder="e.g. physical recount, damaged count, found stock…"
+                    className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">Recorded on the stock movement for each changed warehouse.</p>
+                </div>
+              )}
               <p className="text-xs text-muted-foreground mt-2">Changes will be recorded as stock adjustments.</p>
             </div>
           )}
