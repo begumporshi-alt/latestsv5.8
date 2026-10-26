@@ -38,7 +38,7 @@ import { printNode } from '@/lib/print';
 import { isInvoiceOverdue } from '@/lib/format';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
-import { cachedQuery } from '@/lib/offline/cache';
+import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 import { REPLICA, replicaRows } from '@/lib/offline/replica';
 
 // Cached aggregate served offline — see loadData/fetchSalesData.
@@ -193,11 +193,17 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
 
   // The full sales aggregate (invoices + customers + products + payments +
   // returns + deliveries + stats inputs) is cached per period window, so the
-  // order list stays reviewable offline with a stale banner.
-  async function loadData() {
+  // order list stays reviewable offline with a stale banner. `force` drops
+  // the cached window first — a modal save (payment/edit/cancel/convert)
+  // must show its own write, and the fresh-cache fast path would otherwise
+  // serve the pre-save snapshot for up to the TTL.
+  async function loadData(force = false) {
     setLoading(true);
     const { from, to } = getPeriodRange();
     const key = `sales:page-data:${period}:${from}:${to}`;
+    // Offline the delete is skipped — the stale cache (plus the outbox
+    // overlay) is the offline copy; deleting it would break the fallback.
+    if (force && networkMonitor.getState().online) await cacheDelete(key).catch(() => {});
     try {
       const [res, refs] = await Promise.all([
         cachedQuery<SalesPageData>(key, 60_000, () => fetchSalesData(from, to)),
@@ -493,7 +499,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: `Invoice marked as ${statusConfig[newStatus].label}` });
-      loadData();
+      loadData(true);
     }
   }
 
@@ -1108,7 +1114,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
         <RecordPaymentModal
           invoice={paymentInvoice}
           onClose={() => { setShowPaymentModal(false); setPaymentInvoice(null); }}
-          onSaved={() => { setShowPaymentModal(false); setPaymentInvoice(null); loadData(); }}
+          onSaved={() => { setShowPaymentModal(false); setPaymentInvoice(null); loadData(true); }}
         />
       )}
 
@@ -1138,7 +1144,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           invoice={convertingInvoice}
           companySettings={companySettings}
           onClose={() => setConvertingInvoice(null)}
-          onSaved={() => { setConvertingInvoice(null); loadData(); }}
+          onSaved={() => { setConvertingInvoice(null); loadData(true); }}
         />
       )}
 
@@ -1148,7 +1154,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           customers={customers}
           products={products}
           onClose={() => setEditingInvoice(null)}
-          onSaved={() => { setEditingInvoice(null); loadData(); }}
+          onSaved={() => { setEditingInvoice(null); loadData(true); }}
         />
       )}
 
@@ -1156,7 +1162,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
         <CancelInvoiceModal
           invoice={cancellingInvoice}
           onClose={() => setCancellingInvoice(null)}
-          onDone={() => { setCancellingInvoice(null); loadData(); }}
+          onDone={() => { setCancellingInvoice(null); loadData(true); }}
         />
       )}
 

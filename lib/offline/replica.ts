@@ -6,16 +6,13 @@
  * invoice items, payments, returns, employees, attendance and the reference
  * tables. Refresh strategy is a full replace per table — the app uses soft
  * deletes, so a full refresh is the only strategy that also removes rows
- * deleted server-side without a changelog. Nearly every table has a `delta`
+ * deleted server-side without a changelog. Every table has a `delta`
  * fetch (ledger/line-item tables by created_at; editable tables by the
- * trigger-maintained updated_at — migrations 20261002150000 and
- * 20261018150000) and only downloads rows changed since the last refresh,
- * guarded by a zero-payload count probe that falls back to a full replace
- * when rows disappear server-side; a full replace also runs once a day as a
- * convergence net. Only the small reference tables (brands, categories,
- * warehouses, payment methods, unit types, app settings, accounts, purchase
- * reminders, product sizes/colors, bank reconciliation items,
- * inventory reconciliation log) are re-downloaded whole each cycle.
+ * trigger-maintained updated_at — migrations 20261002150000,
+ * 20261018150000 and 20261027120000) and only downloads rows changed
+ * since the last refresh, guarded by a zero-payload count probe that
+ * falls back to a full replace when rows disappear server-side; a full
+ * replace also runs once a day as a convergence net.
  *
  * Triggers: app start (after login), hourly while the tab is visible and
  * online (plus the moment connectivity returns or a hidden tab regains
@@ -99,21 +96,21 @@ export const REPLICA_TABLES: ReplicaTableSpec[] = [
   { name: 'Sales return items', table: 'sales_return_items', store: 'replica_sales_return_items', fetch: () => fetchAll(() => supabaseRaw.from('sales_return_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('sales_return_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Employees', table: 'employees', store: 'replica_employees', fetch: () => fetchAll(() => supabaseRaw.from('employees').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('employees').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Attendance', table: 'attendance', store: 'replica_attendance', fetch: () => fetchAll(() => supabaseRaw.from('attendance').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('attendance').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
-  { name: 'Warehouses', table: 'warehouses', store: 'replica_warehouses', fetch: () => fetchAll(() => supabaseRaw.from('warehouses').select('*').order('id')) },
-  { name: 'Brands', table: 'brands', store: 'replica_brands', fetch: () => fetchAll(() => supabaseRaw.from('brands').select('*').order('id')) },
-  { name: 'Categories', table: 'categories', store: 'replica_categories', fetch: () => fetchAll(() => supabaseRaw.from('categories').select('*').order('id')) },
-  { name: 'Payment methods', table: 'payment_methods', store: 'replica_payment_methods', fetch: () => fetchAll(() => supabaseRaw.from('payment_methods').select('*').order('id')) },
+  { name: 'Warehouses', table: 'warehouses', store: 'replica_warehouses', fetch: () => fetchAll(() => supabaseRaw.from('warehouses').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('warehouses').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
+  { name: 'Brands', table: 'brands', store: 'replica_brands', fetch: () => fetchAll(() => supabaseRaw.from('brands').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('brands').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
+  { name: 'Categories', table: 'categories', store: 'replica_categories', fetch: () => fetchAll(() => supabaseRaw.from('categories').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('categories').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
+  { name: 'Payment methods', table: 'payment_methods', store: 'replica_payment_methods', fetch: () => fetchAll(() => supabaseRaw.from('payment_methods').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('payment_methods').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Suppliers', table: 'suppliers', store: 'replica_suppliers', fetch: () => fetchAll(() => supabaseRaw.from('suppliers').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('suppliers').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   // Operational data the POS and the shared gates read while offline: VAT /
   // POS defaults, store credit balances, and the FIFO batch ledger.
-  { name: 'App settings', table: 'app_settings', store: 'replica_app_settings', fetch: () => fetchAll(() => supabaseRaw.from('app_settings').select('*').order('id')) },
+  { name: 'App settings', table: 'app_settings', store: 'replica_app_settings', fetch: () => fetchAll(() => supabaseRaw.from('app_settings').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('app_settings').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Store credits', table: 'customer_store_credits', store: 'replica_customer_store_credits', fetch: () => fetchAll(() => supabaseRaw.from('customer_store_credits').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_store_credits').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
-  { name: 'Inventory batches', table: 'inventory_batches', store: 'replica_inventory_batches', fetch: () => fetchAll(() => supabaseRaw.from('inventory_batches').select('*').order('id')) },
+  { name: 'Inventory batches', table: 'inventory_batches', store: 'replica_inventory_batches', fetch: () => fetchAll(() => supabaseRaw.from('inventory_batches').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('inventory_batches').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   // Accounting, purchasing, delivery and CRM history — everything the pages
   // read. Replicating these means offline coverage does not depend on which
   // pages were visited while online (lib/offline/replica-query.ts answers
   // any page's query from these tables).
-  { name: 'Accounts', table: 'accounts', store: 'replica_accounts', fetch: () => fetchAll(() => supabaseRaw.from('accounts').select('*').order('id')) },
+  { name: 'Accounts', table: 'accounts', store: 'replica_accounts', fetch: () => fetchAll(() => supabaseRaw.from('accounts').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('accounts').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Journal entries', table: 'journal_entries', store: 'replica_journal_entries', fetch: () => fetchAll(() => supabaseRaw.from('journal_entries').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('journal_entries').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Journal lines', table: 'journal_lines', store: 'replica_journal_lines', fetch: () => fetchAll(() => supabaseRaw.from('journal_lines').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('journal_lines').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Stock movements', table: 'stock_movements', store: 'replica_stock_movements', fetch: () => fetchAll(() => supabaseRaw.from('stock_movements').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('stock_movements').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
@@ -121,7 +118,7 @@ export const REPLICA_TABLES: ReplicaTableSpec[] = [
   { name: 'Quotation items', table: 'quotation_items', store: 'replica_quotation_items', fetch: () => fetchAll(() => supabaseRaw.from('quotation_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('quotation_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Purchase orders', table: 'purchase_orders', store: 'replica_purchase_orders', fetch: () => fetchAll(() => supabaseRaw.from('purchase_orders').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_orders').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Purchase order items', table: 'purchase_order_items', store: 'replica_purchase_order_items', fetch: () => fetchAll(() => supabaseRaw.from('purchase_order_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_order_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
-  { name: 'Purchase reminders', table: 'purchase_reminders', store: 'replica_purchase_reminders', fetch: () => fetchAll(() => supabaseRaw.from('purchase_reminders').select('*').order('id')) },
+  { name: 'Purchase reminders', table: 'purchase_reminders', store: 'replica_purchase_reminders', fetch: () => fetchAll(() => supabaseRaw.from('purchase_reminders').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_reminders').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Purchase returns', table: 'purchase_returns', store: 'replica_purchase_returns', fetch: () => fetchAll(() => supabaseRaw.from('purchase_returns').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_returns').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Purchase return items', table: 'purchase_return_items', store: 'replica_purchase_return_items', fetch: () => fetchAll(() => supabaseRaw.from('purchase_return_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_return_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'GRNs', table: 'goods_receipt_notes', store: 'replica_goods_receipt_notes', fetch: () => fetchAll(() => supabaseRaw.from('goods_receipt_notes').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('goods_receipt_notes').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
@@ -133,15 +130,15 @@ export const REPLICA_TABLES: ReplicaTableSpec[] = [
   { name: 'Customer notes', table: 'customer_notes', store: 'replica_customer_notes', fetch: () => fetchAll(() => supabaseRaw.from('customer_notes').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_notes').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Store credit redemptions', table: 'store_credit_redemptions', store: 'replica_store_credit_redemptions', fetch: () => fetchAll(() => supabaseRaw.from('store_credit_redemptions').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('store_credit_redemptions').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Cost price history', table: 'cost_price_history', store: 'replica_cost_price_history', fetch: () => fetchAll(() => supabaseRaw.from('cost_price_history').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('cost_price_history').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
-  { name: 'Product sizes', table: 'product_sizes', store: 'replica_product_sizes', fetch: () => fetchAll(() => supabaseRaw.from('product_sizes').select('*').order('id')) },
-  { name: 'Product colors', table: 'product_colors', store: 'replica_product_colors', fetch: () => fetchAll(() => supabaseRaw.from('product_colors').select('*').order('id')) },
-  { name: 'Unit types', table: 'unit_types', store: 'replica_unit_types', fetch: () => fetchAll(() => supabaseRaw.from('unit_types').select('*').order('id')) },
+  { name: 'Product sizes', table: 'product_sizes', store: 'replica_product_sizes', fetch: () => fetchAll(() => supabaseRaw.from('product_sizes').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('product_sizes').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
+  { name: 'Product colors', table: 'product_colors', store: 'replica_product_colors', fetch: () => fetchAll(() => supabaseRaw.from('product_colors').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('product_colors').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
+  { name: 'Unit types', table: 'unit_types', store: 'replica_unit_types', fetch: () => fetchAll(() => supabaseRaw.from('unit_types').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('unit_types').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Projects', table: 'projects', store: 'replica_projects', fetch: () => fetchAll(() => supabaseRaw.from('projects').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('projects').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Activity logs', table: 'activity_logs', store: 'replica_activity_logs', fetch: () => fetchAll(() => supabaseRaw.from('activity_logs').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('activity_logs').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Profiles', table: 'profiles', store: 'replica_profiles', fetch: () => fetchAll(() => supabaseRaw.from('profiles').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('profiles').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Online orders', table: 'online_orders', store: 'replica_online_orders', fetch: () => fetchAll(() => supabaseRaw.from('online_orders').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('online_orders').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
-  { name: 'Bank reconciliation items', table: 'bank_reconciliation_items', store: 'replica_bank_reconciliation_items', fetch: () => fetchAll(() => supabaseRaw.from('bank_reconciliation_items').select('*').order('id')) },
-  { name: 'Reconciliation log', table: 'inventory_reconciliation_log', store: 'replica_inventory_reconciliation_log', fetch: () => fetchAll(() => supabaseRaw.from('inventory_reconciliation_log').select('*').order('id')) },
+  { name: 'Bank reconciliation items', table: 'bank_reconciliation_items', store: 'replica_bank_reconciliation_items', fetch: () => fetchAll(() => supabaseRaw.from('bank_reconciliation_items').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('bank_reconciliation_items').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
+  { name: 'Reconciliation log', table: 'inventory_reconciliation_log', store: 'replica_inventory_reconciliation_log', fetch: () => fetchAll(() => supabaseRaw.from('inventory_reconciliation_log').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('inventory_reconciliation_log').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
 ]
 
 /** Named access for page fallbacks — keeps callers independent of array order. */
@@ -172,12 +169,94 @@ export function isReplicating(): boolean {
   return replicating
 }
 
+// One table's sync: delta pull when a cursor is fresh, full replace
+// otherwise, plus cursor/count bookkeeping. Shared by replicateAll and the
+// targeted refreshReplicaTables.
+async function replicateOne(spec: ReplicaTableSpec): Promise<void> {
+  const userId = await resolveUserId()
+  if (!userId) return
+  const key = await getUserKey(userId)
+  const db = getDB()
+  const writeTable = async (
+    tableSpec: ReplicaTableSpec,
+    tableRows: Array<Record<string, any> & { id: string | number }>,
+    replace: boolean,
+  ) => {
+    const sealed = await Promise.all(tableRows.map(async r => ({ id: r.id, blob: await seal(key, r) })))
+    // clear + bulkPut in ONE transaction: a concurrent reader (the POS
+    // fallback, the replica query engine) sees the old rows or the new
+    // rows, never an empty store.
+    await db.transaction('rw', tableSpec.store, async () => {
+      if (replace) await db.table(tableSpec.store).clear()
+      if (sealed.length > 0) await db.table(tableSpec.store).bulkPut(sealed)
+    })
+  }
+  try {
+    let rows: Array<Record<string, any> & { id: string | number }> = []
+    let replaceAllRows = true
+    let applied = false
+    if (spec.delta) {
+      const cursorKey = `replica:delta_cursor:${spec.name}`
+      const cursor = await getMeta<string>(cursorKey)
+      const lastFull = await getMeta<number>(`replica:last_full:${spec.name}`)
+      if (cursor && lastFull != null && Date.now() - lastFull < REPLICA_FULL_REFRESH_MS) {
+        const newRows = await spec.delta(cursor)
+        // Apply BEFORE the count probe: an update replaces its row
+        // without changing the count, so a mismatch after the write
+        // isolates rows deleted server-side — the one change a
+        // timestamp cursor cannot see. Mismatch (or a failed probe)
+        // falls through to the full replace below, so removals converge
+        // within one refresh cycle. An edit that deletes and reinserts
+        // rows keeps the total count, so its ghost rows linger until
+        // the daily full replace.
+        await writeTable(spec, newRows, false)
+        const { count: serverCount, error: cntErr } = await supabaseRaw
+          .from(spec.table)
+          .select('id', { count: 'exact', head: true })
+        const localCount = await db.table(spec.store).count()
+        if (!cntErr && serverCount != null && serverCount === localCount) {
+          rows = newRows
+          replaceAllRows = false
+          applied = true
+        }
+      }
+    }
+    if (!applied) {
+      rows = await spec.fetch()
+      await writeTable(spec, rows, true)
+    }
+    if (spec.delta) {
+      // Advance the cursor to the newest timestamp seen. Rows sharing a
+      // timestamp (one transaction writes a whole batch) were all fetched
+      // together, so a strict-gt cursor never skips them.
+      const col = spec.cursorColumn ?? 'created_at'
+      const newCursor = rows.reduce<string | null>((m, r) => {
+        const ts = r[col]
+        return typeof ts === 'string' && ts && (!m || ts > m) ? ts : m
+      }, null)
+      if (newCursor) await setMeta(`replica:delta_cursor:${spec.name}`, newCursor)
+      if (replaceAllRows) await setMeta(`replica:last_full:${spec.name}`, Date.now())
+    }
+    await setMeta(`replica:last_sync:${spec.name}`, Date.now())
+    await setMeta(
+      `replica:count:${spec.name}`,
+      replaceAllRows ? rows.length : await db.table(spec.store).count(),
+    )
+  } catch (err) {
+    if (isNetworkError(err)) {
+      networkMonitor.markOffline()
+      return
+    }
+    // Skip a broken table, keep the rest of the local database fresh.
+    console.warn(`[replica] ${spec.name} refresh failed:`, err)
+  }
+}
+
 /**
  * Full refresh of every replica table. Safe to call repeatedly — while a run
  * is in progress, further calls are ignored, and a run that completed within
  * the last minute is skipped unless `force` (the Sync Center button). A
- * network drop mid-run stops the run (tables already refreshed stay fresh);
- * non-network table errors skip that table and continue.
+ * network drop mid-run stops the run (tables already refreshed stay fresh).
  */
 export async function replicateAll(force = false): Promise<void> {
   if (replicating) return
@@ -193,89 +272,32 @@ export async function replicateAll(force = false): Promise<void> {
   replicating = true
   notifyReplicaChanged()
   try {
-    const key = await getUserKey(userId)
-    const db = getDB()
-    const writeTable = async (
-      spec: ReplicaTableSpec,
-      tableRows: Array<Record<string, any> & { id: string | number }>,
-      replace: boolean,
-    ) => {
-      const sealed = await Promise.all(tableRows.map(async r => ({ id: r.id, blob: await seal(key, r) })))
-      // clear + bulkPut in ONE transaction: a concurrent reader (the POS
-      // fallback, the replica query engine) sees the old rows or the new
-      // rows, never an empty store.
-      await db.transaction('rw', spec.store, async () => {
-        if (replace) await db.table(spec.store).clear()
-        if (sealed.length > 0) await db.table(spec.store).bulkPut(sealed)
-      })
-    }
     for (const spec of REPLICA_TABLES) {
       if (!networkMonitor.getState().online) return
-      try {
-        let rows: Array<Record<string, any> & { id: string | number }> = []
-        let replaceAll = true
-        let applied = false
-        if (spec.delta) {
-          const cursorKey = `replica:delta_cursor:${spec.name}`
-          const cursor = await getMeta<string>(cursorKey)
-          const lastFull = await getMeta<number>(`replica:last_full:${spec.name}`)
-          if (cursor && lastFull != null && Date.now() - lastFull < REPLICA_FULL_REFRESH_MS) {
-            const newRows = await spec.delta(cursor)
-            // Apply BEFORE the count probe: an update replaces its row
-            // without changing the count, so a mismatch after the write
-            // isolates rows deleted server-side — the one change a
-            // timestamp cursor cannot see. Mismatch (or a failed probe)
-            // falls through to the full replace below, so removals converge
-            // within one refresh cycle. An edit that deletes and reinserts
-            // rows keeps the total count, so its ghost rows linger until
-            // the daily full replace.
-            await writeTable(spec, newRows, false)
-            const { count: serverCount, error: cntErr } = await supabaseRaw
-              .from(spec.table)
-              .select('id', { count: 'exact', head: true })
-            const localCount = await db.table(spec.store).count()
-            if (!cntErr && serverCount != null && serverCount === localCount) {
-              rows = newRows
-              replaceAll = false
-              applied = true
-            }
-          }
-        }
-        if (!applied) {
-          rows = await spec.fetch()
-          await writeTable(spec, rows, true)
-        }
-        if (spec.delta) {
-          // Advance the cursor to the newest timestamp seen. Rows sharing a
-          // timestamp (one transaction writes a whole batch) were all fetched
-          // together, so a strict-gt cursor never skips them.
-          const col = spec.cursorColumn ?? 'created_at'
-          const newCursor = rows.reduce<string | null>((m, r) => {
-            const ts = r[col]
-            return typeof ts === 'string' && ts && (!m || ts > m) ? ts : m
-          }, null)
-          if (newCursor) await setMeta(`replica:delta_cursor:${spec.name}`, newCursor)
-          if (replaceAll) await setMeta(`replica:last_full:${spec.name}`, Date.now())
-        }
-        await setMeta(`replica:last_sync:${spec.name}`, Date.now())
-        await setMeta(
-          `replica:count:${spec.name}`,
-          replaceAll ? rows.length : await db.table(spec.store).count(),
-        )
-        notifyReplicaChanged()
-      } catch (err) {
-        if (isNetworkError(err)) {
-          networkMonitor.markOffline()
-          return
-        }
-        // Skip a broken table, keep the rest of the local database fresh.
-        console.warn(`[replica] ${spec.name} refresh failed:`, err)
-      }
+      await replicateOne(spec)
+      notifyReplicaChanged()
     }
     await setMeta('replica:last_full_sync', Date.now())
     notifyReplicaChanged()
   } finally {
     replicating = false
+    notifyReplicaChanged()
+  }
+}
+
+/**
+ * Targeted refresh of named replica tables (by REPLICA name) without the
+ * full replicateAll pass. The POS uses this to converge its catalog, stock
+ * counters, units and customer replica stores on a short interval so pages
+ * can serve reads locally; delta tables only download rows changed since
+ * their cursor, so a quiet table costs one zero-row request.
+ */
+export async function refreshReplicaTables(names: string[]): Promise<void> {
+  if (replicating || !networkMonitor.getState().online) return
+  const specs = names.map(n => REPLICA[n]).filter(Boolean)
+  for (const spec of specs) {
+    if (!networkMonitor.getState().online) return
+    await replicateOne(spec)
     notifyReplicaChanged()
   }
 }

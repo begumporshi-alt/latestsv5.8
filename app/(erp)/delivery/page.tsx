@@ -13,7 +13,7 @@ import type { Delivery, DeliveryStatus, Customer } from '@/lib/types';
 import Pagination from '@/components/ui/AppPagination';
 import { printNode } from '@/lib/print';
 import { fetchAll } from '@/lib/fetch-all';
-import { cachedQuery } from '@/lib/offline/cache';
+import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 
 const statusConfig: Record<DeliveryStatus, { label: string; color: string; bg: string; icon: React.ElementType }> = {
   pending: { label: 'Pending', color: 'text-gray-600', bg: 'bg-gray-100', icon: Clock },
@@ -58,8 +58,11 @@ export default function DeliveryPage() {
 
   useEffect(() => { loadData(); }, []);
 
-  async function loadData() {
+  // A save must show its own write: drop the 60s list cache before reloading
+  // (online only — offline the cached copy plus the outbox overlay is the data).
+  async function loadData(force = false) {
     setLoading(true);
+    if (force && networkMonitor.getState().online) await cacheDelete('delivery:list').catch(() => {});
     const [listRes, refsRes] = await Promise.all([
       // Transactional list (deliveries + deliverable invoices) at 60s.
       // fetchAll pages past Supabase's 1,000-row default cap; the invoices
@@ -138,7 +141,7 @@ export default function DeliveryPage() {
           id: deliveryId, status: newStatus,
         }, `Delivery status → ${newStatus}`);
         toast({ title: 'Queued offline', description: `Delivery will be marked ${statusConfig[newStatus].label} when you reconnect.` });
-        loadData();
+        loadData(true);
       } catch (err: any) {
         toast({ title: 'Error', description: err?.message || 'Could not queue the status change', variant: 'destructive' });
       }
@@ -159,7 +162,7 @@ export default function DeliveryPage() {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: `Delivery status updated to ${statusConfig[newStatus].label}` });
-      loadData();
+      loadData(true);
     }
   }
 

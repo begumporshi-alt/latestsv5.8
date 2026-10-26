@@ -12,7 +12,7 @@ import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, Cre
 import { useRouter } from 'next/navigation';
 import { ProductGalleryBody } from '@/components/ProductGallery';
 import { fetchAll } from '@/lib/fetch-all';
-import { cachedQuery } from '@/lib/offline/cache';
+import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
 import type { Quotation, QuotationStatus, Customer, Product, ProductUnit, PurchaseReminder } from '@/lib/types';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDecimal, clampSaleQty } from '@/lib/unit-utils';
@@ -100,8 +100,11 @@ export default function QuotationsPage() {
     };
   }
 
-  async function loadData() {
+  // A save must show its own write: drop the 60s list cache before reloading
+  // (online only — offline the cached copy plus the outbox overlay is the data).
+  async function loadData(force = false) {
     setLoading(true);
+    if (force && networkMonitor.getState().online) await cacheDelete('quotations:list').catch(() => {});
     const [quotesRes, refsRes] = await Promise.all([
       // fetchAll pages past Supabase's 1,000-row default cap; deterministic
       // .order('id') tiebreakers keep rows stable across pages. 60s cache:
@@ -155,7 +158,7 @@ export default function QuotationsPage() {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: 'Quotation marked as sent' });
-      loadData();
+      loadData(true);
     }
   }
 
@@ -182,7 +185,7 @@ export default function QuotationsPage() {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: `Quotation marked as ${label}` });
-      loadData();
+      loadData(true);
     }
   }
 
@@ -209,7 +212,7 @@ export default function QuotationsPage() {
         }, `Delete quotation ${quotation.quote_number}`);
         toast({ title: 'Queued offline', description: `${quotation.quote_number} will be deleted when you reconnect.` });
         setDeletingQuotation(null);
-        loadData();
+        loadData(true);
       } catch (err: any) {
         toast({ title: 'Error', description: err?.message || 'Could not queue the deletion', variant: 'destructive' });
       }
@@ -224,7 +227,7 @@ export default function QuotationsPage() {
     }
     toast({ title: 'Success', description: `Quotation ${quotation.quote_number} deleted` });
     setDeletingQuotation(null);
-    loadData();
+    loadData(true);
   }
 
   const searchTokens = tokenizeSearch(search);
@@ -459,7 +462,7 @@ export default function QuotationsPage() {
           products={products}
           warehouses={warehouses}
           onClose={() => setShowCreateModal(false)}
-          onSaved={() => { loadData(); }}
+          onSaved={() => { loadData(true); }}
         />
       )}
 
@@ -485,7 +488,7 @@ export default function QuotationsPage() {
         <ConvertToInvoiceModal
           quotation={convertingQuotation}
           onClose={() => setConvertingQuotation(null)}
-          onConverted={() => { setConvertingQuotation(null); loadData(); }}
+          onConverted={() => { setConvertingQuotation(null); loadData(true); }}
         />
       )}
 
@@ -496,7 +499,7 @@ export default function QuotationsPage() {
           products={products}
           warehouses={warehouses}
           onClose={() => setEditingQuotation(null)}
-          onSaved={() => { setEditingQuotation(null); loadData(); }}
+          onSaved={() => { setEditingQuotation(null); loadData(true); }}
         />
       )}
 

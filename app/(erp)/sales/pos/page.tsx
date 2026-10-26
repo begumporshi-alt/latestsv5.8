@@ -34,7 +34,7 @@ import { readData } from '@/lib/offline/read-result';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { fetchAll } from '@/lib/fetch-all';
-import { REPLICA, replicaRows, buildPosSnapshotFromReplica } from '@/lib/offline/replica';
+import { REPLICA, replicaRows, buildPosSnapshotFromReplica, refreshReplicaTables } from '@/lib/offline/replica';
 import { runReplicaQuery } from '@/lib/offline/replica-query';
 import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
@@ -488,12 +488,20 @@ export default function POSPage() {
     }
     // Both the network read and the replica replay project these columns.
     const columns = 'id, invoice_number, status, invoice_date, created_at, total_amount, amount_paid, bad_debt_amount';
+    // Server-side open-balance filter (same semantics as the old client-side
+    // filter): the generated balance_due column already rounds with the app's
+    // 0.01 epsilon, and non-open statuses are excluded in the query — a
+    // frequent customer's full paid/cancelled history no longer downloads on
+    // every selection.
+    const STATUS_FILTER = '("cancelled","refunded","paid","draft")';
     let cancelled = false;
     void (async () => {
       const res: any = await supabase
         .from('invoices')
         .select(columns)
-        .eq('customer_id', selectedCustomer);
+        .eq('customer_id', selectedCustomer)
+        .not('status', 'in', STATUS_FILTER)
+        .gt('balance_due', 0);
       let rows: any[] = Array.isArray(res?.data) ? res.data : [];
       if (res?.offline) {
         // The read fallback answers from the last cached copy of this exact
@@ -505,13 +513,14 @@ export default function POSPage() {
         const local = await runReplicaQuery('invoices', [
           ['select', [columns]],
           ['eq', ['customer_id', selectedCustomer]],
+          ['not', ['status', 'in', STATUS_FILTER]],
+          ['gt', ['balance_due', 0]],
         ]);
         if (local && Array.isArray(local.data)) rows = local.data;
       }
       if (cancelled) return;
       setCustomerOutstanding(
         rows
-          .filter((i: any) => !['cancelled', 'refunded', 'paid', 'draft'].includes(i.status))
           .map((i: any) => ({
             invoice_id: i.id,
             invoice_number: i.invoice_number,
@@ -616,28 +625,50 @@ export default function POSPage() {
   }, [search, selectedBrand, selectedCategory]);
 
   // TTL for the full-product offline snapshot (also used by the inventory
-  // page). The grid always renders from this snapshot locally, so the TTL
-  // bounds the whole catalog's re-download frequency — never per search.
-  const PRODUCT_SNAPSHOT_TTL = 30 * 60_000;
+  // page). The grid always renders from this snapshot locally; when the TTL
+  // expires the snapshot is REBUILT from the locally replicated tables
+  // (delta-refreshed every few minutes below), so staleness is bounded by
+  // the replica cadence without re-downloading the catalog.
+  const PRODUCT_SNAPSHOT_TTL = 10 * 60_000;
+
+  // How often the POS-consumed replica tables converge in the background.
+  const POS_REPLICA_REFRESH_MS = 10 * 60_000;
 
   // Build/refresh the full-catalog snapshot through the offline cache:
-  // fresh within the TTL → instant local read, no network; stale or
-  // missing → one full download. Returns the snapshot or null.
+  // fresh within the TTL → instant local read, no work; stale → rebuild
+  // from the replica stores (local) with a network fetchAll only when the
+  // replica is still empty (first-ever visit). Returns the snapshot or null.
   async function refreshProductSnapshot(): Promise<ProductData[] | null> {
     try {
-      const res = await cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, () =>
-        fetchAll(() => supabase
+      const res = await cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, async () => {
+        const fromReplica = await buildPosSnapshotFromReplica();
+        if (fromReplica && fromReplica.length > 0) return fromReplica as ProductData[];
+        return fetchAll(() => supabase
           .from('products')
           .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
             inventory_items(id, warehouse_id, quantity_on_hand),
             units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
           .eq('is_active', true)
-          .order('name').order('id')));
+          .order('name').order('id'));
+      });
       return (res.data as ProductData[]) || null;
     } catch {
       return null;
     }
   }
+
+  // Keep the replica tables the POS serves its catalog/stock/customers from
+  // converged while the page is open. Delta pulls only download rows changed
+  // since each table's cursor, so this costs a handful of zero-row requests
+  // when nothing changed — never a catalog re-download.
+  useEffect(() => {
+    const refreshPosTables = () => {
+      if (document.visibilityState !== 'visible') return;
+      void refreshReplicaTables(['Products', 'Stock counters', 'Product units', 'Customers']).catch(() => {});
+    };
+    const timer = setInterval(refreshPosTables, POS_REPLICA_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   async function loadProducts(q: string, append = false) {
     if (append && (productLoadRef.current || loading || !hasMoreProducts)) return;
@@ -806,11 +837,20 @@ export default function POSPage() {
 
   // Full customer list through the offline cache (also feeds the credit-gate
   // fallback and the walk-in resolution). Full rows so updated_at is captured
-  // for conflict checks when a queued offline edit syncs.
+  // for conflict checks when a queued offline edit syncs. When the cache is
+  // stale it rebuilds from the replica store (delta-refreshed above) — the
+  // network fetch only seeds a device whose replica is still empty.
   async function loadCustomers() {
     try {
-      const res = await cachedQuery<any[]>(CACHE_KEYS.customers, 60_000, () =>
-        fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name')));
+      const res = await cachedQuery<any[]>(CACHE_KEYS.customers, 60_000, async () => {
+        const local = await replicaRows<any>(REPLICA['Customers']);
+        const active = local
+          .filter((c: any) => c.is_active)
+          .sort((a: any, b: any) =>
+            String(a.name || '').localeCompare(String(b.name || '')) || String(a.id).localeCompare(String(b.id)));
+        if (active.length > 0) return active;
+        return fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name').order('id'));
+      });
       setCustomers(res.data || []);
       const walkIn = (res.data || []).find((c: any) => (c.name || '').toLowerCase().includes('walk'));
       if (walkIn) {

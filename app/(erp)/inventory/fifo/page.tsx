@@ -22,120 +22,97 @@ interface Batch {
   warehouse?: { name: string } | null;
 }
 
+interface ProductRow {
+  id: string;
+  name: string;
+  sku: string | null;
+  value: number;
+  remaining: number;
+  received: number;
+  hasIou: boolean;
+}
+
+interface Overview {
+  summary: {
+    totalValue: number;
+    positiveValue: number;
+    iouValue: number;
+    iouLayers: number;
+    totalRemaining: number;
+    productCount: number;
+    batchCount: number;
+  };
+  byWarehouse: Array<{ id: string; name: string; value: number; remaining: number }>;
+  byType: Array<{ type: string; value: number; remaining: number }>;
+  products: ProductRow[];
+}
+
 export default function FifoLedgerPage() {
+  const [overview, setOverview] = useState<Overview | null>(null);
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedProduct, setSelectedProduct] = useState<string | null>(null);
 
+  // The whole-ledger aggregation runs server-side (get_fifo_ledger_overview):
+  // the browser pulls one small aggregate instead of every batch row. Only the
+  // SELECTED product's batches are fetched, when a product is clicked. Offline
+  // the wrapped client serves the last cached overview.
   useEffect(() => {
-    async function load() {
+    (async () => {
       setLoading(true);
-      let all: Batch[] = [];
-      let pg = 0;
-      while (true) {
-        const { data: pageData } = await supabase
-          .from('inventory_batches')
-          .select('*, product:products(name, sku), warehouse:warehouses(name)')
-          .order('created_at', { ascending: true })
-          .order('id', { ascending: true })
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        all = all.concat((pageData || []) as Batch[]);
-        if (!pageData || pageData.length < 1000) break;
-        pg++;
+      const { data, error } = await supabase.rpc('get_fifo_ledger_overview');
+      if (error) {
+        console.error('FIFO overview failed:', error);
+        setOverview(null);
+      } else {
+        setOverview(data as unknown as Overview);
       }
-      setBatches(all);
       setLoading(false);
-    }
-    load();
+    })();
   }, []);
 
-  // Group by product; products with any non-zero layer appear — net-negative
-  // products (open oversell IOU debt) must not vanish from the ledger.
-  const products = useMemo(() => {
-    const map = new Map<string, { product: Batch['product']; value: number; remaining: number; received: number; hasIou: boolean }>();
-    for (const b of batches) {
-      const key = b.product_id as unknown as string;
-      if (!key) continue;
-      const cur = map.get(key) || { product: b.product, value: 0, remaining: 0, received: 0, hasIou: false };
-      cur.remaining += Number(b.quantity_remaining);
-      cur.received += Number(b.quantity_received);
-      cur.value += Number(b.quantity_remaining) * Number(b.unit_cost);
-      if (Number(b.quantity_remaining) < 0) cur.hasIou = true;
-      map.set(key, cur);
-    }
-    return Array.from(map.entries())
-      .filter(([, v]) => v.remaining !== 0)
-      .sort((a, b) => (a[1].product?.name || '').localeCompare(b[1].product?.name || ''));
-  }, [batches]);
+  useEffect(() => {
+    if (!selectedProduct) { setBatches([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('inventory_batches')
+        .select('*, product:products(name, sku), warehouse:warehouses(name)')
+        .eq('product_id', selectedProduct)
+        .order('created_at', { ascending: true })
+        .order('id', { ascending: true });
+      if (!cancelled) setBatches((data || []) as Batch[]);
+    })();
+    return () => { cancelled = true; };
+  }, [selectedProduct]);
+
+  const products = useMemo<ProductRow[]>(() => overview?.products || [], [overview]);
 
   const filteredProducts = useMemo(() => {
     const q = search.toLowerCase();
     if (!q) return products;
-    return products.filter(([, v]) =>
-      (v.product?.name || '').toLowerCase().includes(q) ||
-      (v.product?.sku || '').toLowerCase().includes(q)
+    return products.filter((v) =>
+      (v.name || '').toLowerCase().includes(q) ||
+      (v.sku || '').toLowerCase().includes(q)
     );
   }, [products, search]);
 
-  const selectedBatches = useMemo(() => {
-    return batches
-      .filter((b) => b.product_id === selectedProduct)
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-  }, [batches, selectedProduct]);
+  const selectedProductRow = useMemo(
+    () => products.find((p) => p.id === selectedProduct) || null,
+    [products, selectedProduct],
+  );
 
-  // Grand totals across all batches (read-only ledger summary).
-  const summary = useMemo(() => {
-    let totalValue = 0;       // net book value — includes negative IOU layers
-    let positiveValue = 0;    // physical stock — positive layers only
-    let iouValue = 0;         // value tied up in negative (oversell IOU) layers
-    let iouLayers = 0;
-    let totalRemaining = 0;
-    const productIds = new Set<string>();
-    const byWarehouse = new Map<string, { name: string; value: number; remaining: number }>();
-    const byType = new Map<string, { value: number; remaining: number }>();
-    for (const b of batches) {
-      const remaining = Number(b.quantity_remaining);
-      const value = remaining * Number(b.unit_cost);
-      totalValue += value;
-      totalRemaining += remaining;
-      if (remaining > 0) {
-        positiveValue += value;
-      } else if (remaining < 0) {
-        iouValue += value;
-        iouLayers++;
-      }
-      if (b.product_id) productIds.add(b.product_id as unknown as string);
-      if (b.warehouse_id) {
-        const whKey = b.warehouse_id as unknown as string;
-        const cur = byWarehouse.get(whKey) || { name: b.warehouse?.name || '—', value: 0, remaining: 0 };
-        cur.value += value;
-        cur.remaining += remaining;
-        byWarehouse.set(whKey, cur);
-      }
-      const tKey = b.batch_type || 'other';
-      const tc = byType.get(tKey) || { value: 0, remaining: 0 };
-      tc.value += value;
-      tc.remaining += remaining;
-      byType.set(tKey, tc);
-    }
-    return {
-      totalValue,
-      positiveValue,
-      iouValue,
-      iouLayers,
-      totalRemaining,
-      productCount: productIds.size,
-      byWarehouse: Array.from(byWarehouse.entries())
-        .filter(([, v]) => v.remaining !== 0)
-        .sort((a, b) => b[1].value - a[1].value),
-      byType: Array.from(byType.entries()).sort((a, b) => b[1].value - a[1].value),
-    };
-  }, [batches]);
+  const summary = overview?.summary || {
+    totalValue: 0, positiveValue: 0, iouValue: 0, iouLayers: 0,
+    totalRemaining: 0, productCount: 0, batchCount: 0,
+  };
+  const byWarehouse = overview?.byWarehouse || [];
+  const byType = overview?.byType || [];
 
   useEffect(() => {
     if (!selectedProduct && filteredProducts.length > 0) {
-      setSelectedProduct(filteredProducts[0][0]);
+      setSelectedProduct(filteredProducts[0].id);
     }
   }, [filteredProducts, selectedProduct]);
 
@@ -179,7 +156,7 @@ export default function FifoLedgerPage() {
         </div>
         <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
           <p className="text-xs text-muted-foreground font-medium">Batches</p>
-          <p className="text-xl font-bold text-foreground mt-1">{batches.length.toLocaleString()}</p>
+          <p className="text-xl font-bold text-foreground mt-1">{summary.batchCount.toLocaleString()}</p>
         </div>
       </div>
 
@@ -200,13 +177,13 @@ export default function FifoLedgerPage() {
       )}
 
       {/* Breakdown by warehouse and batch type */}
-      {summary.byWarehouse.length > 0 && (
+      {byWarehouse.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
             <h3 className="text-sm font-semibold text-foreground mb-3">By Warehouse</h3>
             <div className="space-y-2">
-              {summary.byWarehouse.map(([id, v]) => (
-                <div key={id} className="flex items-center justify-between text-sm">
+              {byWarehouse.map((v) => (
+                <div key={v.id} className="flex items-center justify-between text-sm">
                   <span className="text-muted-foreground truncate">{v.name}</span>
                   <span className="font-semibold text-foreground">{formatCurrency(v.value)}</span>
                 </div>
@@ -216,9 +193,9 @@ export default function FifoLedgerPage() {
           <div className="rounded-xl border border-border bg-white p-4 shadow-sm">
             <h3 className="text-sm font-semibold text-foreground mb-3">By Batch Type</h3>
             <div className="space-y-2">
-              {summary.byType.map(([type, v]) => (
-                <div key={type} className="flex items-center justify-between text-sm">
-                  <span className="text-muted-foreground capitalize">{type}</span>
+              {byType.map((v) => (
+                <div key={v.type} className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground capitalize">{v.type}</span>
                   <span className="font-semibold text-foreground">{formatCurrency(v.value)}</span>
                 </div>
               ))}
@@ -242,22 +219,22 @@ export default function FifoLedgerPage() {
             </div>
           </div>
           <div className="divide-y divide-border max-h-[70vh] overflow-y-auto">
-            {filteredProducts.map(([id, v]) => (
+            {filteredProducts.map((v) => (
               <button
-                key={id}
-                onClick={() => setSelectedProduct(id)}
-                className={`w-full flex items-center justify-between px-4 py-3 text-left transition hover:bg-muted/40 ${selectedProduct === id ? 'bg-blue-50' : ''}`}
+                key={v.id}
+                onClick={() => setSelectedProduct(v.id)}
+                className={`w-full flex items-center justify-between px-4 py-3 text-left transition hover:bg-muted/40 ${selectedProduct === v.id ? 'bg-blue-50' : ''}`}
               >
                 <div>
                   <p className="text-sm font-semibold text-foreground flex items-center gap-1.5">
-                    {v.product?.name || 'Unknown'}
+                    {v.name || 'Unknown'}
                     {v.hasIou && (
                       <span className="rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold uppercase text-amber-800">
                         IOU
                       </span>
                     )}
                   </p>
-                  <p className="text-xs text-muted-foreground">{v.product?.sku}</p>
+                  <p className="text-xs text-muted-foreground">{v.sku}</p>
                 </div>
                 <div className="text-right shrink-0 ml-3">
                   <p className={`text-sm font-semibold ${v.value < 0 ? 'text-red-600' : 'text-foreground'}`}>{formatCurrency(v.value)}</p>
@@ -280,12 +257,12 @@ export default function FifoLedgerPage() {
           <div className="px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="min-w-0">
               <h2 className="text-base font-bold truncate">
-                {selectedBatches[0]?.product?.name || 'Select a product'}
+                {selectedProductRow?.name || 'Select a product'}
               </h2>
               <p className="text-xs text-muted-foreground">
                 {(() => {
                   const warehouses = new Map<string, string>();
-                  for (const b of selectedBatches) {
+                  for (const b of batches) {
                     if (b.warehouse_id && b.warehouse?.name) {
                       warehouses.set(b.warehouse_id, b.warehouse.name);
                     }
@@ -294,26 +271,26 @@ export default function FifoLedgerPage() {
                   return names.length === 0 ? '—' : names.length === 1 ? names[0] : `${names.length} warehouses`;
                 })()}
                 {' · '}
-                {selectedBatches.length} batch{selectedBatches.length === 1 ? '' : 'es'}
+                {batches.length} batch{batches.length === 1 ? '' : 'es'}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 sm:shrink-0">
               <div className="text-right">
                 <p className="text-xs text-muted-foreground">Total Received</p>
                 <p className="text-lg font-bold">
-                  {selectedBatches.reduce((s, b) => s + Number(b.quantity_received), 0).toLocaleString()}
+                  {batches.reduce((s, b) => s + Number(b.quantity_received), 0).toLocaleString()}
                 </p>
               </div>
               <div className="text-right">
                 <p className="text-xs text-muted-foreground">Total Remaining</p>
                 <p className="text-lg font-bold">
-                  {selectedBatches.reduce((s, b) => s + Number(b.quantity_remaining), 0).toLocaleString()}
+                  {batches.reduce((s, b) => s + Number(b.quantity_remaining), 0).toLocaleString()}
                 </p>
               </div>
               <div className="text-right">
                 <p className="text-xs text-muted-foreground">Remaining Value</p>
                 <p className="text-lg font-bold">
-                  {formatCurrency(selectedBatches.reduce((s, b) => s + Number(b.quantity_remaining) * Number(b.unit_cost), 0))}
+                  {formatCurrency(batches.reduce((s, b) => s + Number(b.quantity_remaining) * Number(b.unit_cost), 0))}
                 </p>
               </div>
             </div>
@@ -335,7 +312,7 @@ export default function FifoLedgerPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {selectedBatches.map((b, i) => {
+                {batches.map((b, i) => {
                   const exhausted = Number(b.quantity_remaining) === 0;
                   return (
                     <tr key={b.id} className={exhausted ? 'opacity-50' : ''}>
@@ -356,7 +333,7 @@ export default function FifoLedgerPage() {
                     </tr>
                   );
                 })}
-                {selectedBatches.length === 0 && (
+                {batches.length === 0 && (
                   <tr>
                     <td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">
                       No batches for this product.
