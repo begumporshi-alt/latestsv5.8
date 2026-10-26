@@ -87,6 +87,10 @@
 
   .stat-card {
     @apply bg-white rounded-xl border border-border p-5 shadow-sm hover:shadow-md transition-shadow duration-200;
+    /* Long unbroken currency values must wrap inside the card instead of
+       spilling past its border; min-w-0 lets grid tracks shrink too. */
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .page-header {

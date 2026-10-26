@@ -242,7 +242,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
   return (
     <header className="h-14 bg-white border-b border-border flex items-center px-4 gap-4 sticky top-0 z-30">
       {/* Quick Actions */}
-      <div className="hidden md:flex items-center gap-1 ml-auto">
+      <div className="hidden md:flex items-center gap-1.5 ml-auto">
         {[
           { href: '/inventory', icon: Package, label: 'Products', color: 'hover:bg-blue-50 hover:text-blue-600' },
           { href: '/crm', icon: Users, label: 'Customers', color: 'hover:bg-teal-50 hover:text-teal-600' },
@@ -255,9 +255,9 @@ export default function Header({ onMenuToggle }: HeaderProps) {
             key={action.href}
             href={action.href}
             title={action.label}
-            className={`w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground transition-colors ${action.color}`}
+            className={`w-9 h-9 lg:w-10 lg:h-10 flex items-center justify-center rounded-lg lg:rounded-xl text-muted-foreground transition-colors ${action.color}`}
           >
-            <action.icon className="w-4 h-4" />
+            <action.icon className="w-[18px] h-[18px] lg:w-5 lg:h-5" />
           </Link>
         ))}
         {/* Quick Sell — non-stock items bought on demand, sold immediately */}
@@ -265,9 +265,9 @@ export default function Header({ onMenuToggle }: HeaderProps) {
           type="button"
           onClick={() => setShowQuickSell(true)}
           title="Quick Sell"
-          className="w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-amber-50 hover:text-amber-600 transition-colors"
+          className="w-9 h-9 lg:w-10 lg:h-10 flex items-center justify-center rounded-lg lg:rounded-xl text-muted-foreground hover:bg-amber-50 hover:text-amber-600 transition-colors"
         >
-          <Zap className="w-4 h-4" />
+          <Zap className="w-[18px] h-[18px] lg:w-5 lg:h-5" />
         </button>
       </div>
 
@@ -376,23 +376,23 @@ export default function Header({ onMenuToggle }: HeaderProps) {
           type="button"
           onClick={() => setShowQuickSell(true)}
           title="Quick Sell"
-          className="md:hidden w-8 h-8 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-amber-50 hover:text-amber-600 transition-colors"
+          className="md:hidden w-9 h-9 flex items-center justify-center rounded-lg text-muted-foreground hover:bg-amber-50 hover:text-amber-600 transition-colors"
         >
-          <Zap className="w-4 h-4" />
+          <Zap className="w-[18px] h-[18px]" />
         </button>
         <button
           onClick={() => setShowScanner(true)}
           title="Scan Barcode"
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition-colors"
+          className="w-9 h-9 lg:w-10 lg:h-10 flex items-center justify-center rounded-lg lg:rounded-xl hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition-colors"
         >
-          <ScanLine className="w-4 h-4" />
+          <ScanLine className="w-[18px] h-[18px] lg:w-5 lg:h-5" />
         </button>
         <Link
           href="/sales/pos"
           title="POS Cart"
-          className="relative w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition-colors"
+          className="relative w-9 h-9 lg:w-10 lg:h-10 flex items-center justify-center rounded-lg lg:rounded-xl hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition-colors"
         >
-          <ShoppingCart className="w-4 h-4" />
+          <ShoppingCart className="w-[18px] h-[18px] lg:w-5 lg:h-5" />
           {cartCount > 0 && (
             <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 bg-blue-600 text-white text-[9px] font-bold rounded-full flex items-center justify-center">{cartCount > 99 ? '99+' : cartCount}</span>
           )}
