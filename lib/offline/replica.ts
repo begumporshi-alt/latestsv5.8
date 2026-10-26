@@ -172,12 +172,94 @@ export function isReplicating(): boolean {
   return replicating
 }
 
+// One table's sync: delta pull when a cursor is fresh, full replace
+// otherwise, plus cursor/count bookkeeping. Shared by replicateAll and the
+// targeted refreshReplicaTables.
+async function replicateOne(spec: ReplicaTableSpec): Promise<void> {
+  const userId = await resolveUserId()
+  if (!userId) return
+  const key = await getUserKey(userId)
+  const db = getDB()
+  const writeTable = async (
+    tableSpec: ReplicaTableSpec,
+    tableRows: Array<Record<string, any> & { id: string | number }>,
+    replace: boolean,
+  ) => {
+    const sealed = await Promise.all(tableRows.map(async r => ({ id: r.id, blob: await seal(key, r) })))
+    // clear + bulkPut in ONE transaction: a concurrent reader (the POS
+    // fallback, the replica query engine) sees the old rows or the new
+    // rows, never an empty store.
+    await db.transaction('rw', tableSpec.store, async () => {
+      if (replace) await db.table(tableSpec.store).clear()
+      if (sealed.length > 0) await db.table(tableSpec.store).bulkPut(sealed)
+    })
+  }
+  try {
+    let rows: Array<Record<string, any> & { id: string | number }> = []
+    let replaceAllRows = true
+    let applied = false
+    if (spec.delta) {
+      const cursorKey = `replica:delta_cursor:${spec.name}`
+      const cursor = await getMeta<string>(cursorKey)
+      const lastFull = await getMeta<number>(`replica:last_full:${spec.name}`)
+      if (cursor && lastFull != null && Date.now() - lastFull < REPLICA_FULL_REFRESH_MS) {
+        const newRows = await spec.delta(cursor)
+        // Apply BEFORE the count probe: an update replaces its row
+        // without changing the count, so a mismatch after the write
+        // isolates rows deleted server-side — the one change a
+        // timestamp cursor cannot see. Mismatch (or a failed probe)
+        // falls through to the full replace below, so removals converge
+        // within one refresh cycle. An edit that deletes and reinserts
+        // rows keeps the total count, so its ghost rows linger until
+        // the daily full replace.
+        await writeTable(spec, newRows, false)
+        const { count: serverCount, error: cntErr } = await supabaseRaw
+          .from(spec.table)
+          .select('id', { count: 'exact', head: true })
+        const localCount = await db.table(spec.store).count()
+        if (!cntErr && serverCount != null && serverCount === localCount) {
+          rows = newRows
+          replaceAllRows = false
+          applied = true
+        }
+      }
+    }
+    if (!applied) {
+      rows = await spec.fetch()
+      await writeTable(spec, rows, true)
+    }
+    if (spec.delta) {
+      // Advance the cursor to the newest timestamp seen. Rows sharing a
+      // timestamp (one transaction writes a whole batch) were all fetched
+      // together, so a strict-gt cursor never skips them.
+      const col = spec.cursorColumn ?? 'created_at'
+      const newCursor = rows.reduce<string | null>((m, r) => {
+        const ts = r[col]
+        return typeof ts === 'string' && ts && (!m || ts > m) ? ts : m
+      }, null)
+      if (newCursor) await setMeta(`replica:delta_cursor:${spec.name}`, newCursor)
+      if (replaceAllRows) await setMeta(`replica:last_full:${spec.name}`, Date.now())
+    }
+    await setMeta(`replica:last_sync:${spec.name}`, Date.now())
+    await setMeta(
+      `replica:count:${spec.name}`,
+      replaceAllRows ? rows.length : await db.table(spec.store).count(),
+    )
+  } catch (err) {
+    if (isNetworkError(err)) {
+      networkMonitor.markOffline()
+      return
+    }
+    // Skip a broken table, keep the rest of the local database fresh.
+    console.warn(`[replica] ${spec.name} refresh failed:`, err)
+  }
+}
+
 /**
  * Full refresh of every replica table. Safe to call repeatedly — while a run
  * is in progress, further calls are ignored, and a run that completed within
  * the last minute is skipped unless `force` (the Sync Center button). A
- * network drop mid-run stops the run (tables already refreshed stay fresh);
- * non-network table errors skip that table and continue.
+ * network drop mid-run stops the run (tables already refreshed stay fresh).
  */
 export async function replicateAll(force = false): Promise<void> {
   if (replicating) return
@@ -193,89 +275,32 @@ export async function replicateAll(force = false): Promise<void> {
   replicating = true
   notifyReplicaChanged()
   try {
-    const key = await getUserKey(userId)
-    const db = getDB()
-    const writeTable = async (
-      spec: ReplicaTableSpec,
-      tableRows: Array<Record<string, any> & { id: string | number }>,
-      replace: boolean,
-    ) => {
-      const sealed = await Promise.all(tableRows.map(async r => ({ id: r.id, blob: await seal(key, r) })))
-      // clear + bulkPut in ONE transaction: a concurrent reader (the POS
-      // fallback, the replica query engine) sees the old rows or the new
-      // rows, never an empty store.
-      await db.transaction('rw', spec.store, async () => {
-        if (replace) await db.table(spec.store).clear()
-        if (sealed.length > 0) await db.table(spec.store).bulkPut(sealed)
-      })
-    }
     for (const spec of REPLICA_TABLES) {
       if (!networkMonitor.getState().online) return
-      try {
-        let rows: Array<Record<string, any> & { id: string | number }> = []
-        let replaceAll = true
-        let applied = false
-        if (spec.delta) {
-          const cursorKey = `replica:delta_cursor:${spec.name}`
-          const cursor = await getMeta<string>(cursorKey)
-          const lastFull = await getMeta<number>(`replica:last_full:${spec.name}`)
-          if (cursor && lastFull != null && Date.now() - lastFull < REPLICA_FULL_REFRESH_MS) {
-            const newRows = await spec.delta(cursor)
-            // Apply BEFORE the count probe: an update replaces its row
-            // without changing the count, so a mismatch after the write
-            // isolates rows deleted server-side — the one change a
-            // timestamp cursor cannot see. Mismatch (or a failed probe)
-            // falls through to the full replace below, so removals converge
-            // within one refresh cycle. An edit that deletes and reinserts
-            // rows keeps the total count, so its ghost rows linger until
-            // the daily full replace.
-            await writeTable(spec, newRows, false)
-            const { count: serverCount, error: cntErr } = await supabaseRaw
-              .from(spec.table)
-              .select('id', { count: 'exact', head: true })
-            const localCount = await db.table(spec.store).count()
-            if (!cntErr && serverCount != null && serverCount === localCount) {
-              rows = newRows
-              replaceAll = false
-              applied = true
-            }
-          }
-        }
-        if (!applied) {
-          rows = await spec.fetch()
-          await writeTable(spec, rows, true)
-        }
-        if (spec.delta) {
-          // Advance the cursor to the newest timestamp seen. Rows sharing a
-          // timestamp (one transaction writes a whole batch) were all fetched
-          // together, so a strict-gt cursor never skips them.
-          const col = spec.cursorColumn ?? 'created_at'
-          const newCursor = rows.reduce<string | null>((m, r) => {
-            const ts = r[col]
-            return typeof ts === 'string' && ts && (!m || ts > m) ? ts : m
-          }, null)
-          if (newCursor) await setMeta(`replica:delta_cursor:${spec.name}`, newCursor)
-          if (replaceAll) await setMeta(`replica:last_full:${spec.name}`, Date.now())
-        }
-        await setMeta(`replica:last_sync:${spec.name}`, Date.now())
-        await setMeta(
-          `replica:count:${spec.name}`,
-          replaceAll ? rows.length : await db.table(spec.store).count(),
-        )
-        notifyReplicaChanged()
-      } catch (err) {
-        if (isNetworkError(err)) {
-          networkMonitor.markOffline()
-          return
-        }
-        // Skip a broken table, keep the rest of the local database fresh.
-        console.warn(`[replica] ${spec.name} refresh failed:`, err)
-      }
+      await replicateOne(spec)
+      notifyReplicaChanged()
     }
     await setMeta('replica:last_full_sync', Date.now())
     notifyReplicaChanged()
   } finally {
     replicating = false
+    notifyReplicaChanged()
+  }
+}
+
+/**
+ * Targeted refresh of named replica tables (by REPLICA name) without the
+ * full replicateAll pass. The POS uses this to converge its catalog, stock
+ * counters, units and customer replica stores on a short interval so pages
+ * can serve reads locally; delta tables only download rows changed since
+ * their cursor, so a quiet table costs one zero-row request.
+ */
+export async function refreshReplicaTables(names: string[]): Promise<void> {
+  if (replicating || !networkMonitor.getState().online) return
+  const specs = names.map(n => REPLICA[n]).filter(Boolean)
+  for (const spec of specs) {
+    if (!networkMonitor.getState().online) return
+    await replicateOne(spec)
     notifyReplicaChanged()
   }
 }
