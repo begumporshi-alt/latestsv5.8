@@ -4,10 +4,11 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
 import { formatCurrencyWith, setCurrencyFormat, DEFAULT_CURRENCY_FORMAT, type CurrencyFormat } from '@/lib/format';
-import { Settings, User, Users, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator, Zap } from 'lucide-react';
+import { Settings, User, Users, Bell, Shield, Palette, Building2, Save, Database, RefreshCw, Trash2, Download, TriangleAlert as AlertTriangle, Package, FileText, ShoppingCart, Truck, ClipboardList, BookOpen, CircleCheck as CheckCircle2, Loader as Loader2, X, Receipt, Calculator, Zap, Activity } from 'lucide-react';
+import { ApiUsageTab } from '@/components/settings/api-usage-tab';
 import UsersRolesTab from '@/components/settings/UsersRolesTab';
 
-type SettingsTab = 'general' | 'profile' | 'users' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'quick_sell' | 'tax' | 'estimates' | 'data';
+type SettingsTab = 'general' | 'profile' | 'users' | 'notifications' | 'security' | 'appearance' | 'inventory' | 'quick_sell' | 'tax' | 'estimates' | 'data' | 'api_usage';
 
 interface DeleteTarget {
   key: string;
@@ -380,6 +381,7 @@ export default function SettingsPage() {
     { id: 'security', label: 'Security', icon: Shield },
     { id: 'appearance', label: 'Appearance', icon: Palette },
     { id: 'data', label: 'Data', icon: Database },
+    { id: 'api_usage', label: 'API Usage', icon: Activity },
   ];
 
   const roleLabels: Record<string, string> = {
@@ -1319,6 +1321,7 @@ export default function SettingsPage() {
           )}
 
           {activeTab === 'users' && <UsersRolesTab canManage={profile.role === 'super_admin'} />}
+          {activeTab === 'api_usage' && <ApiUsageTab />}
 
           {deleteTarget && (
             <DeleteConfirmModal

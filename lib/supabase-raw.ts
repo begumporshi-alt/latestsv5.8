@@ -9,8 +9,13 @@
  * wrapped client from inside the offline layer.
  */
 import { createClient } from '@supabase/supabase-js';
+import { trackedFetch } from './telemetry/egress-tracker';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-export const supabaseRaw = createClient(supabaseUrl, supabaseAnonKey);
+// trackedFetch observes every request/response (Settings → API Usage) and
+// aggregates byte counts locally — it never issues a request itself.
+export const supabaseRaw = createClient(supabaseUrl, supabaseAnonKey, {
+  global: { fetch: trackedFetch },
+});
