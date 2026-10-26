@@ -1033,7 +1033,10 @@ export default function POSPage() {
     }
   }
 
-  function updateQty(id: string, unitId: string | undefined, delta: number) {
+  // keepAtZero: keyboard qty nudges may land on 0 without dropping the line —
+  // removing a line is an explicit gesture (Esc/Delete/X), and openCheckout
+  // prunes zero lines so they can never be charged.
+  function updateQty(id: string, unitId: string | undefined, delta: number, keepAtZero = false) {
     setCart(prev => prev.map(i => {
       if (i.id !== id || i.selected_unit?.id !== unitId) return i;
       const allowDecimal = allowDecimalFor(i.allow_decimal, i.unit);
@@ -1051,7 +1054,36 @@ export default function POSPage() {
         return i;
       }
       return { ...i, quantity: newQty, base_quantity: newBaseQty, allocOverride: null };
-    }).filter(i => i.quantity > 0));
+    }).filter(i => keepAtZero || i.quantity > 0));
+  }
+
+  // Single open path for checkout: zero-quantity lines (left by keyboard
+  // nudges) are pruned here, so no charge payload ever sees one.
+  function openCheckout() {
+    if (cart.length === 0 || processing) return;
+    const chargeable = cart.filter(i => i.quantity > 0);
+    if (chargeable.length === 0) {
+      toast({ title: 'Nothing to charge', description: 'Every line is at quantity 0 — raise a quantity or remove the lines.' });
+      return;
+    }
+    if (chargeable.length !== cart.length) setCart(chargeable);
+    setShowCheckout(true);
+  }
+
+  // The editable controls of a cart line, in on-screen order. WH and Batch
+  // only exist when their picker buttons render.
+  function cartLineFields(item: CartItem): { kind: 'price' | 'disc' | 'wh' | 'batch' | 'qty' }[] {
+    const la = lineAllocation(item);
+    const multiWarehouse = (item.available_warehouses || []).length > 1;
+    const batchWarnCount = (la && la.shortfall > 1e-9 ? 1 : 0) + (la && la.overrideInvalid ? 1 : 0);
+    const hasBatchButton = !!la && (la.allocations.length > 0 || batchWarnCount > 0);
+    return [
+      { kind: 'price' as const },
+      { kind: 'disc' as const },
+      ...(multiWarehouse ? [{ kind: 'wh' as const }] : []),
+      ...(hasBatchButton ? [{ kind: 'batch' as const }] : []),
+      { kind: 'qty' as const },
+    ];
   }
 
   function removeFromCart(id: string, unitId?: string) {
@@ -1934,6 +1966,11 @@ export default function POSPage() {
   ];
 
   const [showMobileCart, setShowMobileCart] = useState(false);
+  // Keyboard cart navigation: which line the ↑/↓ cursor sits on (null = none),
+  // and which of that line's controls (Price/Disc/WH/Batch/Qty) the
+  // Shift+←/→ field cursor points at (null = line level).
+  const [activeCartLine, setActiveCartLine] = useState<number | null>(null);
+  const [activeCartField, setActiveCartField] = useState<number | null>(null);
   const [cartMaximized, setCartMaximized] = useState(false);
   const [cartTab, setCartTab] = useState<'items' | 'cost'>('items');
   const [showCheckout, setShowCheckout] = useState(false);
@@ -2165,9 +2202,13 @@ export default function POSPage() {
     sessionStorage.setItem('posCartAutoGrow', cartAutoGrow ? 'on' : 'off');
   }, [cartAutoGrow]);
   // Keyboard shortcuts (cheat-sheet on "?"): "/" focus search, Shift+N new
-  // sale, Shift+P / Ctrl+Enter checkout, Shift+L footer toggle, Esc step
-  // back. While typing in an input only Esc and Ctrl+Enter work, so letters
-  // and "/" never eat typed text.
+  // sale, Shift+P / Ctrl+Enter checkout, Shift+L footer toggle, Esc steps
+  // back — and on a selected cart line, Esc removes it. Cart lines: ↑/↓ move
+  // the line cursor, Shift+←/→ cycle the line's controls, Enter selects one,
+  // ←/→ nudge its qty (may rest at 0 without dropping the line). Checkout
+  // modal: arrows choose Collect From / Term / Method, Enter = Next then
+  // Charge. While typing in an input only Esc and Ctrl+Enter work, so
+  // letters and "/" never eat typed text.
   useEffect(() => {
     const isEditable = (t: EventTarget | null) =>
       t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
@@ -2175,7 +2216,28 @@ export default function POSPage() {
       if (e.key === 'Escape') {
         if (showShortcuts) { setShowShortcuts(false); return; }
         if (showCheckout) { setShowCheckout(false); return; }
-        if (isEditable(e.target)) { (e.target as HTMLElement).blur(); return; }
+        // A line's warehouse/batch modal sits above the cart, so Esc closes it
+        // instead of clearing the field ring or removing the line beneath it.
+        if (pickingWarehouseLine) { setPickingWarehouseLine(null); return; }
+        if (viewingBatchLine) { setViewingBatchLine(null); return; }
+        if (editingAllocLine) { setEditingAllocLine(null); return; }
+        // Esc inside a pos cart field closes the field in one press (blur +
+        // drop the ring), so the next Esc removes the line; other inputs just
+        // blur.
+        if (isEditable(e.target)) {
+          const el = e.target as HTMLElement;
+          if (el.id.startsWith('pos-')) { el.blur(); setActiveCartField(null); }
+          else el.blur();
+          return;
+        }
+        // Deselect the field cursor first, then the line itself — Esc on a
+        // selected line is the removal gesture the user asked for.
+        if (activeCartField !== null) { setActiveCartField(null); return; }
+        if (activeCartLine !== null && cart[activeCartLine]) {
+          const line = cart[activeCartLine];
+          removeFromCart(line.id, line.selected_unit?.id || undefined);
+          return;
+        }
         if (showCartFooter) { setShowCartFooter(false); return; }
         if (showMobileCart) { setShowMobileCart(false); return; }
         if (cartMaximized) { setCartMaximized(false); return; }
@@ -2187,7 +2249,23 @@ export default function POSPage() {
       if (showCheckout) return;
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        if (cart.length > 0 && !processing) setShowCheckout(true);
+        openCheckout();
+        return;
+      }
+      // Shift+←/→ moves the field cursor even while a cart field input is
+      // focused (it blurs the input first), so cycling never dead-ends after
+      // Enter focuses a field. Inside any other editable (search box, notes)
+      // Shift+arrows keep their native text-selection role.
+      if (e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        const el = e.target;
+        const inCartField = el instanceof HTMLElement && isEditable(el) && el.id.startsWith('pos-');
+        if (isEditable(el) && !inCartField) return;
+        if (activeCartLine === null || !cart[activeCartLine]) return;
+        e.preventDefault();
+        if (inCartField) (el as HTMLElement).blur();
+        const fields = cartLineFields(cart[activeCartLine]);
+        const dir = e.key === 'ArrowRight' ? 1 : -1;
+        setActiveCartField(i => i === null ? (dir === 1 ? 0 : fields.length - 1) : (i + dir + fields.length) % fields.length);
         return;
       }
       if (isEditable(e.target)) return;
@@ -2205,7 +2283,7 @@ export default function POSPage() {
       }
       if (shiftKey && e.code === 'KeyP') {
         e.preventDefault();
-        if (cart.length > 0 && !processing) setShowCheckout(true);
+        openCheckout();
         return;
       }
       if (shiftKey && e.code === 'KeyL') {
@@ -2219,12 +2297,61 @@ export default function POSPage() {
         searchInputRef.current?.select();
         return;
       }
+      // Cart navigation: ↑/↓ move the line cursor, plain ←/→ nudge its
+      // quantity (may rest at 0 without dropping the line), Enter selects the
+      // field under the cursor, Delete/Esc remove the line. Shift+←/→ is
+      // handled above the isEditable guard; everything here waits until after
+      // it so typed text and native caret moves are never eaten.
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        if (cart.length === 0) return;
+        e.preventDefault();
+        const dir = e.key === 'ArrowDown' ? 1 : -1;
+        setActiveCartField(null);
+        setActiveCartLine(i => {
+          if (i === null) return dir === 1 ? 0 : cart.length - 1;
+          return Math.min(cart.length - 1, Math.max(0, i + dir));
+        });
+        return;
+      }
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        if (activeCartLine === null || !cart[activeCartLine]) return;
+        e.preventDefault();
+        const line = cart[activeCartLine];
+        updateQty(line.id, line.selected_unit?.id, e.key === 'ArrowRight' ? 1 : -1, true);
+        return;
+      }
+      if (e.key === 'Enter') {
+        if (activeCartLine === null || !cart[activeCartLine]) return;
+        e.preventDefault();
+        const item = cart[activeCartLine];
+        const key = CSS.escape(lineIdOf(item));
+        const fields = cartLineFields(item);
+        const field = fields[activeCartField ?? fields.findIndex(f => f.kind === 'qty')];
+        if (!field) return;
+        const el = document.getElementById(`pos-${field.kind}-${key}`);
+        if (el instanceof HTMLElement) {
+          if (field.kind === 'wh' || field.kind === 'batch') el.click();
+          else el.focus();
+        }
+        return;
+      }
+      if (e.key === 'Delete') {
+        if (activeCartLine === null || !cart[activeCartLine]) return;
+        e.preventDefault();
+        const line = cart[activeCartLine];
+        setActiveCartField(null);
+        removeFromCart(line.id, line.selected_unit?.id || undefined);
+        return;
+      }
       if (e.key === '?') { e.preventDefault(); setShowShortcuts(true); return; }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showCheckout, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, processing]);
+  // `allocation` is in the deps because cartLineFields() reads it via
+  // lineAllocation() — without it the handler computes stale field lists (e.g.
+  // no Batch button) until some other dep happens to change.
+  }, [showCheckout, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, cart, activeCartLine, activeCartField, processing, pickingWarehouseLine, viewingBatchLine, editingAllocLine, allocation]);
   const [defaultProductImage, setDefaultProductImage] = useState('');
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalProduct, setImageModalProduct] = useState<ProductData | null>(null);
@@ -2238,6 +2365,24 @@ export default function POSPage() {
   const [showCostPrice, setShowCostPrice] = useState<string | null>(null);
   const [draggedItem, setDraggedItem] = useState<number | null>(null);
   const [dragOverItem, setDragOverItem] = useState<number | null>(null);
+
+  // Keep the keyboard line cursor inside the list as lines appear/disappear
+  // (qty hitting 0 removes a line, Shift+N empties the cart).
+  useEffect(() => {
+    if (activeCartLine === null) return;
+    if (cart.length === 0) {
+      setActiveCartLine(null);
+      setActiveCartField(null);
+    } else if (activeCartLine >= cart.length) setActiveCartLine(cart.length - 1);
+  }, [cart.length, activeCartLine]);
+
+  // The line cursor must stay visible — scroll its row into view on move.
+  useEffect(() => {
+    if (activeCartLine === null || !cart[activeCartLine]) return;
+    const el = document.getElementById(`pos-line-${CSS.escape(lineIdOf(cart[activeCartLine]))}`);
+    el?.scrollIntoView({ block: 'nearest' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCartLine]);
 
   useEffect(() => {
     if (!customerDropdownOpen) return;
@@ -2374,7 +2519,7 @@ export default function POSPage() {
           </div>
 
           <button
-            onClick={() => setShowCheckout(true)}
+            onClick={openCheckout}
             disabled={processing || !selectedCustomer}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl transition disabled:opacity-60 text-sm flex items-center justify-center gap-2"
           >
@@ -2395,7 +2540,7 @@ export default function POSPage() {
         <div className="px-2.5 py-2 flex items-center justify-between">
           <div className="flex justify-between font-bold text-sm text-foreground w-full"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
           <button
-            onClick={() => setShowCheckout(true)}
+            onClick={openCheckout}
             disabled={processing || !selectedCustomer}
             className="ml-3 shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2.5 rounded-lg transition disabled:opacity-60 text-sm flex items-center gap-1.5"
           >
@@ -2885,6 +3030,11 @@ export default function POSPage() {
               const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
               const liKey = lineIdOf(item);
               const la = lineAllocation(item);
+              // Keyboard field cursor: which control Shift+←/→ currently
+              // points at (only when this line is the selected one).
+              const lineFields = cartLineFields(item);
+              const fieldSel = (kind: 'price' | 'disc' | 'wh' | 'batch' | 'qty') =>
+                activeCartLine === index && activeCartField === lineFields.findIndex(f => f.kind === kind);
               // Warnings worth a red count on the batch button: a ledger
               // shortfall, and a manual override that no longer fits.
               const batchWarnCount = (la && la.shortfall > 1e-9 ? 1 : 0) + (la && la.overrideInvalid ? 1 : 0);
@@ -2921,12 +3071,13 @@ export default function POSPage() {
               return (
             <div
               key={`${item.id}-${item.selected_unit?.id || 'default'}`}
+              id={`pos-line-${CSS.escape(liKey)}`}
               draggable
               onDragStart={() => setDraggedItem(index)}
               onDragOver={e => { e.preventDefault(); setDragOverItem(index); }}
               onDrop={() => { if (draggedItem !== null && draggedItem !== index) reorderCart(draggedItem, index); setDraggedItem(null); setDragOverItem(null); }}
               onDragEnd={() => { setDraggedItem(null); setDragOverItem(null); }}
-              className={`bg-muted/30 rounded-lg px-2.5 py-1.5 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} cursor-grab active:cursor-grabbing`}
+              className={`bg-muted/30 rounded-lg px-2.5 py-1.5 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} ${activeCartLine === index ? 'ring-2 ring-blue-500/70 bg-blue-50/60' : ''} cursor-grab active:cursor-grabbing`}
             >
               <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
@@ -2947,19 +3098,21 @@ export default function POSPage() {
                 <div className="flex flex-col">
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Price</label>
                   <input
+                    id={`pos-price-${CSS.escape(liKey)}`}
                     type="number"
                     min="0"
                     step="0.01"
                     value={item.unit_price}
                     onChange={e => updateCartPrice(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right tabular-nums bg-white"
+                    className={`w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm border border-border rounded px-1.5 py-1 focus:outline-none focus:border-blue-400 text-right tabular-nums bg-white ${fieldSel('price') ? 'ring-2 ring-blue-500/70' : ''}`}
                   />
                 </div>
                 {item.selected_unit && <span className="shrink-0 hidden min-[360px]:inline text-[10px] sm:text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
                 <div className="flex flex-col">
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Disc %</label>
                   <input
+                    id={`pos-disc-${CSS.escape(liKey)}`}
                     type="number"
                     min="0"
                     max="100"
@@ -2967,7 +3120,7 @@ export default function POSPage() {
                     value={item.discount_percent || 0}
                     onChange={e => updateCartItemDiscount(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-12 min-[400px]:w-14 sm:w-16 min-w-0 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-right tabular-nums bg-amber-50/30"
+                    className={`w-12 min-[400px]:w-14 sm:w-16 min-w-0 text-sm border border-amber-300 rounded px-1.5 py-1 focus:outline-none focus:border-amber-400 text-right tabular-nums bg-amber-50/30 ${fieldSel('disc') ? 'ring-2 ring-blue-500/70' : ''}`}
                     placeholder="0"
                   />
                 </div>
@@ -2978,10 +3131,11 @@ export default function POSPage() {
                   <div className="flex flex-col ml-auto">
                     <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">WH</label>
                     <button
+                      id={`pos-wh-${CSS.escape(liKey)}`}
                       onClick={e => { e.stopPropagation(); setPickingWarehouseLine(liKey); }}
                       title={warehouseButtonTitle}
                       aria-label={warehouseButtonTitle}
-                      className="relative h-[30px] w-6 min-[400px]:w-7 shrink-0 rounded-md border border-emerald-200 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100 transition flex items-center justify-center"
+                      className={`relative h-[30px] w-6 min-[400px]:w-7 shrink-0 rounded-md border border-emerald-200 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100 transition flex items-center justify-center ${fieldSel('wh') ? 'ring-2 ring-blue-500/70' : ''}`}
                     >
                       <Warehouse className="w-3.5 h-3.5" />
                       {warehouseWarnCount > 0 && (
@@ -2999,6 +3153,7 @@ export default function POSPage() {
                   <div className={`flex flex-col ${multiWarehouse ? '' : 'ml-auto'}`}>
                     <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Batch</label>
                     <button
+                      id={`pos-batch-${CSS.escape(liKey)}`}
                       onClick={e => { e.stopPropagation(); setViewingBatchLine(liKey); }}
                       title={batchButtonTitle}
                       aria-label={batchButtonTitle}
@@ -3006,7 +3161,7 @@ export default function POSPage() {
                         la.usedOverride
                           ? 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100'
                           : 'border-blue-200 bg-blue-50/60 text-blue-700 hover:bg-blue-100'
-                      }`}
+                      } ${fieldSel('batch') ? 'ring-2 ring-blue-500/70' : ''}`}
                     >
                       <Layers className="w-3.5 h-3.5" />
                       {batchWarnCount > 0 && (
@@ -3020,13 +3175,14 @@ export default function POSPage() {
                 <div className={`flex flex-col ${multiWarehouse || hasBatchButton ? '' : 'ml-auto'}`}>
                   <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Qty</label>
                   <input
+                    id={`pos-qty-${CSS.escape(liKey)}`}
                     type="number"
                     min="0"
                     step={allowDecimalFor(item.allow_decimal, item.unit) ? '0.01' : '1'}
                     value={item.quantity}
                     onChange={e => updateCartQuantity(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className="w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white"
+                    className={`w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white ${fieldSel('qty') ? 'ring-2 ring-blue-500/70' : ''}`}
                   />
                 </div>
               </div>
@@ -3285,6 +3441,13 @@ export default function POSPage() {
                 ['Shift+N', 'New sale (clear cart)'],
                 ['Shift+P', 'Checkout (Pay)'],
                 ['Ctrl+Enter', 'Checkout (Pay)'],
+                ['↑ / ↓', 'Select cart line'],
+                ['Shift+← / →', 'Move within line options'],
+                ['Enter', 'Select option'],
+                ['← / →', 'Adjust line qty'],
+                ['Delete / Esc', 'Remove selected line'],
+                ['Arrows (checkout)', 'Choose payment option'],
+                ['Enter (checkout)', 'Next → then Charge'],
                 ['Shift+L', 'Toggle "See more in list"'],
                 ['Esc', 'Close / step back'],
                 ['?', 'This cheat-sheet'],
@@ -3864,6 +4027,69 @@ function CheckoutModal({
   const accountModeNeeds = mode === 'dues_first'
     ? Math.max(0, round2(settlement.billNeeds + previousDueTotal))
     : Math.max(0, round2(settlement.billNeeds - settlement.advanceApplied));
+
+  // The visible single-choice buttons in tab order: Collect From → Payment
+  // Terms → Payment Method. Arrows walk this list with selection following
+  // the cursor, so no separate highlight state is needed — the existing
+  // selected styling is the highlight.
+  const choices: { key: string; active: boolean; disabled?: boolean; select: () => void }[] = [];
+  if (appliesToAccount) {
+    choices.push(
+      { key: 'collect-cash', active: collectMode === 'cash', select: () => setCollectMode('cash') },
+      { key: 'collect-dues', active: collectMode === 'dues_first', disabled: previousDueTotal <= 0, select: () => setCollectMode('dues_first') },
+      { key: 'collect-advance', active: collectMode === 'advance_first', disabled: advanceBalance <= 0, select: () => setCollectMode('advance_first') },
+    );
+  }
+  if (mode === 'cash') {
+    choices.push(
+      { key: 'term-full', active: paymentTerm === 'full', select: () => setPaymentTerm('full') },
+      { key: 'term-partial', active: paymentTerm === 'partial', disabled: isWalkIn, select: () => setPaymentTerm('partial') },
+      { key: 'term-credit', active: paymentTerm === 'credit', disabled: isWalkIn, select: () => setPaymentTerm('credit') },
+    );
+  }
+  if (mode !== 'cash' || paymentTerm !== 'credit') {
+    displayMethods.forEach(m => choices.push({ key: `method-${m.code}`, active: paymentMethod === m.code, select: () => setPaymentMethod(m.code) }));
+  }
+
+  // Re-subscribed every render (no deps) so the handler always closes over
+  // the current choices and step — the modal re-renders on every keystroke.
+  useEffect(() => {
+    const isEditable = (t: EventTarget | null) =>
+      t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        // A focused button/select keeps native activation — tabbing to Back
+        // and hitting Enter must go back, not charge.
+        const t = e.target;
+        if (t instanceof HTMLElement && (t.tagName === 'BUTTON' || t.tagName === 'SELECT')) return;
+        e.preventDefault();
+        if (processing) return;
+        if (step === 'method') {
+          // Same gate as the Next button's disabled state.
+          if (paymentMethod || paymentTerm === 'credit') setStep('confirm');
+        } else {
+          onConfirm();
+        }
+        return;
+      }
+      if (step !== 'method' || !e.key.startsWith('Arrow')) return;
+      // Inside an input the arrows keep native caret/stepper behavior.
+      if (isEditable(e.target)) return;
+      e.preventDefault();
+      const enabled = choices.filter(c => !c.disabled);
+      if (enabled.length === 0) return;
+      const dir = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1;
+      const cur = enabled.findIndex(c => c.active);
+      // Nothing selected yet: ↓/→ enters at the top, ↑/← at the bottom;
+      // otherwise move with wrap-around, skipping disabled options.
+      const next = cur === -1
+        ? (dir === 1 ? 0 : enabled.length - 1)
+        : (cur + dir + enabled.length) % enabled.length;
+      enabled[next].select();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[110] p-4">
