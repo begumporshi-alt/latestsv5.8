@@ -67,6 +67,7 @@ export default function BarcodePrintPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [brands, setBrands] = useState<Brand[]>([]);
   const [invoices, setInvoices] = useState<(Invoice & { customer?: { name: string } })[]>([]);
+  const [invoicesLoaded, setInvoicesLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const [search, setSearch] = useState('');
@@ -92,16 +93,14 @@ export default function BarcodePrintPage() {
       // default cap — page through everything so search sees the whole
       // catalog. id tiebreaker keeps page boundaries stable (product names
       // are not unique).
-      const [productsData, catRes, brandRes, invoicesData] = await Promise.all([
+      const [productsData, catRes, brandRes] = await Promise.all([
         fetchAll<Product>(() => supabase.from('products').select('*, category:categories(name), brand:brands(name)').eq('is_active', true).order('name').order('id')),
         supabase.from('categories').select('*').eq('is_active', true).order('name'),
         supabase.from('brands').select('*').eq('is_active', true).order('name'),
-        fetchAll(() => supabase.from('invoices').select('*, customer:customers(name)').order('created_at', { ascending: false }).order('id')),
       ]);
       setProducts(productsData);
       setCategories(catRes.data || []);
       setBrands(brandRes.data || []);
-      setInvoices(invoicesData as any);
     } catch (err) {
       console.error('Failed to load barcode print data', err);
       toast({ title: 'Failed to load data', description: 'Please refresh the page to try again.', variant: 'destructive' });
@@ -109,6 +108,19 @@ export default function BarcodePrintPage() {
       setLoading(false);
     }
   }
+
+  // Invoices load lazily — only when the Invoices tab opens, slim columns and
+  // bounded to the latest 200, instead of the whole table select('*') on mount.
+  useEffect(() => {
+    if (mode !== 'invoices' || invoicesLoaded) return;
+    setInvoicesLoaded(true);
+    // Plain bounded query — fetchAll would override .limit() and paginate
+    // the whole table, which is exactly what this picker must not do.
+    void supabase.from('invoices')
+      .select('id, invoice_number, invoice_date, status, reference, total_amount, balance_due, customer:customers(name)')
+      .order('created_at', { ascending: false }).order('id').limit(200)
+      .then(({ data }) => setInvoices((data || []) as any));
+  }, [mode, invoicesLoaded]);
 
   const filteredProducts = products.filter(p => {
     const matchSearch = !search || p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());

@@ -129,8 +129,11 @@ export default function PurchasesPage() {
     return { suppliers: (supRes || []) as Supplier[], products: (prodRes || []) as Product[] };
   }
 
-  async function loadData() {
+  // A save must show its own write: drop the 60s list cache before reloading
+  // (online only — offline the cached copy plus the outbox overlay is the data).
+  async function loadData(force = false) {
     setLoading(true);
+    if (force && networkMonitor.getState().online) await cacheDelete('purchases:list').catch(() => {});
     const [listRes, refsRes] = await Promise.all([
       // Transactional list (POs + returns) at 60s; fetchAll pages past
       // Supabase's 1,000-row default cap — the product picker was blind to
@@ -308,7 +311,7 @@ export default function PurchasesPage() {
         }, `Cancel PO ${order.po_number}`);
         toast({ title: 'Cancellation queued offline', description: `${order.po_number} will be cancelled when you reconnect.` });
         setCancellingOrder(null);
-        loadData();
+        loadData(true);
       } catch (err: any) {
         toast({ title: 'Error', description: err?.message || 'Could not queue the cancellation', variant: 'destructive' });
       }
@@ -391,7 +394,7 @@ export default function PurchasesPage() {
 
     toast({ title: 'Success', description: `Purchase order ${order.po_number} cancelled` });
     setCancellingOrder(null);
-    loadData();
+    loadData(true);
   }
 
   async function updateOrderStatus(order: PurchaseOrderWithSupplier, newStatus: PurchaseOrderStatus) {
@@ -450,7 +453,7 @@ export default function PurchasesPage() {
 
       if (existingMovements && existingMovements.length > 0) {
         toast({ title: 'Info', description: 'Stock already received for this order' });
-        loadData();
+        loadData(true);
         return;
       }
 
@@ -530,7 +533,7 @@ export default function PurchasesPage() {
     }
 
     toast({ title: 'Success', description: `Order ${newStatus === 'approved' ? 'approved' : newStatus}` });
-    loadData();
+    loadData(true);
     if (viewingOrder?.id === order.id) {
       setViewingOrder({ ...viewingOrder, status: newStatus });
     }
@@ -818,7 +821,7 @@ export default function PurchasesPage() {
             // Drop the 5-min refs cache so the new product is searchable in
             // the PO pickers immediately.
             await cacheDelete('purchases:refs');
-            loadData();
+            loadData(true);
           }}
         />
       )}
@@ -850,7 +853,7 @@ export default function PurchasesPage() {
         <RecordPOPaymentModal
           order={paymentOrder}
           onClose={() => { setShowPaymentModal(false); setPaymentOrder(null); }}
-          onSaved={() => { setShowPaymentModal(false); setPaymentOrder(null); loadData(); }}
+          onSaved={() => { setShowPaymentModal(false); setPaymentOrder(null); loadData(true); }}
         />
       )}
 
@@ -860,7 +863,7 @@ export default function PurchasesPage() {
           suppliers={suppliers}
           products={products}
           onClose={() => setEditingOrder(null)}
-          onSaved={() => { setEditingOrder(null); loadData(); }}
+          onSaved={() => { setEditingOrder(null); loadData(true); }}
         />
       )}
 

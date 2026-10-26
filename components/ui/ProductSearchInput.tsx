@@ -112,7 +112,7 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
       if (selectedBrand) q = q.eq('brand_id', selectedBrand);
       if (selectedCategory) q = q.eq('category_id', selectedCategory);
 
-      const { data, error } = await q.limit(100);
+      const { data, error } = await q.limit(25);
       if (seq !== searchSeqRef.current) return;   // superseded by a newer keystroke
       if (error) {
         setResults([]); setSearchError(true); setActiveIndex(-1);
@@ -120,6 +120,8 @@ export default function ProductSearchInput({ onSelect, placeholder = 'Search pro
         // Rank the full match set first — the DB limit only bounds transport,
         // otherwise alphabetically-earlier rows would crowd out the best match.
         const ranked = rankRows((data as unknown as ProductResult[]) || [], p => [p.name, p.sku || '', p.barcode || ''], tokens).slice(0, 20);
+        // 25 transport rows: with embeds a wider pull cost ~10× the payload
+        // for matches the 20-row dropdown never showed.
         setResults(ranked);
         setSearchError(false);
         setActiveIndex(ranked.length > 0 ? 0 : -1);

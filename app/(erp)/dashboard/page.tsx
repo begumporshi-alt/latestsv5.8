@@ -144,21 +144,11 @@ export default function DashboardPage() {
       supabase.from('payments').select('amount').eq('payment_date', today).eq('payment_type', 'received').neq('is_reversed', true).neq('payment_for', 'reversal_payment'),
     ]);
 
-    // Paginate inventory_items to avoid the 1000-row Supabase default cap
-    let allInvItems: any[] = [];
-    {
-      let pg = 0;
-      while (true) {
-        const { data: pageData } = await supabase
-          .from('inventory_items')
-          .select('quantity_on_hand, product:products(cost_price)')
-          .order('id')
-          .range(pg * 1000, (pg + 1) * 1000 - 1);
-        allInvItems = allInvItems.concat(pageData || []);
-        if (!pageData || pageData.length < 1000) break;
-        pg++;
-      }
-    }
+    // Stat-card row count — a zero-payload head count instead of paginating
+    // the whole inventory_items table through the wire just to count it.
+    const { count: invItemCount } = await supabase
+      .from('inventory_items')
+      .select('id', { count: 'exact', head: true });
 
     const todaySales = (todayInvRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
     const monthlySales = (monthlyInvRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
@@ -182,7 +172,7 @@ export default function DashboardPage() {
       todaySales,
       monthlySales,
       inventoryValue: invValue,
-      inventoryItems: allInvItems.length,
+      inventoryItems: invItemCount ?? 0,
       receivables,
       payables,
       totalExpenses,
@@ -732,13 +722,21 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
   const [manData, setManData] = useState<any[]>([]);
   const [manGrandTotal, setManGrandTotal] = useState(0);
 
-  useEffect(() => { if (tab === 'invoice') loadInvoices(); }, [invPage, search, filterStatus, tab]);
-  useEffect(() => { if (tab === 'manual') loadManual(); }, [manPage, search, tab]);
+  // Debounce the modal search — every keystroke re-ran both queries (one of
+  // them unbounded) per character.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-  async function loadInvoices() {
+  useEffect(() => { if (tab === 'invoice') loadInvoices(debouncedSearch); }, [invPage, debouncedSearch, filterStatus, tab]);
+  useEffect(() => { if (tab === 'manual') loadManual(debouncedSearch); }, [manPage, debouncedSearch, tab]);
+
+  async function loadInvoices(rawTerm: string) {
     setLoading(true);
     const today = new Date().toISOString().slice(0, 10);
-    const term = search.trim().replace(/[%_,()]/g, '');
+    const term = rawTerm.trim().replace(/[%_,()]/g, '');
 
     // Search runs server-side (filtering after .range() would only search the
     // current page); customer names are resolved to ids because PostgREST
@@ -780,7 +778,7 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
     setLoading(false);
   }
 
-  async function loadManual() {
+  async function loadManual(rawTerm: string) {
     setLoading(true);
     const [{ data: jes, error }, { data: pays }] = await Promise.all([
       supabase
@@ -812,8 +810,8 @@ function ReceivablesBreakdownModal({ totalReceivables, onClose }: { totalReceiva
       return { ...je, paid, net_amount: Number(je.total_debit || 0) - paid };
     }).filter((je: any) => je.net_amount > 0.01);
 
-    if (search.trim()) {
-      const q = search.toLowerCase();
+    if (rawTerm.trim()) {
+      const q = rawTerm.toLowerCase();
       rows = rows.filter((je: any) =>
         je.entry_number?.toLowerCase().includes(q) ||
         (je.description || '').toLowerCase().includes(q) ||
@@ -980,7 +978,14 @@ function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
   const [entries, setEntries] = useState<any[]>([]);
   const [pageTotal, setPageTotal] = useState(0);
 
-  useEffect(() => { loadExpenses(); }, [period, page, search]);
+  // Client-side filter, but the fetch is period+page bound — debounce so a
+  // burst of keystrokes doesn't refetch the page per character.
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+  useEffect(() => { loadExpenses(); }, [period, page, debouncedSearch]);
 
   async function loadExpenses() {
     setLoading(true);
@@ -1031,8 +1036,8 @@ function ExpensesBreakdownModal({ onClose }: { onClose: () => void }) {
     const { data, count } = await baseQuery.range(from, to);
 
     let filtered = data || [];
-    if (search.trim()) {
-      const q = search.toLowerCase();
+    if (debouncedSearch.trim()) {
+      const q = debouncedSearch.toLowerCase();
       filtered = filtered.filter((je: any) =>
         je.entry_number?.toLowerCase().includes(q) ||
         (je.description || '').toLowerCase().includes(q) ||

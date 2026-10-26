@@ -70,7 +70,7 @@ export default function CustomerSearchInput({ onSelect, selectedName, placeholde
           .order('name'),
         CUSTOMER_SEARCH_COLUMNS,
         tokens,
-      ).limit(200);
+      ).limit(50);
 
       if (seq !== searchSeqRef.current) return;   // superseded by a newer keystroke
       if (error) {

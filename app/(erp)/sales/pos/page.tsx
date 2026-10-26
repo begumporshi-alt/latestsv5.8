@@ -488,12 +488,20 @@ export default function POSPage() {
     }
     // Both the network read and the replica replay project these columns.
     const columns = 'id, invoice_number, status, invoice_date, created_at, total_amount, amount_paid, bad_debt_amount';
+    // Server-side open-balance filter (same semantics as the old client-side
+    // filter): the generated balance_due column already rounds with the app's
+    // 0.01 epsilon, and non-open statuses are excluded in the query — a
+    // frequent customer's full paid/cancelled history no longer downloads on
+    // every selection.
+    const STATUS_FILTER = '("cancelled","refunded","paid","draft")';
     let cancelled = false;
     void (async () => {
       const res: any = await supabase
         .from('invoices')
         .select(columns)
-        .eq('customer_id', selectedCustomer);
+        .eq('customer_id', selectedCustomer)
+        .not('status', 'in', STATUS_FILTER)
+        .gt('balance_due', 0);
       let rows: any[] = Array.isArray(res?.data) ? res.data : [];
       if (res?.offline) {
         // The read fallback answers from the last cached copy of this exact
@@ -505,13 +513,14 @@ export default function POSPage() {
         const local = await runReplicaQuery('invoices', [
           ['select', [columns]],
           ['eq', ['customer_id', selectedCustomer]],
+          ['not', ['status', 'in', STATUS_FILTER]],
+          ['gt', ['balance_due', 0]],
         ]);
         if (local && Array.isArray(local.data)) rows = local.data;
       }
       if (cancelled) return;
       setCustomerOutstanding(
         rows
-          .filter((i: any) => !['cancelled', 'refunded', 'paid', 'draft'].includes(i.status))
           .map((i: any) => ({
             invoice_id: i.id,
             invoice_number: i.invoice_number,
