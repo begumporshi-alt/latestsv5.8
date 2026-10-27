@@ -9,7 +9,7 @@
  * deleted server-side without a changelog. Every table has a `delta`
  * fetch (ledger/line-item tables by created_at; editable tables by the
  * trigger-maintained updated_at — migrations 20261002150000,
- * 20261018150000 and 20261027120000) and only downloads rows changed
+ * 20261018150000, 20261027120000 and 20261028100000) and only downloads rows changed
  * since the last refresh, guarded by a zero-payload count probe that
  * falls back to a full replace when rows disappear server-side; a full
  * replace also runs once a day as a convergence net.
@@ -124,7 +124,7 @@ export const REPLICA_TABLES: ReplicaTableSpec[] = [
   { name: 'GRNs', table: 'goods_receipt_notes', store: 'replica_goods_receipt_notes', fetch: () => fetchAll(() => supabaseRaw.from('goods_receipt_notes').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('goods_receipt_notes').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Deliveries', table: 'deliveries', store: 'replica_deliveries', fetch: () => fetchAll(() => supabaseRaw.from('deliveries').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('deliveries').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Delivery items', table: 'delivery_items', store: 'replica_delivery_items', fetch: () => fetchAll(() => supabaseRaw.from('delivery_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('delivery_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
-  { name: 'Customer advances', table: 'customer_advances', store: 'replica_customer_advances', fetch: () => fetchAll(() => supabaseRaw.from('customer_advances').select('*').order('id')) },
+  { name: 'Customer advances', table: 'customer_advances', store: 'replica_customer_advances', fetch: () => fetchAll(() => supabaseRaw.from('customer_advances').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_advances').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Advance refunds', table: 'customer_advance_refunds', store: 'replica_customer_advance_refunds', fetch: () => fetchAll(() => supabaseRaw.from('customer_advance_refunds').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_advance_refunds').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Advance applications', table: 'customer_advance_applications', store: 'replica_customer_advance_applications', fetch: () => fetchAll(() => supabaseRaw.from('customer_advance_applications').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_advance_applications').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Customer notes', table: 'customer_notes', store: 'replica_customer_notes', fetch: () => fetchAll(() => supabaseRaw.from('customer_notes').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_notes').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
