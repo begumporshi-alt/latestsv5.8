@@ -16,8 +16,9 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BACKUP_DIR="${SISOLUTION_BACKUP_DIR:-$HOME/Backups/sisolution}"
-PG_DUMP="/opt/homebrew/opt/libpq/bin/pg_dump"
-PG_RESTORE="/opt/homebrew/opt/libpq/bin/pg_restore"
+PG_DUMP="/opt/homebrew/opt/postgresql@17/bin/pg_dump"
+[ -x "$PG_DUMP" ] || PG_DUMP="/opt/homebrew/opt/libpq/bin/pg_dump"
+PG_RESTORE="${PG_DUMP%pg_dump}pg_restore"
 KEEP_DAILY=30
 LOG="$BACKUP_DIR/backup.log"
 
@@ -30,6 +31,9 @@ if [ -z "$DB_URL" ]; then
   log "ERROR: NEXT_PUBLIC_SUPABASE_DB_URL not found in $REPO_DIR/.env"
   exit 1
 fi
+# The .env URL points at the transaction pooler (:6543), which is unreliable
+# for long pg_dump sessions; the session pooler on :5432 is the proven path.
+DB_URL="${DB_URL/:6543/:5432}"
 
 STAMP="$(date '+%Y%m%d-%H%M')"
 OUT="$BACKUP_DIR/sisolution-$STAMP.dump"
@@ -38,8 +42,15 @@ log "Dump start -> $OUT"
 if "$PG_DUMP" --no-owner --no-privileges -Fc -f "$OUT" "$DB_URL" 2>>"$LOG"; then
   SIZE=$(du -h "$OUT" | cut -f1)
   # Sanity check: the archive must be listable and contain the core tables.
-  if "$PG_RESTORE" --list "$OUT" | grep -q "TABLE DATA public products" && \
-     "$PG_RESTORE" --list "$OUT" | grep -q "TABLE DATA auth users"; then
+  # Capture the TOC first, then grep the variable via a herestring. A
+  # `producer | grep -q` pipeline is a trap under pipefail: grep -q exits at
+  # its first match, the producer gets EPIPE writing the rest of the 100KB+
+  # TOC past the 64KB pipe buffer, and the pipeline fails despite the match.
+  TOC="$("$PG_RESTORE" --list "$OUT")"
+  TABLES_OK=1
+  grep -q "TABLE DATA public products" <<< "$TOC" || TABLES_OK=0
+  grep -q "TABLE DATA auth users" <<< "$TOC" || TABLES_OK=0
+  if [ "$TABLES_OK" = 1 ]; then
     log "OK: $OUT ($SIZE)"
   else
     log "WARN: dump written ($SIZE) but products/auth.users not found in archive — inspect it"
