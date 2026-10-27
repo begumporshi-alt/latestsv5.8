@@ -24,6 +24,9 @@
  *   writes (insert/update/delete/upsert) and non-allowlisted RPCs
  *     always go to the network untouched — a queued or attempted write must
  *     either reach the server or fail loudly. Nothing is cached or faked.
+ *     A successful write reports to lib/offline/write-refresh.ts, which
+ *     coalesces a replica refresh so the local database converges right
+ *     after the save instead of waiting for the hourly cycle.
  *
  * Online behavior is unchanged: the fallback only engages on offline/network
  * failures, so a working connection always sees live data.
@@ -33,6 +36,7 @@ import { cacheGet, cachePut, isNetworkError } from './cache'
 import { networkMonitor } from './network'
 import { getDB } from './db'
 import { runReplicaQuery } from './replica-query'
+import { noteServerWrite } from './write-refresh'
 
 /** Builder methods that turn a chain into a write — never intercepted. */
 const MUTATION_METHODS = new Set(['insert', 'update', 'delete', 'upsert'])
@@ -236,7 +240,10 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
   try {
     // Awaiting the raw builder performs the real request.
     const res: any = await rawBuilder
-    if (!fallbackAllowed) return res
+    if (!fallbackAllowed) {
+      if (!res?.error) noteServerWrite(state.kind, state.name)
+      return res
+    }
 
     if (res && res.error) {
       if (isNetworkError(res.error)) {
@@ -323,7 +330,12 @@ export function withOfflineReads<T extends SupabaseClient>(client: T): T {
       if (prop === 'rpc') {
         return (fn: string, args?: unknown) => {
           const builder = (target as any).rpc(fn, args)
-          if (typeof fn !== 'string' || !isReadRpc(fn)) return builder
+          if (typeof fn !== 'string' || !isReadRpc(fn)) {
+            // Write RPCs stay pass-through (mutation state disables the
+            // fallback); wrapping only routes the result through execute so a
+            // successful call reports to the write-refresh hook.
+            return wrapBuilder(builder, { kind: 'rpc', name: fn, mutation: true, steps: [['args', [args]]] })
+          }
           return wrapBuilder(builder, { kind: 'rpc', name: fn, mutation: false, steps: [['args', [args]]] })
         }
       }

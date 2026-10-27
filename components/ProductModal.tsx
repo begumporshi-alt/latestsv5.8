@@ -10,6 +10,8 @@ import SearchableSelect from '@/components/ui/SearchableSelect';
 import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
+import { cacheDelete } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
 import { patchInventoryAggregateAfterProductOp, patchPosSnapshotAfterProductOp } from '@/lib/offline/optimistic';
 import { allowDecimalFor, clampSaleQty } from '@/lib/unit-utils';
 
@@ -501,6 +503,11 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
       }
 
       toast({ title: 'Success', description: isEdit ? 'Product updated successfully' : 'Product created successfully' });
+      // The POS gallery and the oversell gate read local snapshots — drop
+      // them so the next visit rebuilds from the freshly refreshed replica
+      // instead of serving the pre-save copy for the TTL window.
+      void cacheDelete(CACHE_KEYS.products);
+      void cacheDelete(CACHE_KEYS.gateStock);
       setConfirmAdjust(false);
       onSaved();
       onClose();
