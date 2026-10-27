@@ -10,6 +10,8 @@ import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, P
 import type { Supplier, Warehouse } from '@/lib/types';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
+import { cacheDelete } from '@/lib/offline/cache';
+import { CACHE_KEYS } from '@/lib/offline/keys';
 import { printNode } from '@/lib/print';
 import GrnPrint from '@/components/GrnPrint';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
@@ -561,6 +563,12 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         p_items: payload,
       });
       if (rpcError) throw new Error(rpcError.message);
+
+      // POS gallery and the oversell gate serve local snapshots — drop them
+      // so the received stock shows up on the next visit instead of after
+      // the snapshot TTL. The write-refresh hook re-pulls the replica.
+      void cacheDelete(CACHE_KEYS.products);
+      void cacheDelete(CACHE_KEYS.gateStock);
 
       const result = (data || {}) as {
         grn_number?: string;
