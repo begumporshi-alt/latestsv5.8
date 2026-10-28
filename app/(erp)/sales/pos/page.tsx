@@ -3068,6 +3068,10 @@ export default function POSPage() {
           ) : cartTab === 'items' ? (
             cart.map((item, index) => {
               const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
+              // Per-unit price after the line discount — shown beside the
+              // discount box so staff can read the effective rate directly.
+              const netUnitPrice = item.unit_price * (1 - (item.discount_percent || 0) / 100);
+              const lineUnitLabel = item.selected_unit?.unit_short || item.selected_unit?.unit_name || item.unit || 'unit';
               const liKey = lineIdOf(item);
               const la = lineAllocation(item);
               // Keyboard field cursor: which control Shift+←/→ currently
@@ -3164,6 +3168,20 @@ export default function POSPage() {
                     placeholder="0"
                   />
                 </div>
+                {(item.discount_percent || 0) > 0 && (
+                  /* Effective per-unit rate after the discount, sitting right
+                     after the box that produced it. Hidden on very narrow
+                     carts where the row has no room left. */
+                  <div
+                    className="hidden min-[480px]:flex flex-col shrink-0 border-l border-border/70 pl-1.5 ml-0.5"
+                    title={`${formatCurrency(item.unit_price)} − ${fmtQty(item.discount_percent)}% = ${formatCurrency(netUnitPrice)} per ${lineUnitLabel}`}
+                  >
+                    <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 whitespace-nowrap">Net</label>
+                    <span className="h-[30px] flex items-center text-[13px] font-semibold text-green-600 tabular-nums whitespace-nowrap">
+                      {formatCurrency(netUnitPrice)}
+                    </span>
+                  </div>
+                )}
                 {multiWarehouse && (
                   /* Warehouse choice lives in the inputs row as an icon too —
                      same treatment as the batch button, so a line never spends
