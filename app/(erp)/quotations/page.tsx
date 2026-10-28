@@ -8,7 +8,7 @@ import { UnitInput } from '@/components/ui/unit-input';
 import { openWhatsApp, openEmail, sharePdfFile, downloadFile } from '@/lib/share';
 import { buildDocumentPdf } from '@/lib/pdf-document';
 import { toast } from '@/hooks/use-toast';
-import { Plus, Search, Eye, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart, LayoutGrid } from 'lucide-react';
+import { Plus, Search, Eye, EyeOff, Send, X, Trash2, FileText, ArrowRight, UserPlus, CreditCard, DollarSign, CircleCheck as CheckCircle, Printer, Share2, MessageCircle, Mail, Filter, ChevronDown, TriangleAlert as AlertTriangle, Pencil, Ban, Bell, Clock, ClipboardPaste, Copy, ShoppingCart, LayoutGrid } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { ProductGalleryBody } from '@/components/ProductGallery';
 import { fetchAll } from '@/lib/fetch-all';
@@ -691,6 +691,9 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   const [showAddCustomer, setShowAddCustomer] = useState(false);
   const [showProductGallery, setShowProductGallery] = useState(true);
   const [formTab, setFormTab] = useState<'items' | 'cost'>('items');
+  // Cost prices are commercially sensitive: hidden until the user explicitly
+  // reveals them for this quotation session (never persisted).
+  const [showCostPrices, setShowCostPrices] = useState(false);
 
   // Global bridge: the QuickActionDrawer's Product Catalog dispatches a
   // 'quotation:add-product' window event; add it to the open form's items.
@@ -937,6 +940,12 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
   // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
   const quoteGrandTotal = quoteVat.total + (form.shipping_cost || 0);
 
+  // Cost summary — only surfaced when the cost-price toggle is on.
+  const totalLineCost = items.reduce((sum, item) => sum + (item.cost_price || 0) * item.quantity, 0);
+  const netItemRevenue = subtotal - cartDiscountAmount;
+  const grossMargin = netItemRevenue - totalLineCost;
+  const grossMarginPct = netItemRevenue > 0 ? (grossMargin / netItemRevenue) * 100 : 0;
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!form.customer_id) { setError('Please select a customer'); return; }
@@ -1154,6 +1163,18 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                 <button type="button" onClick={() => setShowProductGallery(v => !v)} className="flex items-center gap-1.5 px-3 py-2 border border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Browse all products">
                   <LayoutGrid className="w-3.5 h-3.5" />Browse
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCostPrices(v => !v)}
+                  aria-pressed={showCostPrices}
+                  className={`ml-auto flex items-center gap-1.5 px-3 py-2 border rounded-lg text-xs font-semibold transition whitespace-nowrap ${showCostPrices
+                    ? 'border-amber-400 bg-amber-100 text-amber-800 hover:bg-amber-200'
+                    : 'border-border bg-white text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+                  title={showCostPrices ? 'Hide cost prices' : 'Show cost price per unit and line total for every product'}
+                >
+                  {showCostPrices ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {showCostPrices ? 'Hide Cost' : 'Show Cost'}
+                </button>
               </div>
               {markedForPurchase.size > 0 && (
                 <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
@@ -1179,6 +1200,11 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                   <tbody className="divide-y divide-border">
                     {items.map((item, index) => {
                       const isOverStock = item.stock_qty !== null && item.base_quantity > item.stock_qty;
+                      const costPerUnit = item.cost_price || 0;
+                      const lineCost = costPerUnit * item.quantity;
+                      const costUnitLabel = item.selected_unit?.unit_short || item.selected_unit?.unit_name || item.product_unit || 'unit';
+                      const netRate = item.unit_price * (1 - (item.discount_percent || 0) / 100);
+                      const isBelowCost = showCostPrices && netRate > 0 && costPerUnit > netRate;
                       return (
                         <tr key={index} className={isOverStock ? 'bg-red-50/50' : ''}>
                           <td className="px-3 py-2">
@@ -1207,20 +1233,35 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                                 <p className="text-[10px] text-muted-foreground mt-0.5">1 {item.selected_unit.unit_name} = {item.selected_unit.conversion_factor} {item.product_base_unit || 'base'}</p>
                               </div>
                             )}
-                            {item.available_warehouses && item.available_warehouses.length > 0 && (
-                              <div className="mt-1">
-                                <select
-                                  value={item.warehouse_id || ''}
-                                  onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
-                                  className="w-full border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-2 py-1 text-xs focus:outline-none"
-                                >
-                                  {item.available_warehouses?.map(w => {
-                                    const whName = warehouses.find(wh => wh.id === w.warehouse_id)?.name || w.warehouse_name;
-                                    return (
-                                      <option key={w.warehouse_id} value={w.warehouse_id}>{whName} ({w.stock} {item.product_base_unit || 'pcs'})</option>
-                                    );
-                                  })}
-                                </select>
+                            {(showCostPrices || (item.available_warehouses && item.available_warehouses.length > 0)) && (
+                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                {item.available_warehouses && item.available_warehouses.length > 0 && (
+                                  <select
+                                    value={item.warehouse_id || ''}
+                                    onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
+                                    className="flex-1 min-w-[88px] border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-2 py-1 text-xs focus:outline-none"
+                                  >
+                                    {item.available_warehouses?.map(w => {
+                                      const whName = warehouses.find(wh => wh.id === w.warehouse_id)?.name || w.warehouse_name;
+                                      return (
+                                        <option key={w.warehouse_id} value={w.warehouse_id}>{whName} ({w.stock} {item.product_base_unit || 'pcs'})</option>
+                                      );
+                                    })}
+                                  </select>
+                                )}
+                                {showCostPrices && (
+                                  <div
+                                    className={`shrink-0 rounded-md border px-1.5 py-0.5 text-right leading-tight ${isBelowCost ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}
+                                    title={`Cost price: ${formatCurrency(costPerUnit)} per ${costUnitLabel} — ${item.quantity} × ${formatCurrency(costPerUnit)} = ${formatCurrency(lineCost)}${isBelowCost ? ' (selling below cost)' : ''}`}
+                                  >
+                                    <p className={`text-[10px] whitespace-nowrap ${isBelowCost ? 'text-red-600' : 'text-amber-700'}`}>
+                                      Cost {formatCurrency(costPerUnit)}
+                                    </p>
+                                    <p className={`text-[11px] font-semibold tabular-nums whitespace-nowrap ${isBelowCost ? 'text-red-700' : 'text-amber-900'}`}>
+                                      = {formatCurrency(lineCost)}
+                                    </p>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </td>
@@ -1329,6 +1370,21 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                   <p className="text-xs text-muted-foreground">Subtotal</p>
                   <p className="text-sm font-semibold text-foreground">{formatCurrency(subtotal)}</p>
                 </div>
+                {showCostPrices && items.length > 0 && (
+                  <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50/70 px-2 py-1.5">
+                    <div className="flex justify-between items-center">
+                      <p className="text-xs text-amber-700">Est. Cost</p>
+                      <p className="text-sm font-semibold text-amber-800 tabular-nums">{formatCurrency(totalLineCost)}</p>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <p className="text-xs text-amber-700">Est. Margin</p>
+                      <p className={`text-sm font-semibold tabular-nums ${grossMargin >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {formatCurrency(grossMargin)}
+                        <span className="ml-1 text-[10px] font-normal opacity-80">({grossMarginPct.toFixed(1)}%)</span>
+                      </p>
+                    </div>
+                  </div>
+                )}
                 <div className="flex justify-between items-center gap-2">
                   <label className="text-xs text-muted-foreground">Cart Discount %</label>
                   <div className="w-24">
@@ -1499,6 +1555,9 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
   const [error, setError] = useState('');
   const [markedForPurchase, setMarkedForPurchase] = useState<Set<string>>(new Set());
   const [showProductGallery, setShowProductGallery] = useState(true);
+  // Mirrors CreateQuotationModal: cost prices stay hidden until explicitly
+  // revealed, and the choice is not persisted.
+  const [showCostPrices, setShowCostPrices] = useState(false);
 
   // Global bridge: the QuickActionDrawer's Product Catalog dispatches a
   // 'quotation:add-product' window event; add it to the open form's items.
@@ -1560,7 +1619,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     (async () => {
       const { data } = await supabase
         .from('quotation_items')
-        .select('*, product:products(name, sku, unit, base_unit, allow_decimal, enable_multi_unit, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand))')
+        .select('*, product:products(name, sku, unit, base_unit, allow_decimal, enable_multi_unit, cost_price, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand))')
         .eq('quotation_id', quotation.id);
       setItems((data || []).map((it: any) => {
         const prod = Array.isArray(it.product) ? it.product[0] : it.product;
@@ -1582,7 +1641,7 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
           selected_unit: selectedUnit,
           available_units: units.filter((u: any) => u.is_active),
           base_quantity: Number(it.base_quantity) || Number(it.quantity),
-          cost_price: selectedUnit?.cost_price || 0,
+          cost_price: selectedUnit?.cost_price || (prod as any)?.cost_price || 0,
           warehouse_id: it.warehouse_id || undefined,
         };
       }));
@@ -1739,7 +1798,13 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
     const updated = [...items];
     if (field === 'selected_unit') {
       const unit = value as ProductUnit;
-      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit) };
+      updated[index] = {
+        ...updated[index],
+        selected_unit: unit,
+        unit_price: unit.price,
+        cost_price: unit.cost_price || updated[index].cost_price || 0,
+        base_quantity: convertToBaseUnit(updated[index].quantity, unit),
+      };
     } else if (field === 'quantity') {
       // Decimal units (meter/foot/kg) accept fractions; discrete units keep
       // the legacy parseInt behaviour.
@@ -1768,6 +1833,12 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
   const quoteVat = computeVat(totalAmount, vatSettings, applyVat);
   // Shipping is added AFTER VAT — the delivery charge is not part of the VAT base.
   const quoteGrandTotal = quoteVat.total + (form.shipping_cost || 0);
+
+  // Cost summary — only surfaced when the cost-price toggle is on.
+  const totalLineCost = items.reduce((sum, item) => sum + (item.cost_price || 0) * item.quantity, 0);
+  const netItemRevenue = subtotal - cartDiscountAmount;
+  const grossMargin = netItemRevenue - totalLineCost;
+  const grossMarginPct = netItemRevenue > 0 ? (grossMargin / netItemRevenue) * 100 : 0;
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -1938,6 +2009,18 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
               <button type="button" onClick={() => setShowProductGallery(v => !v)} className="flex items-center gap-1.5 px-3 py-2 border border-indigo-300 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-xs font-semibold transition whitespace-nowrap" title="Browse all products">
                 <LayoutGrid className="w-3.5 h-3.5" />Browse
               </button>
+              <button
+                type="button"
+                onClick={() => setShowCostPrices(v => !v)}
+                aria-pressed={showCostPrices}
+                className={`ml-auto flex items-center gap-1.5 px-3 py-2 border rounded-lg text-xs font-semibold transition whitespace-nowrap ${showCostPrices
+                  ? 'border-amber-400 bg-amber-100 text-amber-800 hover:bg-amber-200'
+                  : 'border-border bg-white text-muted-foreground hover:bg-muted hover:text-foreground'}`}
+                title={showCostPrices ? 'Hide cost prices' : 'Show cost price per unit and line total for every product'}
+              >
+                {showCostPrices ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                {showCostPrices ? 'Hide Cost' : 'Show Cost'}
+              </button>
             </div>
             {markedForPurchase.size > 0 && (
               <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2">
@@ -1959,7 +2042,13 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {items.map((item, index) => (
+                    {items.map((item, index) => {
+                      const costPerUnit = item.cost_price || 0;
+                      const lineCost = costPerUnit * item.quantity;
+                      const costUnitLabel = item.selected_unit?.unit_short || item.selected_unit?.unit_name || item.product_unit || 'unit';
+                      const netRate = item.unit_price * (1 - (item.discount_percent || 0) / 100);
+                      const isBelowCost = showCostPrices && netRate > 0 && costPerUnit > netRate;
+                      return (
                       <tr key={index}>
                         <td className="px-3 py-2">
                           <p className="text-sm font-medium text-foreground">{item.product_name}</p>
@@ -1969,17 +2058,34 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                               {item.stock_qty} {item.product_base_unit || 'units'} available
                             </p>
                           )}
-                          {item.available_units && item.available_units.length > 0 && item.selected_unit && (
-                            <select
-                              value={item.selected_unit.id}
-                              onChange={e => {
-                                const unit = item.available_units?.find((u: any) => u.id === e.target.value);
-                                if (unit) updateItem(index, 'selected_unit', unit);
-                              }}
-                              className="mt-1 w-full border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
-                            >
-                              {item.available_units.map((u: any) => <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>)}
-                            </select>
+                          {((item.available_units && item.available_units.length > 0 && item.selected_unit) || showCostPrices) && (
+                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                              {item.available_units && item.available_units.length > 0 && item.selected_unit && (
+                                <select
+                                  value={item.selected_unit.id}
+                                  onChange={e => {
+                                    const unit = item.available_units?.find((u: any) => u.id === e.target.value);
+                                    if (unit) updateItem(index, 'selected_unit', unit);
+                                  }}
+                                  className="flex-1 min-w-[88px] border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                                >
+                                  {item.available_units.map((u: any) => <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>)}
+                                </select>
+                              )}
+                              {showCostPrices && (
+                                <div
+                                  className={`shrink-0 rounded-md border px-1.5 py-0.5 text-right leading-tight ${isBelowCost ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}
+                                  title={`Cost price: ${formatCurrency(costPerUnit)} per ${costUnitLabel} — ${item.quantity} × ${formatCurrency(costPerUnit)} = ${formatCurrency(lineCost)}${isBelowCost ? ' (selling below cost)' : ''}`}
+                                >
+                                  <p className={`text-[10px] whitespace-nowrap ${isBelowCost ? 'text-red-600' : 'text-amber-700'}`}>
+                                    Cost {formatCurrency(costPerUnit)}
+                                  </p>
+                                  <p className={`text-[11px] font-semibold tabular-nums whitespace-nowrap ${isBelowCost ? 'text-red-700' : 'text-amber-900'}`}>
+                                    = {formatCurrency(lineCost)}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="px-3 py-2"><input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" /></td>
@@ -1996,7 +2102,8 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                         </td>
                         <td className="px-2 py-2"><button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button></td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2005,6 +2112,21 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
           <div className="flex justify-end bg-muted/30 rounded-lg p-3">
             <div className="text-right w-full max-w-xs space-y-2">
               <div className="flex justify-between items-center"><p className="text-xs text-muted-foreground">Subtotal</p><p className="text-sm font-semibold text-foreground">{formatCurrency(subtotal)}</p></div>
+              {showCostPrices && items.length > 0 && (
+                <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50/70 px-2 py-1.5">
+                  <div className="flex justify-between items-center">
+                    <p className="text-xs text-amber-700">Est. Cost</p>
+                    <p className="text-sm font-semibold text-amber-800 tabular-nums">{formatCurrency(totalLineCost)}</p>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <p className="text-xs text-amber-700">Est. Margin</p>
+                    <p className={`text-sm font-semibold tabular-nums ${grossMargin >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {formatCurrency(grossMargin)}
+                      <span className="ml-1 text-[10px] font-normal opacity-80">({grossMarginPct.toFixed(1)}%)</span>
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="flex justify-between items-center gap-2">
                 <label className="text-xs text-muted-foreground">Cart Discount %</label>
                 <div className="w-24">
