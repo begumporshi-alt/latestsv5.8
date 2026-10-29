@@ -6,6 +6,11 @@ import ServiceWorkerRegistrar from '@/components/offline/ServiceWorkerRegistrar'
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
+// The packaged shell switches the Supabase target via server env at spawn
+// time; prerendered HTML would freeze the build-time value, so every page is
+// server-rendered and the injected __SUPABASE_CONFIG__ reflects the runtime.
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: 'SI Building Solutions ERP',
   description: 'Complete ERP system for SI Building Solutions — manage inventory, sales, CRM, projects, and more.',
@@ -42,8 +47,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             the script tag. */}
         <Script id="supabase-runtime-config" strategy="beforeInteractive">
           {`window.__SUPABASE_CONFIG__=${JSON.stringify({
-            url: process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
-            anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
+            // STANDBY_* names stay dynamic in the server bundle (webpack only
+            // inlines NEXT_PUBLIC_*), so the packaged shell can retarget the
+            // Supabase project per spawn; NEXT_PUBLIC_* is the build fallback.
+            url: process.env.STANDBY_SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+            anonKey: process.env.STANDBY_SUPABASE_ANON_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '',
           }).replace(/</g, '\\u003c')};`}
         </Script>
         {children}
