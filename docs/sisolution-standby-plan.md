@@ -606,3 +606,41 @@ Windows x64 untested. Clean-machine/quarantine tests, installer upgrade/uninstal
 
 
 
+
+## 24. Runtime connection config and connection UI — planned 2026-10-29
+
+Goal: one install can be pointed at the local stack, the user's hosted Supabase, or a LAN host — the unlocker for cloud mode, LAN clients, and later hybrid sync. User direction (2026-10-29): skip the Phase 4 license inventory; prioritize this online/offline preparation instead.
+
+### Why the refactor surface is small
+
+Only three ERP places read the connection at runtime: `lib/supabase-raw.ts` (module-level `createClient`), `lib/offline/session.ts` (derives the `sb-<ref>-auth-token` localStorage key from the URL host), and `lib/telemetry/egress-tracker.ts` (host for telemetry). All 83 other files import the finished client from `lib/supabase` / `lib/supabase-raw`, so client creation is deferred in one place and no import site changes.
+
+### Part A — ERP submodule (small, additive, one branch commit)
+
+1. New `lib/runtime-config.ts` — `getSupabaseConfig(): { url, anonKey }`, resolution order: (1) `window.__SUPABASE_CONFIG__` injected per page load by the server, (2) localStorage cache, (3) build-time `NEXT_PUBLIC_*` (today's behavior, unchanged fallback).
+2. `lib/supabase-raw.ts` — lazy singleton behind a forwarding `Proxy` so `supabaseRaw` and the wrapped `supabase` keep working as value exports at all import sites; `createClient` runs on first access with `getSupabaseConfig()`. Fallback if the Proxy misbehaves with supabase-js internals: export `getSupabaseRaw()` and codemod the 8 raw importers.
+3. `app/layout.tsx` — inject `window.__SUPABASE_CONFIG__` via a `beforeInteractive` script from `process.env` read server-side at request time — the standalone server's runtime env becomes the client's config source.
+4. Update `offline/session.ts` and `egress-tracker.ts` to take the host from `getSupabaseConfig()`. `admin-auth.ts` stays env-based (server side; service key already arrives via supervisor env).
+5. Tests: precedence order, localStorage cache, unchanged behavior when nothing is injected; existing offline suite as regression.
+
+### Part B — standby shell (config plumbing)
+
+6. `connection.json` in the data dir (0600): `{ mode: 'local' | 'cloud', url, anonKey, serviceRoleKey? }`, default `{ "mode": "local" }`. Never committed.
+7. Supervisor ERP-spawn env switches on mode: `local` → current values; `cloud` → user-supplied URL/anon key (+ service key for server-side admin ops). The local stack still boots in `cloud` mode (keeps switching back instant; optimization deferred).
+8. Connection card in the Tauri status window (`src-ui/index.html`, no ERP change): mode selector, masked URL/anon-key fields, Test connection (real `GET <url>/auth/v1/health` with the anon key), Save & restart (writes connection.json 0600, restarts the supervisor so the ERP re-reads env). Status card gains active mode + target URL.
+9. Realtime: nothing to build yet — the same client talks to hosted Supabase Realtime once the URL points there; the local stack already serves LISTEN/NOTIFY via PostgREST.
+
+### Out of scope for this slice
+
+`hybrid` mode (local PG as the offline working set + cloud replication) needs an explicit sync-policy spec (outbox-up tables, delta-fetch-down tables, conflict rules) and gets its own slice after this plumbing exists.
+
+### Verification
+
+- Unit tests in both repos.
+- Regression-critical: local-mode login still works end to end after the Proxy refactor (rendered check in the packaged app).
+- Cloud mode without production access: point the ERP's "cloud" config at a second local stack (disposable data dir, different ports) — the gateway speaks the Supabase protocol, so login must then hit the second stack's GoTrue.
+- PII rules as usual: screenshots verified then deleted.
+
+### Sequence
+
+A (ERP lib + tests) → submodule commit on `customer-search-improvements` + push + re-pin → B (supervisor + shell UI) → cross-verification → evidence recorded here → commit/push both repos.
