@@ -2120,9 +2120,13 @@ export default function POSPage() {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [showSaleDetails]);
+  // Auto-grow is opt-in: the cart keeps its normal height and scrolls inside
+  // itself until the cashier asks it to grow. The storage key is versioned
+  // because the previous key defaulted to ON — every tab that had already
+  // written a value would otherwise keep growing after this change.
   const [cartAutoGrow, setCartAutoGrow] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    return sessionStorage.getItem('posCartAutoGrow') !== 'off';
+    if (typeof window === 'undefined') return false;
+    return sessionStorage.getItem('posCartAutoGrow2') === 'on';
   });
   // The cart list is a bounded pane, so it scrolls — and it has to say so.
   // macOS overlay scrollbars stay invisible until the user scrolls, so the
@@ -2197,9 +2201,10 @@ export default function POSPage() {
       window.removeEventListener('resize', syncCartScrollEdges);
     };
   }, [syncCartScrollEdges]);
-  // Auto-grow: from 3 items the cart extends downward (the page grows with it)
-  // so every item stays visible; past 50 items growth stops and the list
-  // scrolls internally. "Reset size" in the cart header turns it off.
+  // Auto-grow (opt-in, off by default): when enabled, from 3 items the cart
+  // extends downward (the page grows with it) so every item stays visible;
+  // past 50 items growth stops and the list scrolls internally. The header
+  // button reads "Auto-grow" when off and "Reset size" when on.
   // Sale details is an overlay and never participates in this calculation.
   useEffect(() => {
     if (cart.length > 50) return; // freeze at the 50-item height
@@ -2279,7 +2284,7 @@ export default function POSPage() {
     return () => { window.removeEventListener('scroll', update); window.removeEventListener('resize', update); cancelAnimationFrame(raf); };
   }, [cartHeightOverride, cartMaximized, cart.length, orderComplete]);
   useEffect(() => {
-    sessionStorage.setItem('posCartAutoGrow', cartAutoGrow ? 'on' : 'off');
+    sessionStorage.setItem('posCartAutoGrow2', cartAutoGrow ? 'on' : 'off');
   }, [cartAutoGrow]);
   // Keyboard shortcuts (cheat-sheet on "?"): "/" focus search, Shift+N new
   // sale, Shift+P / Ctrl+Enter checkout, Shift+L footer toggle, Esc steps
