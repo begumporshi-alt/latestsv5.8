@@ -2061,6 +2061,19 @@ export default function POSPage() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [cartHeightOverride, setCartHeightOverride] = useState<number | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
+
+  // Background scroll lock for the mobile cart sheet. `showMobileCart` is only
+  // ever set from the lg:hidden cart bar, so this is a mobile-only state.
+  // Without the lock a touch drag on the dimmed backdrop scroll-chains to the
+  // page behind the sheet: the sheet stays put (it is viewport-anchored now)
+  // but the product grid underneath slides away, so closing the cart drops the
+  // cashier somewhere else in the catalogue.
+  useEffect(() => {
+    if (!showMobileCart) return;
+    const { overflow } = document.body.style;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = overflow; };
+  }, [showMobileCart]);
   // Pinned cart footer: while the auto-grown cart's footer is scrolled out of
   // view, a fixed clone floats at the viewport bottom. The page scrolls in the
   // window (main grows with the page and never scrolls internally), so CSS
@@ -2107,9 +2120,13 @@ export default function POSPage() {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [showSaleDetails]);
+  // Auto-grow is opt-in: the cart keeps its normal height and scrolls inside
+  // itself until the cashier asks it to grow. The storage key is versioned
+  // because the previous key defaulted to ON — every tab that had already
+  // written a value would otherwise keep growing after this change.
   const [cartAutoGrow, setCartAutoGrow] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    return sessionStorage.getItem('posCartAutoGrow') !== 'off';
+    if (typeof window === 'undefined') return false;
+    return sessionStorage.getItem('posCartAutoGrow2') === 'on';
   });
   // The cart list is a bounded pane, so it scrolls — and it has to say so.
   // macOS overlay scrollbars stay invisible until the user scrolls, so the
@@ -2184,9 +2201,10 @@ export default function POSPage() {
       window.removeEventListener('resize', syncCartScrollEdges);
     };
   }, [syncCartScrollEdges]);
-  // Auto-grow: from 3 items the cart extends downward (the page grows with it)
-  // so every item stays visible; past 50 items growth stops and the list
-  // scrolls internally. "Reset size" in the cart header turns it off.
+  // Auto-grow (opt-in, off by default): when enabled, from 3 items the cart
+  // extends downward (the page grows with it) so every item stays visible;
+  // past 50 items growth stops and the list scrolls internally. The header
+  // button reads "Auto-grow" when off and "Reset size" when on.
   // Sale details is an overlay and never participates in this calculation.
   useEffect(() => {
     if (cart.length > 50) return; // freeze at the 50-item height
@@ -2266,7 +2284,7 @@ export default function POSPage() {
     return () => { window.removeEventListener('scroll', update); window.removeEventListener('resize', update); cancelAnimationFrame(raf); };
   }, [cartHeightOverride, cartMaximized, cart.length, orderComplete]);
   useEffect(() => {
-    sessionStorage.setItem('posCartAutoGrow', cartAutoGrow ? 'on' : 'off');
+    sessionStorage.setItem('posCartAutoGrow2', cartAutoGrow ? 'on' : 'off');
   }, [cartAutoGrow]);
   // Keyboard shortcuts (cheat-sheet on "?"): "/" focus search, Shift+N new
   // sale, Shift+P / Ctrl+Enter checkout, Shift+L footer toggle, Esc steps
@@ -2583,7 +2601,7 @@ export default function POSPage() {
             role="region"
             aria-label="Sale details"
             tabIndex={-1}
-            className="animate-sheet-up absolute inset-x-0 bottom-full z-20 flex max-h-[min(60vh,440px)] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-border bg-white shadow-[0_-16px_40px_-12px_rgba(15,23,42,0.28)] focus:outline-none"
+            className="animate-sheet-up absolute inset-x-0 bottom-full z-20 flex max-h-[min(60vh,460px)] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-border bg-white shadow-[0_-16px_40px_-12px_rgba(15,23,42,0.28)] focus:outline-none"
           >
             <div className="flex items-start justify-between gap-3 border-b border-border px-3 pb-2 pt-3">
               <div>
@@ -2614,24 +2632,28 @@ export default function POSPage() {
                 </div>
               </section>
 
-              <section className="space-y-2">
-                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Adjustments</h4>
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor={`${panelId}-disc`} className="text-xs font-medium text-muted-foreground">Cart discount</label>
-                  <div className="w-28">
-                    <UnitInput id={`${panelId}-disc`} unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="rounded-lg text-xs" />
+              {/* No "Adjustments" heading: the three fields are self-describing
+                  and the row of space it cost was what pushed the summary out of
+                  view. The two discounts put their label above a full-cell-width
+                  input (matching the Invoice fields), which more than doubles the
+                  input width at every size — 80px -> 176px on a 390px sheet.
+                  Shipping keeps its label inline because its label is long and
+                  the input still grows into whatever width is left (max 12rem). */}
+              <section>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                  <div className="min-w-0">
+                    <label htmlFor={`${panelId}-disc`} className="mb-1 block text-[11px] font-medium text-muted-foreground">Cart discount</label>
+                    <UnitInput id={`${panelId}-disc`} unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="h-10 rounded-lg text-sm" />
                   </div>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor={`${panelId}-extra`} className="text-xs font-medium text-muted-foreground">Extra discount</label>
-                  <div className="w-28">
-                    <UnitInput id={`${panelId}-extra`} prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                  <div className="min-w-0">
+                    <label htmlFor={`${panelId}-extra`} className="mb-1 block text-[11px] font-medium text-muted-foreground">Extra discount</label>
+                    <UnitInput id={`${panelId}-extra`} prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="h-10 rounded-lg text-sm" />
                   </div>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor={`${panelId}-ship`} className="text-xs font-medium text-muted-foreground">Shipping / service fee</label>
-                  <div className="w-28">
-                    <UnitInput id={`${panelId}-ship`} prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                  <div className="col-span-2 flex min-w-0 items-center justify-between gap-2">
+                    <label htmlFor={`${panelId}-ship`} className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">Shipping / service fee</label>
+                    <div className="min-w-0 max-w-[12rem] flex-1">
+                      <UnitInput id={`${panelId}-ship`} prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="h-10 rounded-lg text-sm" />
+                    </div>
                   </div>
                 </div>
               </section>
@@ -2658,7 +2680,14 @@ export default function POSPage() {
                     {applyVat && <span className="text-xs text-blue-700 font-medium tabular-nums">+{formatCurrency(posVat.taxAmount)}</span>}
                   </div>
                 )}
-                <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span className="tabular-nums">{formatCurrency(grandTotal)}</span></div>
+                {/* Pinned so Total never scrolls away. Merging the two
+                    discounts makes the untouched sheet fit exactly, but the
+                    moment a discount is entered the summary grows a line and
+                    Total drops below the fold again (measured: 66px out of
+                    view). Sticky costs nothing when everything already fits.
+                    -mx-3/px-3 let the white background span the pane so lines
+                    do not show through the side padding while scrolling. */}
+                <div className="sticky bottom-0 -mx-3 flex justify-between border-t border-border bg-white px-3 pt-1 text-base font-bold text-foreground"><span>Total</span><span className="tabular-nums">{formatCurrency(grandTotal)}</span></div>
               </section>
             </div>
 
@@ -2682,6 +2711,7 @@ export default function POSPage() {
       {showMobileCart && (
         <div
           className="fixed inset-0 bg-black/40 z-40 lg:hidden"
+          style={{ touchAction: 'none' }}
           onClick={() => setShowMobileCart(false)}
         />
       )}
@@ -2692,6 +2722,40 @@ export default function POSPage() {
           onClick={() => setCartMaximized(false)}
         />
       )}
+
+      {/* Mobile cart bar — the only cart entry point on a phone. The controls
+          row scrolls away with the products and the sheet is off-screen until
+          opened, so the order needs a permanent, thumb-reachable anchor that
+          also carries the running total. */}
+      <button
+        type="button"
+        onClick={() => setShowMobileCart(true)}
+        aria-label={cart.length > 0
+          ? `Cart, ${cart.length} item${cart.length === 1 ? '' : 's'}, total ${formatCurrency(grandTotal)}. Open cart`
+          : 'Cart is empty. Open cart'}
+        className="fixed inset-x-0 bottom-0 z-30 flex items-center justify-between gap-3 border-t border-border bg-white px-4 py-3 shadow-[0_-6px_20px_-8px_rgba(15,23,42,0.25)] transition hover:bg-muted/30 active:bg-muted/50 lg:hidden"
+        style={{ paddingBottom: 'calc(0.75rem + env(safe-area-inset-bottom))' }}
+      >
+        <span className="flex min-w-0 items-center gap-4">
+          <span className="relative shrink-0">
+            <ShoppingCart className="h-5 w-5 text-blue-600" />
+            {cart.length > 0 && (
+              <span className="absolute -right-2.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white">
+                {cart.length}
+              </span>
+            )}
+          </span>
+          <span className="min-w-0 truncate text-sm font-semibold text-foreground">
+            {cart.length > 0 ? 'View cart' : 'Cart is empty'}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          {cart.length > 0 && (
+            <span className="text-base font-bold tabular-nums text-foreground">{formatCurrency(grandTotal)}</span>
+          )}
+          <ChevronUp className="h-4 w-4 text-muted-foreground" />
+        </span>
+      </button>
 
       {/* Left panel — mobile: natural scroll, desktop: flex-col with overflow */}
       <div className="flex-1 flex flex-col min-w-0 lg:overflow-hidden">
@@ -2708,12 +2772,27 @@ export default function POSPage() {
             />
             <kbd className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground pointer-events-none">/</kbd>
           </div>
+          {/* Filters + scan share one row on phones. Each used to be its own
+              full-width row of the mobile column holding a ~38px icon, costing
+              ~114px of vertical space before the first product. A 3-column grid
+              splits the width exactly; from sm up the wrapper is `contents`, so
+              the buttons become direct children of the controls row and the
+              desktop layout is untouched.
+
+              This wrapper is `relative` because the filter dropdowns anchor to
+              it on phones: a ~114px button cannot host a 224px panel, so
+              `right-0 w-56` pushed the brand list ~94px off the left edge of
+              the screen. The panels are `left-0 right-0` here (full row width)
+              and only fall back to per-button `sm:right-0 sm:w-56` once the
+              wrapper is `contents`. Moving or un-positioning this div will
+              re-break the dropdowns. */}
+          <div className="relative grid grid-cols-3 gap-2 sm:contents">
           {/* Brand filter — icon-only until a brand is picked, then shows its name */}
-          <div className="relative shrink-0">
+          <div className="min-w-0 sm:relative">
             <button
               type="button"
               onClick={() => setBrandDropdownOpen(!brandDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
+              className={`flex w-full items-center justify-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition sm:w-auto sm:justify-start ${
                 selectedBrand ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by brand"
@@ -2721,13 +2800,13 @@ export default function POSPage() {
               <Tag className="w-4 h-4 shrink-0" />
               {selectedBrand && (
                 <>
-                  <span className="max-w-[100px] truncate">{brands.find(b => b.id === selectedBrand)?.name}</span>
+                  <span className="min-w-0 max-w-[100px] truncate">{brands.find(b => b.id === selectedBrand)?.name}</span>
                   <span
                     role="button"
                     tabIndex={0}
                     onClick={(e) => { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); } }}
-                    className="ml-0.5 hover:text-red-500"
+                    className="ml-0.5 shrink-0 hover:text-red-500"
                   >
                     <X className="w-3 h-3" />
                   </span>
@@ -2735,7 +2814,7 @@ export default function POSPage() {
               )}
             </button>
             {brandDropdownOpen && (
-              <div className="absolute top-full right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 w-56 overflow-hidden">
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 overflow-hidden sm:left-auto sm:right-0 sm:w-56">
                 <div className="p-2 border-b border-border">
                   <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -2772,11 +2851,11 @@ export default function POSPage() {
             )}
           </div>
           {/* Category filter — icon-only until a category is picked, then shows its name */}
-          <div className="relative shrink-0">
+          <div className="min-w-0 sm:relative">
             <button
               type="button"
               onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
+              className={`flex w-full items-center justify-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition sm:w-auto sm:justify-start ${
                 selectedCategory ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by category"
@@ -2784,13 +2863,13 @@ export default function POSPage() {
               <LayoutGrid className="w-4 h-4 shrink-0" />
               {selectedCategory && (
                 <>
-                  <span className="max-w-[100px] truncate">{categories.find(c => c.id === selectedCategory)?.name}</span>
+                  <span className="min-w-0 max-w-[100px] truncate">{categories.find(c => c.id === selectedCategory)?.name}</span>
                   <span
                     role="button"
                     tabIndex={0}
                     onClick={(e) => { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); } }}
-                    className="ml-0.5 hover:text-red-500"
+                    className="ml-0.5 shrink-0 hover:text-red-500"
                   >
                     <X className="w-3 h-3" />
                   </span>
@@ -2798,7 +2877,7 @@ export default function POSPage() {
               )}
             </button>
             {categoryDropdownOpen && (
-              <div className="absolute top-full right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 w-56 overflow-hidden">
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 overflow-hidden sm:left-auto sm:right-0 sm:w-56">
                 <div className="p-2 border-b border-border">
                   <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -2834,28 +2913,18 @@ export default function POSPage() {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2">
             <button
               onClick={() => setShowScanner(true)}
               title="Scan Barcode"
-              className="flex items-center justify-center gap-2 border border-border bg-white rounded-xl px-3 py-2.5 text-sm hover:bg-muted transition text-muted-foreground hover:text-foreground shrink-0"
+              aria-label="Scan barcode"
+              className="flex w-full min-w-0 items-center justify-center gap-2 border border-border bg-white rounded-xl px-2.5 py-2.5 text-sm hover:bg-muted transition text-muted-foreground hover:text-foreground sm:w-auto"
             >
               <Camera className="w-4 h-4" />
               <span className="hidden sm:inline">Scan</span>
             </button>
-            {/* Mobile cart toggle button */}
-            <button
-              onClick={() => setShowMobileCart(true)}
-              className="lg:hidden flex items-center justify-center gap-2 bg-blue-600 text-white rounded-xl px-3 py-2.5 relative"
-            >
-              <ShoppingCart className="w-4 h-4" />
-              {cart.length > 0 && (
-                <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
-                  {cart.length}
-                </span>
-              )}
-            </button>
           </div>
+          {/* The cart's mobile entry point is the persistent bottom bar, not
+              a button here: this row scrolls away with the products. */}
           <div className="flex items-center gap-2 relative">
             {/* Searchable Customer Selector */}
             <div className="flex-1 sm:flex-none relative">
@@ -3052,7 +3121,11 @@ export default function POSPage() {
         </div>
       </div>
 
-      {/* Cart - Desktop Side Panel / Mobile Bottom Drawer / Maximized Overlay */}
+      {/* Cart - Desktop Side Panel / Mobile Bottom Drawer / Maximized Overlay.
+          The class list must not carry a bare `relative`: it is emitted after
+          `fixed` in Tailwind's output, so it silently won and turned the mobile
+          sheet into an in-flow block at the end of the page. Desktop gets
+          `lg:relative` from the first line below. */}
       <div
         ref={cartPanelRef}
         style={cartHeightOverride != null && !cartMaximized ? ({ '--cart-ovh': `${cartHeightOverride}px` } as CSSProperties) : undefined}
@@ -3061,17 +3134,12 @@ export default function POSPage() {
         ${cartMaximized ? 'w-full h-full lg:w-full lg:h-full' : 'lg:w-[560px]'}
         flex flex-col bg-white
         ${cartMaximized ? 'rounded-none lg:rounded-none' : 'rounded-t-3xl lg:rounded-2xl'}
-        border border-border shadow-sm overflow-hidden relative
+        border border-border shadow-sm overflow-hidden
         z-50
         transition-transform duration-300 ease-out lg:transition-[height]
         ${showMobileCart || cartMaximized ? 'translate-y-0' : 'translate-y-full lg:translate-y-0'}
         ${cartMaximized ? '' : 'h-[85vh] lg:h-[var(--cart-ovh,100%)]'}
       `}>
-        {/* Drag handle for mobile */}
-        <div className="flex justify-center pt-2 pb-1 lg:hidden">
-          <div className="w-10 h-1 bg-slate-200 rounded-full" />
-        </div>
-
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
           <h2 className="font-bold text-foreground flex items-center gap-2">
             <ShoppingCart className="w-4 h-4" />Cart ({cart.length})
@@ -3127,7 +3195,8 @@ export default function POSPage() {
             </button>
             <button
               onClick={() => setShowMobileCart(false)}
-              className="lg:hidden text-muted-foreground hover:text-foreground p-1"
+              aria-label="Close cart"
+              className="lg:hidden -mr-1 rounded-md p-1.5 text-muted-foreground transition hover:bg-muted/50 hover:text-foreground"
             >
               <X className="w-5 h-5" />
             </button>
@@ -3162,7 +3231,7 @@ export default function POSPage() {
             className="h-full overflow-y-auto p-2.5 space-y-1.5"
           >
           {cart.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center text-center py-12">
+            <div className="min-h-full flex items-center justify-center text-center py-12">
               <div>
                 <ShoppingCart className="w-12 h-12 text-muted-foreground/30 mx-auto mb-2" />
                 <p className="text-sm text-muted-foreground">Cart is empty</p>
@@ -3225,10 +3294,12 @@ export default function POSPage() {
               onDragOver={e => { e.preventDefault(); setDragOverItem(index); }}
               onDrop={() => { if (draggedItem !== null && draggedItem !== index) reorderCart(draggedItem, index); setDraggedItem(null); setDragOverItem(null); }}
               onDragEnd={() => { setDraggedItem(null); setDragOverItem(null); }}
-              className={`bg-muted/30 rounded-lg px-2.5 py-1.5 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} ${activeCartLine === index ? 'ring-2 ring-blue-500/70 bg-blue-50/60' : ''} cursor-grab active:cursor-grabbing`}
+              className={`bg-muted/30 rounded-lg px-2.5 py-1.5 transition-all ${draggedItem === index ? 'opacity-40' : ''} ${dragOverItem === index && draggedItem !== index ? 'border-2 border-blue-400' : ''} ${activeCartLine === index ? 'ring-2 ring-blue-500/70 bg-blue-50/60' : ''} lg:cursor-grab lg:active:cursor-grabbing`}
             >
               <div className="flex items-center gap-1.5">
-                <span className="text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
+                {/* Reorder is desktop-only: HTML5 drag events never fire on
+                    touch, so the handle is hidden rather than lying. */}
+                <span className="hidden lg:inline text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
                 <button
                   onClick={() => removeCartLine(item)}
                   aria-label={`Remove ${item.name} from the cart`}
@@ -3240,7 +3311,7 @@ export default function POSPage() {
                 <ProductNameTooltip
                   name={item.name}
                   sku={item.sku}
-                  className="flex-1 min-w-0 text-sm font-semibold text-foreground leading-tight break-words cursor-default"
+                  className="flex-1 min-w-0 text-sm font-semibold text-foreground leading-tight line-clamp-2 cursor-default"
                 />
                 <span className="text-sm font-bold text-blue-600 shrink-0 whitespace-nowrap">{formatCurrency(lineTotal)}</span>
                 {(item.discount_percent || 0) > 0 && (
