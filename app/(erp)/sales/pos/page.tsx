@@ -2596,7 +2596,7 @@ export default function POSPage() {
             role="region"
             aria-label="Sale details"
             tabIndex={-1}
-            className="animate-sheet-up absolute inset-x-0 bottom-full z-20 flex max-h-[min(60vh,440px)] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-border bg-white shadow-[0_-16px_40px_-12px_rgba(15,23,42,0.28)] focus:outline-none"
+            className="animate-sheet-up absolute inset-x-0 bottom-full z-20 flex max-h-[min(60vh,460px)] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-border bg-white shadow-[0_-16px_40px_-12px_rgba(15,23,42,0.28)] focus:outline-none"
           >
             <div className="flex items-start justify-between gap-3 border-b border-border px-3 pb-2 pt-3">
               <div>
@@ -2627,24 +2627,28 @@ export default function POSPage() {
                 </div>
               </section>
 
-              <section className="space-y-2">
-                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Adjustments</h4>
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor={`${panelId}-disc`} className="text-xs font-medium text-muted-foreground">Cart discount</label>
-                  <div className="w-28">
-                    <UnitInput id={`${panelId}-disc`} unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="rounded-lg text-xs" />
+              {/* No "Adjustments" heading: the three fields are self-describing
+                  and the row of space it cost was what pushed the summary out of
+                  view. The two discounts put their label above a full-cell-width
+                  input (matching the Invoice fields), which more than doubles the
+                  input width at every size — 80px -> 176px on a 390px sheet.
+                  Shipping keeps its label inline because its label is long and
+                  the input still grows into whatever width is left (max 12rem). */}
+              <section>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                  <div className="min-w-0">
+                    <label htmlFor={`${panelId}-disc`} className="mb-1 block text-[11px] font-medium text-muted-foreground">Cart discount</label>
+                    <UnitInput id={`${panelId}-disc`} unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="h-10 rounded-lg text-sm" />
                   </div>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor={`${panelId}-extra`} className="text-xs font-medium text-muted-foreground">Extra discount</label>
-                  <div className="w-28">
-                    <UnitInput id={`${panelId}-extra`} prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                  <div className="min-w-0">
+                    <label htmlFor={`${panelId}-extra`} className="mb-1 block text-[11px] font-medium text-muted-foreground">Extra discount</label>
+                    <UnitInput id={`${panelId}-extra`} prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="h-10 rounded-lg text-sm" />
                   </div>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <label htmlFor={`${panelId}-ship`} className="text-xs font-medium text-muted-foreground">Shipping / service fee</label>
-                  <div className="w-28">
-                    <UnitInput id={`${panelId}-ship`} prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                  <div className="col-span-2 flex min-w-0 items-center justify-between gap-2">
+                    <label htmlFor={`${panelId}-ship`} className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">Shipping / service fee</label>
+                    <div className="min-w-0 max-w-[12rem] flex-1">
+                      <UnitInput id={`${panelId}-ship`} prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="h-10 rounded-lg text-sm" />
+                    </div>
                   </div>
                 </div>
               </section>
@@ -2671,7 +2675,14 @@ export default function POSPage() {
                     {applyVat && <span className="text-xs text-blue-700 font-medium tabular-nums">+{formatCurrency(posVat.taxAmount)}</span>}
                   </div>
                 )}
-                <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span className="tabular-nums">{formatCurrency(grandTotal)}</span></div>
+                {/* Pinned so Total never scrolls away. Merging the two
+                    discounts makes the untouched sheet fit exactly, but the
+                    moment a discount is entered the summary grows a line and
+                    Total drops below the fold again (measured: 66px out of
+                    view). Sticky costs nothing when everything already fits.
+                    -mx-3/px-3 let the white background span the pane so lines
+                    do not show through the side padding while scrolling. */}
+                <div className="sticky bottom-0 -mx-3 flex justify-between border-t border-border bg-white px-3 pt-1 text-base font-bold text-foreground"><span>Total</span><span className="tabular-nums">{formatCurrency(grandTotal)}</span></div>
               </section>
             </div>
 
