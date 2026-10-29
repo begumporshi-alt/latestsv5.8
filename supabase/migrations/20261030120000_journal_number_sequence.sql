@@ -1,5 +1,4 @@
--- Journal entry numbers come from the sequence that has existed since the
--- first accounting migration, not from MAX(digits)+1.
+-- Journal entry numbers come from a sequence, not from MAX(digits)+1.
 --
 -- The old generator scanned every JE-% row, stripped non-digits and added one.
 -- Two ways that breaks:
@@ -14,10 +13,16 @@
 -- entry cannot move the series. nextval is not transactional: a rolled-back
 -- post burns a number and leaves a gap. Gaps already exist (deleted entries
 -- and the 2026-09-06 repairs); a repeated number is not an option.
+--
+-- journal_entry_seq came in with 008_accounting_automation but is absent from
+-- the 2026-10-27 production dump, so this migration is what recreates it. It
+-- must belong to postgres: the generator is SECURITY DEFINER and runs as the
+-- function owner, which holds no other privilege on the sequence.
 
 begin;
 
-create sequence if not exists journal_entry_seq start 1000;
+create sequence if not exists public.journal_entry_seq start 1000;
+alter sequence public.journal_entry_seq owner to postgres;
 
 do $$
 declare
@@ -29,9 +34,9 @@ begin
     from journal_entries
    where entry_number ~ '^JE-[0-9]{1,6}$';
 
-  select last_value into v_last from journal_entry_seq;
+  select last_value into v_last from public.journal_entry_seq;
   if v_last < v_max then
-    perform setval('journal_entry_seq', v_max);
+    perform setval('public.journal_entry_seq', v_max);
   end if;
 end
 $$;
