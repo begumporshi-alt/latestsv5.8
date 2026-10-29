@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, SlidersHorizontal, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Layers, Printer, Keyboard, Tag, LayoutGrid, Warehouse } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, SlidersHorizontal, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Undo2, Layers, Printer, Keyboard, Tag, LayoutGrid, Warehouse } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -1130,6 +1130,44 @@ export default function POSPage() {
     setCart(prev => prev.filter(i => !(i.id === id && (unitId ? i.selected_unit?.id === unitId : true))));
   }
 
+  // Undo is a state of the cart, not a transient message: the offer lives in the
+  // cart header until it is used, replaced by a newer removal, or invalidated by
+  // a completed sale. A toast would vanish mid-recovery, and its viewport sits
+  // bottom-right — exactly where Pay is.
+  const [undoOffer, setUndoOffer] = useState<{ label: string; restore: () => void } | null>(null);
+  const offerUndo = useCallback((label: string, restore: () => void) => {
+    setUndoOffer({ label, restore });
+  }, []);
+  // A completed sale closes the window: restoring a line into a fresh cart would
+  // silently corrupt the next order.
+  useEffect(() => {
+    if (orderComplete) setUndoOffer(null);
+  }, [orderComplete]);
+
+  // A line can disappear from one click on the X or from a single Esc, so every
+  // removal leaves an undo behind and puts the line back at its original index
+  // — the operator never has to re-enter a line to recover from a slip.
+  const removeCartLine = useCallback((item: CartItem) => {
+    const index = cart.findIndex(c => lineIdOf(c) === lineIdOf(item));
+    if (index < 0) return;
+    setCart(prev => prev.filter(i => !(i.id === item.id && (item.selected_unit?.id ? i.selected_unit?.id === item.selected_unit.id : true))));
+    offerUndo(`Undo — restore ${item.name}`, () => setCart(prev => {
+      const next = [...prev];
+      next.splice(Math.min(index, next.length), 0, item);
+      return next;
+    }));
+  }, [cart, offerUndo]);
+
+  // Clearing is the one action that can destroy a whole order, and it sits on a
+  // 12px text link in the header — so it is undoable rather than confirm-gated,
+  // which keeps a deliberate clear fast.
+  const clearCartWithUndo = useCallback(() => {
+    if (cart.length === 0) return;
+    const previous = cart;
+    setCart([]);
+    offerUndo(`Undo — restore ${previous.length} cleared line${previous.length === 1 ? '' : 's'}`, () => setCart(previous));
+  }, [cart, offerUndo]);
+
   function updateCartPrice(id: string, unitId: string | undefined, newPrice: number) {
     setCart(prev => prev.map(i =>
       (i.id === id && i.selected_unit?.id === unitId) ? { ...i, unit_price: newPrice } : i
@@ -2073,7 +2111,19 @@ export default function POSPage() {
     if (typeof window === 'undefined') return true;
     return sessionStorage.getItem('posCartAutoGrow') !== 'off';
   });
-  const [cartListScrolled, setCartListScrolled] = useState(false);
+  // The cart list is a bounded pane, so it scrolls — and it has to say so.
+  // macOS overlay scrollbars stay invisible until the user scrolls, so the
+  // list draws its own edge fades: one per edge, each shown only while there
+  // is content hidden past it. Both are pointer-events-none overlays, so they
+  // never sit between the pointer and a line's controls.
+  const [cartScrollEdges, setCartScrollEdges] = useState({ top: false, bottom: false });
+  const syncCartScrollEdges = useCallback(() => {
+    const el = cartListRef.current;
+    if (!el) return;
+    const top = el.scrollTop > 4;
+    const bottom = el.scrollHeight - el.clientHeight - el.scrollTop > 4;
+    setCartScrollEdges(prev => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }));
+  }, []);
   const prevCartCount = useRef(0);
   useEffect(() => {
     if (showCheckout) chargeIntentIdRef.current = crypto.randomUUID();
@@ -2108,6 +2158,7 @@ export default function POSPage() {
       el.style.removeProperty('--pos-h');
     };
   }, [cartHeightOverride]);
+  // New lines are prepended, so the list returns to the top to reveal them.
   useEffect(() => {
     if (cart.length > prevCartCount.current) {
       const el = cartListRef.current;
@@ -2115,13 +2166,24 @@ export default function POSPage() {
     }
     prevCartCount.current = cart.length;
   }, [cart.length]);
+  // Edge fades are geometry, not render state: re-measure when the content
+  // changes (lines added, a batch row opening, the tab switching) and when the
+  // pane resizes (viewport, auto-grow, maximize).
   useEffect(() => {
-    if (cart.length > prevCartCount.current) {
-      const el = cartListRef.current;
-      if (el) el.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-    prevCartCount.current = cart.length;
-  }, [cart.length]);
+    const el = cartListRef.current;
+    if (!el) return;
+    syncCartScrollEdges();
+    const ro = new ResizeObserver(syncCartScrollEdges);
+    ro.observe(el);
+    const mo = new MutationObserver(syncCartScrollEdges);
+    mo.observe(el, { childList: true, subtree: true });
+    window.addEventListener('resize', syncCartScrollEdges);
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+      window.removeEventListener('resize', syncCartScrollEdges);
+    };
+  }, [syncCartScrollEdges]);
   // Auto-grow: from 3 items the cart extends downward (the page grows with it)
   // so every item stays visible; past 50 items growth stops and the list
   // scrolls internally. "Reset size" in the cart header turns it off.
@@ -2240,11 +2302,10 @@ export default function POSPage() {
           return;
         }
         // Deselect the field cursor first, then the line itself — Esc on a
-        // selected line is the removal gesture the user asked for.
+        // selected line is the removal gesture, and it is undoable.
         if (activeCartField !== null) { setActiveCartField(null); return; }
         if (activeCartLine !== null && cart[activeCartLine]) {
-          const line = cart[activeCartLine];
-          removeFromCart(line.id, line.selected_unit?.id || undefined);
+          removeCartLine(cart[activeCartLine]);
           return;
         }
         if (showMobileCart) { setShowMobileCart(false); return; }
@@ -2283,10 +2344,7 @@ export default function POSPage() {
       const shiftKey = e.code.startsWith('Key') && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
       if (shiftKey && e.code === 'KeyN') {
         e.preventDefault();
-        if (cart.length > 0 && !processing) {
-          setCart([]);
-          toast({ title: 'New sale', description: 'Cart cleared — started a fresh sale.' });
-        }
+        if (cart.length > 0 && !processing) clearCartWithUndo();
         return;
       }
       if (shiftKey && e.code === 'KeyP') {
@@ -2359,7 +2417,7 @@ export default function POSPage() {
   // `allocation` is in the deps because cartLineFields() reads it via
   // lineAllocation() — without it the handler computes stale field lists (e.g.
   // no Batch button) until some other dep happens to change.
-  }, [showCheckout, showShortcuts, showSaleDetails, showMobileCart, cartMaximized, cart.length, cart, activeCartLine, activeCartField, processing, pickingWarehouseLine, viewingBatchLine, editingAllocLine, allocation]);
+  }, [showCheckout, showShortcuts, showSaleDetails, showMobileCart, cartMaximized, cart.length, cart, activeCartLine, activeCartField, processing, pickingWarehouseLine, viewingBatchLine, editingAllocLine, allocation, removeCartLine, clearCartWithUndo]);
   const [defaultProductImage, setDefaultProductImage] = useState('');
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalProduct, setImageModalProduct] = useState<ProductData | null>(null);
@@ -3029,8 +3087,29 @@ export default function POSPage() {
                 {cartAutoGrow ? 'Reset size' : 'Auto-grow'}
               </button>
             )}
+            {undoOffer && (
+              <button
+                onClick={() => {
+                  const restore = undoOffer.restore;
+                  setUndoOffer(null);
+                  restore();
+                }}
+                title={undoOffer.label}
+                aria-label={undoOffer.label}
+                className="flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-1 text-xs font-semibold text-amber-700 transition hover:bg-amber-100"
+              >
+                <Undo2 className="w-3.5 h-3.5" />
+                Undo
+              </button>
+            )}
             {cart.length > 0 && (
-              <button onClick={() => setCart([])} className="text-xs text-red-500 hover:underline">Clear <kbd className="rounded border border-border bg-muted px-0.5 text-[9px] font-semibold text-muted-foreground">⇧N</kbd></button>
+              <button
+                onClick={clearCartWithUndo}
+                title="Clear the cart — undo is offered"
+                className="rounded-md px-1.5 py-1 text-xs text-red-500 transition hover:bg-red-50 hover:text-red-600"
+              >
+                Clear <kbd className="rounded border border-border bg-muted px-0.5 text-[9px] font-semibold text-muted-foreground">⇧N</kbd>
+              </button>
             )}
             <button
               onClick={() => setShowShortcuts(true)}
@@ -3073,15 +3152,15 @@ export default function POSPage() {
           </div>
         )}
 
-        <div
-          ref={cartListRef}
-          onScroll={e => setCartListScrolled(e.currentTarget.scrollTop > 4)}
-          className={`grow shrink min-h-0 overflow-y-auto p-2.5 space-y-1.5 ${cartMaximized ? 'lg:max-w-4xl lg:mx-auto lg:w-full' : ''}`}
-        >
+        {/* Bounded pane: the list scrolls, the fades advertise it. The
+            wrapper (not the scroller) carries the maximized width so the
+            fades stay flush with the list. */}
+        <div className={`relative grow shrink min-h-0 ${cartMaximized ? 'lg:max-w-4xl lg:mx-auto lg:w-full' : ''}`}>
           <div
-            className="sticky top-0 -mb-6 h-6 z-10 pointer-events-none bg-gradient-to-b from-white to-transparent transition-opacity"
-            style={{ opacity: cartListScrolled ? 1 : 0 }}
-          />
+            ref={cartListRef}
+            onScroll={syncCartScrollEdges}
+            className="h-full overflow-y-auto p-2.5 space-y-1.5"
+          >
           {cart.length === 0 ? (
             <div className="flex-1 flex items-center justify-center text-center py-12">
               <div>
@@ -3150,7 +3229,14 @@ export default function POSPage() {
             >
               <div className="flex items-center gap-1.5">
                 <span className="text-muted-foreground/40 text-xs select-none shrink-0">⠿</span>
-                <button onClick={() => removeFromCart(item.id, item.selected_unit?.id || undefined)} className="text-muted-foreground hover:text-red-500 transition shrink-0"><X className="w-4 h-4" /></button>
+                <button
+                  onClick={() => removeCartLine(item)}
+                  aria-label={`Remove ${item.name} from the cart`}
+                  title="Remove line"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:bg-red-50 hover:text-red-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
                 <ProductNameTooltip
                   name={item.name}
                   sku={item.sku}
@@ -3165,7 +3251,7 @@ export default function POSPage() {
               </div>
               <div className="flex items-end gap-1 min-[400px]:gap-1.5 sm:gap-2 mt-1 pl-4 min-[400px]:pl-5 sm:pl-6">
                 <div className="flex flex-col">
-                  <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Price</label>
+                  <label htmlFor={`pos-price-${CSS.escape(liKey)}`} className="text-xs font-medium text-muted-foreground leading-none mb-0.5">Price</label>
                   <input
                     id={`pos-price-${CSS.escape(liKey)}`}
                     type="number"
@@ -3179,7 +3265,7 @@ export default function POSPage() {
                 </div>
                 {item.selected_unit && <span className="shrink-0 hidden min-[360px]:inline text-[10px] sm:text-xs text-muted-foreground pb-1.5">/{item.selected_unit.unit_short || item.selected_unit.unit_name}</span>}
                 <div className="flex flex-col">
-                  <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5">Disc %</label>
+                  <label htmlFor={`pos-disc-${CSS.escape(liKey)}`} className="text-xs font-medium text-muted-foreground leading-none mb-0.5">Disc %</label>
                   <input
                     id={`pos-disc-${CSS.escape(liKey)}`}
                     type="number"
@@ -3201,7 +3287,7 @@ export default function POSPage() {
                     className="hidden min-[480px]:flex flex-col shrink-0 border-l border-border/70 pl-1.5 ml-0.5"
                     title={`${formatCurrency(item.unit_price)} − ${fmtQty(item.discount_percent)}% = ${formatCurrency(netUnitPrice)} per ${lineUnitLabel}`}
                   >
-                    <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 whitespace-nowrap">Net</label>
+                    <span className="text-xs font-medium text-muted-foreground leading-none mb-0.5 whitespace-nowrap">Net</span>
                     <span className="h-[30px] flex items-center text-[13px] font-semibold text-green-600 tabular-nums whitespace-nowrap">
                       {formatCurrency(netUnitPrice)}
                     </span>
@@ -3212,13 +3298,13 @@ export default function POSPage() {
                      same treatment as the batch button, so a line never spends
                      a row on a picker. */
                   <div className="flex flex-col ml-auto">
-                    <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">WH</label>
+                    <span className="text-xs font-medium text-muted-foreground leading-none mb-0.5 text-right">WH</span>
                     <button
                       id={`pos-wh-${CSS.escape(liKey)}`}
                       onClick={e => { e.stopPropagation(); setPickingWarehouseLine(liKey); }}
                       title={warehouseButtonTitle}
                       aria-label={warehouseButtonTitle}
-                      className={`relative h-[30px] w-6 min-[400px]:w-7 shrink-0 rounded-md border border-emerald-200 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100 transition flex items-center justify-center ${fieldSel('wh') ? 'ring-2 ring-blue-500/70' : ''}`}
+                      className={`relative h-8 w-8 shrink-0 rounded-md border border-emerald-200 bg-emerald-50/60 text-emerald-700 hover:bg-emerald-100 transition flex items-center justify-center ${fieldSel('wh') ? 'ring-2 ring-blue-500/70' : ''}`}
                     >
                       <Warehouse className="w-3.5 h-3.5" />
                       {warehouseWarnCount > 0 && (
@@ -3234,13 +3320,13 @@ export default function POSPage() {
                      that carries the warning count, so a line never spends a
                      separate row on batch metadata. */
                   <div className={`flex flex-col ${multiWarehouse ? '' : 'ml-auto'}`}>
-                    <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Batch</label>
+                    <span className="text-xs font-medium text-muted-foreground leading-none mb-0.5 text-right">Batch</span>
                     <button
                       id={`pos-batch-${CSS.escape(liKey)}`}
                       onClick={e => { e.stopPropagation(); setViewingBatchLine(liKey); }}
                       title={batchButtonTitle}
                       aria-label={batchButtonTitle}
-                      className={`relative h-[30px] w-6 min-[400px]:w-7 shrink-0 rounded-md border transition flex items-center justify-center ${
+                      className={`relative h-8 w-8 shrink-0 rounded-md border transition flex items-center justify-center ${
                         la.usedOverride
                           ? 'border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100'
                           : 'border-blue-200 bg-blue-50/60 text-blue-700 hover:bg-blue-100'
@@ -3256,7 +3342,7 @@ export default function POSPage() {
                   </div>
                 )}
                 <div className={`flex flex-col ${multiWarehouse || hasBatchButton ? '' : 'ml-auto'}`}>
-                  <label className="text-[10px] font-medium text-muted-foreground leading-none mb-0.5 text-right">Qty</label>
+                  <label htmlFor={`pos-qty-${CSS.escape(liKey)}`} className="text-xs font-medium text-muted-foreground leading-none mb-0.5 text-right">Qty</label>
                   <input
                     id={`pos-qty-${CSS.escape(liKey)}`}
                     type="number"
@@ -3329,6 +3415,17 @@ export default function POSPage() {
               </div>
             </div>
           )}
+          </div>
+          {/* Hidden-content cues. Opacity only, so neither edge ever reflows
+              the list; inset-x-0 keeps them flush with the scroll gutter. */}
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-x-0 top-0 h-6 bg-gradient-to-b from-white to-transparent transition-opacity duration-150 ${cartScrollEdges.top ? 'opacity-100' : 'opacity-0'}`}
+          />
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-white to-transparent transition-opacity duration-150 ${cartScrollEdges.bottom ? 'opacity-100' : 'opacity-0'}`}
+          />
         </div>
 
         {cart.length > 0 && (
