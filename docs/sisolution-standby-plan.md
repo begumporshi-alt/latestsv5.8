@@ -644,3 +644,27 @@ Only three ERP places read the connection at runtime: `lib/supabase-raw.ts` (mod
 ### Sequence
 
 A (ERP lib + tests) → submodule commit on `customer-search-improvements` + push + re-pin → B (supervisor + shell UI) → cross-verification → evidence recorded here → commit/push both repos.
+
+### Implemented and verified — 2026-10-29
+
+**Part A (ERP submodule).** `lib/runtime-config.ts` resolves the Supabase target as injected → localStorage cache → build-time; `lib/supabase-raw.ts` builds its client lazily behind a forwarding `Proxy` (every `lib/supabase` consumer unchanged); the session-key derivation and the egress host read the same config. Five new tests; 120/120 jest pass. Pushed as `4c60f47` on `customer-search-improvements`; the standby submodule was re-pinned.
+
+**Part B (standby shell).** `connection.json` (0600) in the data dir, written by `save_connection` (empty key fields mean "keep the stored key"; keys are only ever shown masked as `••••last4`); the supervisor spawns the ERP with `STANDBY_SUPABASE_URL` / `STANDBY_SUPABASE_ANON_KEY` resolved from `mode` and records `connection { mode, url }` in `status.json` (never keys); the status page gained a Connection card (mode select, URL, masked keys, Test connection → `GET <url>/auth/v1/health` with the anon key, Save & restart). Ports are env-overridable (`STANDBY_*_PORT`) so a second stack can run beside the packaged one. Six Rust unit tests cover the save/read/mask/keep-key/reject-local/curl-error behavior.
+
+### Three build-time traps found during cross-verification
+
+1. **Prerendered HTML froze the injected config.** Next 13.5 pre-rendered every page at build time, so `window.__SUPABASE_CONFIG__` always carried the build-time URL no matter the runtime env. Fixed with `export const dynamic = 'force-dynamic'` in the ERP root layout (a follow-up ERP commit on the same branch).
+2. **webpack inlines `NEXT_PUBLIC_*` into server bundles too.** Even force-dynamic, `process.env.NEXT_PUBLIC_SUPABASE_URL` in the layout was replaced with a literal at compile time. Fixed by injecting from runtime-only names (`STANDBY_SUPABASE_URL` / `STANDBY_SUPABASE_ANON_KEY` in the supervisor spawn; `NEXT_PUBLIC_*` remains the build-time fallback).
+3. **Status carried a stale error.** `writeStatus` merges patches, so a failed start's `error` survived a later successful start; the running status now clears it.
+
+### Cross-verification (real processes, no production access)
+
+- **Local regression.** Main stack restarted under the new supervisor; ERP HTML injects `http://127.0.0.1:55431`; CDP password login against the rebuilt standalone reached `/dashboard`.
+- **Cloud mode.** A second full stack was booted from a disposable data dir with overridden ports (gateway 55441, PG 55442, ERP 55444, REST 55445, GoTrue 55446) from the failback dump (9 users), then the main stack's `connection.json` was set to `{ mode: "cloud", url: "http://127.0.0.1:55441", anonKey: <cloud-sim key> }` and restarted — the ERP (still at 55433) injected 55441, and a CDP login landed on `/dashboard` while the cloud-sim GoTrue logged the `/token` grant (its services log grew 23 → 35 lines). That is a genuinely different backend, not a URL alias.
+- **Health probe semantics.** `GET /auth/v1/health` with the anon key: 200 on both stacks, curl exit 7 (surfaced as an error in the UI) on a closed port.
+- Packaged `.app` rebuilt: 457 MB, bundled standalone chunk carries `STANDBY_SUPABASE_URL`; the status page renders the Connection card with "Active: local → built-in local stack" (get_connection round-trip proven by the rendered values). Screenshots were verified and deleted; no keys or PII kept.
+- Unit tests: 22 standby node tests, 120 ERP jest tests, 6 Rust tests.
+
+### Not covered / next
+
+The Connection card's Test/Save buttons were verified through their command logic and the `get_connection` IPC round-trip, but not by scripted clicks inside the WKWebView. `hybrid` mode (outbox-up / delta-fetch-down sync policy) stays its own slice. Service keys typed into the cloud form are stored in `connection.json` (0600), as the plan specified.
