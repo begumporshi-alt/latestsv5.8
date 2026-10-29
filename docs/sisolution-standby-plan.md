@@ -934,7 +934,7 @@ This is not a tooling nuisance; it changes what "the cloud schema" means for §2
 - **§26.6 genesis snapshot is not a convenience.** "Genesis is a snapshot of the current cloud database at position 0" is the only workable anchor: migrations cannot reproduce that database, so they cannot be the bootstrap path. A lab built from migrations differs from production in ways a hash would detect immediately.
 - **§26.5 schema_version gating needs one canonical schema, taken from a dump.** The version a device records must identify the dumped schema, not a migration count.
 - **S0 cannot assume handler parity with production.** The lab's handlers are the tracked chain's; production may carry out-of-band definitions. Before trusting a golden-replay fixture, diff the lab fingerprint against a fingerprint of a production dump; any difference is either a migration to write or a lab marker to add.
-- **Add a replay gate.** `reset --yes && apply --yes && verify --baseline db-lab/baselines/lab.json` replays 330 files and compares the fingerprint. A migration that is not replayable, or that changes the schema unintentionally, fails there rather than on a customer's machine.
+- **Add a replay gate.** `reset --yes && apply --yes && verify --baseline db-lab/baselines/lab.json` replays 330 files and compares the fingerprint. A migration that is not replayable, or that changes the schema unintentionally, fails there rather than on a customer's machine. Built and green in §27.6.
 - **The dump carries ACLs, not just schema.** §27.5 shows a replayed schema that matches table-for-table and still answers every app request with `42501`, because the hosted platform's grants live outside the migration chain. A genesis snapshot taken from a dump carries both; a rebuild from migrations carries neither.
 
 ### 27.4 Exit criteria for this slice
@@ -943,7 +943,7 @@ This is not a tooling nuisance; it changes what "the cloud schema" means for §2
 
 ### 27.5 The lab is a working target — connection test — 2026-10-29
 
-**User.** Created through GoTrue's admin API (`POST /auth/v1/admin/users`, `email_confirm: true`) as `lab-smoke-20261029@example.com`, id `ecb490ec-….` `on_auth_user_created` fired and `handle_new_user` wrote the profile: role `sales_executive`, tenant `00000000-…-0001`. The older `20260629` definition defaulted to `store_customer`; a later migration replaces it, which is why the live chain's default is the sales role. The password lives only in `~/.standby-lab-user.json` (0600, outside the repo); rotating or deleting the user later is one admin call.
+**User.** Created through GoTrue's admin API (`POST /auth/v1/admin/users`, `email_confirm: true`) as a dated throwaway address in the reserved `example.com` domain; the address, password and id are recorded in `~/.standby-lab-user.json`. `on_auth_user_created` fired and `handle_new_user` wrote the profile: role `sales_executive`, tenant `00000000-…-0001`. The older `20260629` definition defaulted to `store_customer`; a later migration replaces it, which is why the live chain's default is the sales role. The password lives only in `~/.standby-lab-user.json` (0600, outside the repo); rotating or deleting the user later is one admin call.
 
 **Finding: the platform bootstrap is a second out-of-band dependency.** The lab project carries no default privileges for schema `public` (`pg_default_acl` has no row), so a replay grants the 76 replayed tables to `postgres` and nobody else: 4 of 76 tables reachable by `authenticated`. Even the service key got `42501` on `profiles`. Production never noticed because the hosted platform granted `ALL` to `anon`, `authenticated` and `service_role` when its tables were created. The family is fixed at the project level: `db-lab/bootstrap/public-grants.sql` reproduces the hosted bootstrap (grants on existing tables, sequences and routines plus the matching `ALTER DEFAULT PRIVILEGES`), exposed as `grants --yes` and run automatically at the end of `apply`. It is idempotent, and RLS — 59 tables, 214 policies — remains the thing that decides what each role can read, exactly as in production.
 
@@ -952,3 +952,130 @@ This is not a tooling nuisance; it changes what "the cloud schema" means for §2
 **App-level proof.** `connection.json` was backed up and rewritten in the packaged supervisor's cloud shape (`{mode:'cloud', url, anonKey, serviceRoleKey}`, 0600), the supervisor restarted, and the ERP's `/login` HTML then referenced only the lab project's `<ref>.supabase.co` — the server-injected `__SUPABASE_CONFIG__` path of §24 doing its job on a packaged build. In a fresh desktop Chrome: the real login form accepted the throwaway user and landed on `/dashboard`; CRM → Add Customer → Save produced `CUST-000002`, and the lab database holds it. The local `erp` database still has 243 customers and zero rows named `Lab UI Customer%`, so the write went to the cloud and nowhere else. The browser's session key was `sb-<lab-ref>-auth-token` and the runtime-config cache held the lab URL. Then `connection.json` was restored from the backup, the stack restarted, and status reports `mode: local` with the page referencing `http://127.0.0.1:55431` again.
 
 **Not exercised: the Connection card itself.** The mode switch was made by writing `connection.json` in the same shape the card writes and restarting through the supervisor, because the packaged window is a WKWebView that CDP cannot drive. The card's save → validate → restart path has Rust unit tests but was not clicked in this test.
+
+### 27.6 The replay gate — 2026-10-30
+
+`npm run db:gate -- --yes` is the one command that answers "does the pinned chain still rebuild this schema?": it drops `public`, replays every pinned file, and compares the fingerprint with the committed baseline (`db-lab/baselines/lab.json`). It is destructive by design and takes about 20 minutes against the hosted lab.
+
+**First run failed on the network, not the schema.** At file 5 of 330, the pooler refused two connections in a row (`timeout expired`), and the tool stopped with state saved so a rerun resumes at that file. A 20-minute destructive run should not die on one dropped connection, so `apply` now makes up to three attempts per file when the connection is lost (waiting 15 s, then 30 s) and never retries a statement timeout — a timeout means the file itself is too slow, and retrying only burns the same minutes. A retry is safe for the ordinary case, a drop mid-file, because each file runs in one transaction and the server aborts it. The one case it cannot rule out is a drop in the instant after `COMMIT`: the file would run twice, which is why each retry announces itself in the log.
+
+**Clean run.** 330 files in 1195 s (1207 s for the whole gate, reset included); five files recorded as SKIPPED with their reasons (the fresh-database markers from §27.2); schema `76 tables, 59 with RLS, 214 policies, 193 functions`; `sync_apply(p_item_id uuid, p_op text, p_payload jsonb)` unchanged; grants `76/76`; fingerprint `cbcacf4b…` with 1718 objects, **identical to the baseline**; invariants (sync_apply, signup trigger, table count) hold.
+
+What it proves: the commit the lab is pinned to still rebuilds the same schema from zero, and an unreplayable or accidentally schema-changing migration now fails in one command instead of on a customer's machine. What it does not prove: that this schema equals production's (a dump is still required, §27.3), or that the programs behave identically at runtime (that is §28) — and a green gate does not mean the rebuilt database can trade: the replay lands in the journal-numbering dead end documented in 28.2c, so accounting is blocked until B4. Auth users live outside `public` and survive a gate run; their `profiles` rows do not — the throwaway user's profile was re-inserted after the run. There is no CI workflow yet; the gate is run by hand before merging a migration or moving the pin.
+
+## 28. Determinism audit: wall clock and ambient ids — 2026-10-30
+
+§26.3 named the requirement; this section is the measurement. Every function in the pinned chain was read at its **final definition** (a later file overrides an earlier one), and the live schema was queried after a full gate replay. The result: the same op applied at a different time, or on a different server, produces different rows in seven distinct ways. None of them is a style problem — each one changes `state_hash`.
+
+### 28.1 Method
+
+- Source: 332 `.sql` files in `supabase/migrations`; 196 distinct function names after taking the last definition of each.
+- Bodies scanned for `now()`, `clock_timestamp()`, `statement_timestamp()`, `transaction_timestamp()`, `CURRENT_DATE`, `CURRENT_TIMESTAMP`, `localtime`, `timeofday()`, `gen_random_uuid()`, `uuid_generate_v4()`, `nextval()` and `random()`.
+- Triggers and column defaults cannot be seen in a function body, so those come from the live schema, not the scan (28.6). The scan is the map; the schema is the authority.
+- Per-site counts in 28.2 are taken from the live `prosrc` (28.6), not from the file scan: the scanner keeps one definition per name and so cannot see a function redefined with a different argument list, and a first version of it used a `\b`-anchored token match that silently missed `now()` when followed by `,` or `;`. The file scan is used for names and files; the catalog is used for quantities.
+
+### 28.2 What is non-deterministic today
+
+**a. Business dates decided at replay time — 17 sites in 13 handlers.** The pattern is `coalesce(nullif(p_payload->>'payment_date',''), current_date)`: a payment replayed tomorrow is booked tomorrow. It appears in payment create, advance receive/refund/apply, expense create/update, PO create (order date twice, plus the deposit's payment date), PO payment, purchase return, supplier payable payment, quotation create (twice) and fund transfer. Two handlers write `current_date` unconditionally: `sync_advance_apply` (`20260911130000_offline_phase1_sales_payments.sql:468`) and `sync_store_credit_issue` (`…:628`). The collection form sends `payment_date` today, so the fallback is latent there — but nothing in the handler requires it, and not every caller sends one.
+
+**b. Replay-time timestamps — `updated_at = now()` in 20 sync handlers (24 sites) and 18 other functions (39 sites).** `updated_at = now()` is written on every update the replay performs; `touch_updated_at()` (`20261002150000_replica_updated_at_delta.sql:28`) adds it again on every UPDATE of the 33 tables that carry the trigger; `sync_delivery_status` also writes `delivered_at = now()` (`20260911150000_offline_phase3_quotations_logistics.sql:387`). Counting every `now()` read rather than just that assignment: 31 sites in 23 sync handlers and 51 in 23 other functions. Replaying the same op a day later stamps different times on every row it touches.
+
+**c. Document numbers minted on the server.** Ten replay handlers mint a document number server-side from the global sequence generators: invoice create (POS and invoice numbers, `20260913150000_offline_invoice_print.sql:65-68`), payment create (`20261015120000_payment_collection_grouping.sql:219`), store credit issue (`:603`), customer create (customer code), supplier create (supplier code), PO create (`20261013150000_po_item_force_cost_update.sql:223`, `:277`), PO payment (`20261015130000_…:157`), quotation create (`20260911150000_…:32`) and delivery create (`…:289`); purchase return adds a clock-text fallback (`20261023180000_…:1843`). Journal entries are minted one level deeper: `post_journal_entry` calls `get_next_journal_number()` (`20260703015921_20260703_fix_json_array_extract.sql:47`), and 29 live functions call it — every accounting trigger the replay fires creates a journal entry whose number depends on global numbering state. (Until 2026-07-03 the line read `'JE-' || nextval('journal_entry_seq')` — `20260629102914_008_accounting_automation.sql:57` — which is why that sequence still sits at 1000 and is never advanced.) The number is therefore a function of *how much other work the server has done*, not of the op: two replays disagree, and a rewind renumbers documents already printed and handed to a customer.
+
+**The journal generator is not merely unstable between replays — it reaches a dead end.** `get_next_journal_number()` never touches `journal_entry_seq`. It takes `MAX(digits) + 1` over the existing `JE-%` numbers and formats the result with `lpad(v_count::text, 6, '0')`. `lpad` **truncates** over-long input instead of widening it, and one row in the chain carries eight date digits. On the replayed lab the sequence was:
+
+1. `20260630022741_post_opening_inventory_accounting.sql:34` mints `'JE-OPENING-' || to_char(CURRENT_DATE, 'YYYYMMDD')` — the replay day, `JE-OPENING-20261029`. That is 28.2g and 28.2c at once: a document number that encodes when the chain was replayed.
+2. Its digits parse as `20261029`, so the generator now computes `20261030` for every later call. `lpad(…, 6)` returns `JE-202610`.
+3. `20260901120000_book_fifo_cutover_baseline_adjustment.sql` posts the cutover adjustment and succeeds — it stores the truncated `JE-202610`, a number meaningless against every other `JE-` row and dated `2026-08-08` while its number says October.
+4. Every journal posting after that fails: the generator returns `JE-202610` again, and the insert raises `duplicate key value violates unique constraint "journal_entries_entry_number_key"`. The only escape is a number that is not what the generator returns, which no caller produces.
+
+So the replay spends the one truncated number the generator can still produce, and once the chain finishes, no journal entry can be posted at all — until someone edits rows by hand. `journal_entry_seq` sits at 1000, unused. Two consequences beyond B4: the generator must be replaced, not merely fed an op clock; and §26.6 snapshots have to carry number state, because a snapshot that restores rows and not counters leaves the first post-restore journal entry mis-numbered.
+
+**d. Ambient primary keys.** 49 INSERT statements in 26 handlers omit the `id` column, across 30 tables, so those rows get `DEFAULT gen_random_uuid()`. Some are alternate branches for payloads without an id; the child-row inserts are not — `invoice_items` (`20260913150000_…:115`), `quotation_items`, `delivery_items`, `purchase_order_items`, `cost_price_history`, `stock_movements` and `store_credit_redemptions` never carry an id in any definition. A replayed invoice keeps the invoice id it carries in the payload but mints fresh line ids on every replay, and those ids are what COGS, FIFO layers and the hash reference. Only `sync_purchase_return_create` names the source explicitly — `v_id := gen_random_uuid()` (`20261023180000_…:1840`) — which is equally ambient; everything else inherits the column default.
+
+**e. Clock-dependent reads that change a decision.**
+- `sync_invoice_create` only redeems store credit where `expires_at > now()` (`20260913150000_…:160`).
+- `consume_fifo` only consumes batches where `expiry_date >= CURRENT_DATE` (`20261018120000_negative_stock_guards.sql:91`).
+- `notify_overdue_invoices` counts invoices with `due_date < CURRENT_DATE` (`20261018230000_overdue_digest.sql:49`) — a cron job, not replayed, but it writes notifications, which are state.
+
+The first two mean the same op can redeem a credit or consume a batch on one node and skip it on another, purely because of when it ran.
+
+**f. Clock text inside fallback numbers.** `GRN-YYMMDDHH24MISSUS` from `clock_timestamp()` (`20261025130000_grn_iou_absorption_full_value_journal.sql:109`) and the SR/PAY/SC fallbacks from `to_char(now()|clock_timestamp(), …)` (`20261023180000_…:269`, `:419`, `:505`). Unreachable while the sequence generators return a value, but each one would put replay time into a document number.
+
+**g. Accounting dates written by triggers the replay fires — 52 `CURRENT_DATE` sites in 28 functions outside the handlers** (plus the 17 in 28.2a). Mostly `COALESCE(<document date>, CURRENT_DATE)` in accounting/COGS code: `invoice_accounting_trigger` (`20260909100000_invoice_shipping.sql:127`), `post_grn_journal` (`20261025130000_…:413`), `record_sales_return` (`20261023180000_…:330`), `create_opening_batch` (`20261023160000_adjustment_iou_absorption.sql:58`, `:101`, `:159`), `create_stock_reduction` (`20261023180000_…:1984`, `:1986`, `:2008`), `receive_grn` (`20261025130000_…:114`), `cash_out_store_credit` (`20260914150000_store_credit_cash_out.sql:101`), `collect_customer_advance` (`20260926120000_pos_payment_application.sql:99`) and `record_fund_transfer` (`20260914130000_fund_transfers.sql:98`). When the document carries its date the fallback does not fire; when it does not, the journal is dated at replay time.
+
+### 28.3 What is already deterministic, so the fix stays small
+
+- 31 of the 51 dispatched handlers already take an id from the payload, so B3 extends an existing convention instead of inventing one; the other 20 act on referenced ids (`invoice_id`, `po_id`, …) and cannot mint the id of a new row deterministically today (28.2d lists the inserts).
+- `consume_fifo` already orders `created_at ASC, id ASC` (`20261018120000_…:96-98`); `cancel_invoice` orders payments by `(payment_date, payment_number)` and the number is unique. Report functions have many untied `ORDER BY`s, but they do not write state.
+- One Supabase RPC is one transaction, so a setting made at the top of `sync_apply` is visible to every nested function and trigger it fires. The code already relies on this: `app.edit_invoice_active` (`20260926130000_advance_application_reversal.sql:730`) is set and read the same way.
+- No handler reads `request.jwt.claims`; among the sync functions, `auth.uid()` appears only in `sync_apply` (six non-handler functions — `has_role`, `is_active_user` and four audit/protection helpers — use it for authorization, not for state).
+
+### 28.4 The mechanism: run each op under the op's own clock
+
+```sql
+-- S0 migration
+create or replace function op_at() returns timestamptz
+language sql stable as $$
+  select coalesce(nullif(current_setting('sisolution.op_at', true), '')::timestamptz, now())
+$$;
+
+create or replace function op_date() returns date
+language sql stable as $$ select op_at()::date $$;
+
+-- first statements of sync_apply / op_ingest
+perform set_config('sisolution.op_at', coalesce(p_at, now())::text, true);
+```
+
+Then rewrite every replayed path: `now()` → `op_at()`, `CURRENT_DATE` → `op_date()`, `touch_updated_at`'s assignment → `op_at()`, and state-table defaults `DEFAULT now()` → `DEFAULT op_at()`. Online writes (direct RPC, cron jobs) carry no `p_at`, so `op_at()` returns `now()` and today's behaviour is unchanged byte for byte.
+
+Three properties make this the cheap option:
+
+- The cloud clamps `p_at` to ±5 minutes of receipt before appending the op (§26.1), so every node executes the same value.
+- A transaction-local setting reaches triggers, which is where most of the 54 `CURRENT_DATE` sites are.
+- `op_at()` is STABLE, so it is legal in a column default and is evaluated once per statement, like `now()`.
+
+### 28.5 Fix batches
+
+| batch | scope | exit criterion |
+|---|---|---|
+| **B1 — envelope and clock** | `p_at` (with `device_id` and `hlc`) on `sync_apply`; `op_at()` / `op_date()`; the `set_config` line; no handler behaviour change yet | replay one op twice with `p_at` 30 days apart: identical rows except the sequence-backed ids and numbers fixed by B3/B4 |
+| **B2 — timestamps** | `touch_updated_at`; the 24 sync and 39 other `updated_at = now()` sites; every remaining `now()` read (31 + 51); state-table `DEFAULT now()` → `DEFAULT op_at()` | no `now()` reachable from a replayed path outside B5 |
+| **B3 — ambient ids** | the 26 handlers that insert without an id (49 inserts, 28.2d), of which 20 have no payload id branch at all (28.3): child ids carried in the payload (derived on the device from the op id) or derived server-side from `op_id`, e.g. `md5(op_id::text || ':<table>:<n>')` rendered as a uuid — not `uuid_generate_v5`, because the chain installs only `pg_cron` and `uuid-ossp` is not guaranteed on the bundled PostgreSQL | replaying the same op twice produces identical primary keys, including `invoice_items`, `quotation_items`, `payments`, `stock_movements` |
+| **B4 — numbering** | §26.4 per-device series: numbers minted at execution, carried in the payload, stored verbatim; global generators remain only for direct online RPCs; journal-entry numbers follow the same rule, and `get_next_journal_number()` is replaced outright — its `MAX`-over-digits scheme cannot survive a date-bearing entry (28.2c) | two devices replaying one log produce identical numbers; a rewind renumbers nothing; a fresh replay can post journal entries indefinitely |
+| **B5 — clock-dependent decisions** | store-credit expiry filter, FIFO expiry filter, `delivered_at` → `op_at()`; the overdue digest stays cloud-only and outside the replayed path | replay at T and at T+30 days selects the same batches and writes the same `delivered_at` |
+| **B6 — proof** | `state_hash()` over the table registry plus the §26.14 two-device rig with injected clock skew | hashes equal at equal positions under skew; mismatch halts relay |
+
+B1 is a pure addition. B2 is mechanical and can land table by table behind the gate. B3 and B4 change payload contracts, so they must ship with the client's envelope change (S0/S1) or older clients lose their numbers. B5 needs B1. B6 is the acceptance test for all of them.
+
+### 28.6 Live-schema cross-check
+
+Queried against the schema the gate had just rebuilt from 330 files (§27.6), so these are what the chain actually produces, not what the text looks like.
+
+- **69 functions read the clock (70 definitions — `post_grn_journal` is overloaded)** — 30 of the 51 dispatched handlers and 39 others. By token: 46 read `now()` (82 sites), 41 read `CURRENT_DATE` (69 sites), 2 call `clock_timestamp()` (4 sites). The static scan saw 75 names; six of them are defined and then dropped by the chain itself (`grn_accounting_trigger`, `invoice_items_cogs_trigger`, `purchase_order_accounting_trigger`, and three customer-balance helpers replaced in `20260906150000_customer_totals_trigger_authority.sql`), so the scan over-counts and the schema is the authority. Every site cited in 28.2 was read in its file.
+- **170 clock/id defaults** — 104 columns default to `now()`, 66 to `gen_random_uuid()`. The 66 uuid defaults are the mechanism behind 28.2d: 66 tables mint their own row id unless the insert supplies one. There are no `nextval` defaults; numbering happens inside functions.
+- **80 user triggers, 44 of them run a clock-reading function** — the 33 `touch_updated_at` triggers plus 11 accounting/stock triggers on `invoices`, `invoice_items`, `payments`, `purchase_orders` and `store_credit_redemptions`. A replay therefore touches the clock through triggers on 34 tables even if every handler were fixed (28.2b, 28.2g).
+- **17 sequences** — the 12 live document series (invoice, POS, payment, delivery, PO, PO payment, sales return, customer, quotation, advance, store credit, supplier), the quick-sell SKU series, three audit/repair series, and `journal_entry_seq`, which is vestigial: nothing has called `nextval` on it since 2026-07-03, and journal numbers come from `get_next_journal_number()` (28.2c). Every other series is `nextval` inside a function.
+- **`sync_apply` is still `(p_item_id, p_op, p_payload)`** — no time, device or sequence in the envelope. Its 51 dispatch targets all resolve in the live schema, so the handler surface is complete; only the envelope is missing.
+
+One observation outside the audit's scope: `invoices` carries two enabled AFTER INSERT OR UPDATE triggers (`invoice_accounting`, `trg_invoice_accounting`) that call the same `invoice_accounting_trigger`, and `payments` does the same with `payment_accounting_trigger`. Duplicate execution is invisible while the handler is idempotent, but it doubles the clock writes and the journal numbering calls per row; the idempotency guard should be verified before S0 relies on it.
+
+### 28.7 The same op, twice — a live demonstration
+
+The counts above are a map. This is the terrain: on the freshly replayed lab, as the throwaway user through `sync_apply`, one `quotation.create` payload was submitted twice under different `p_item_id`s. The payload carried a customer, a product and one line — no row id, no `issue_date`, no idempotency key.
+
+| field | run 1 | run 2 |
+|---|---|---|
+| quotation id | `15cde571…` | `db24df6e…` |
+| quote number | `QT-000001` | `QT-000002` |
+| issue date | `2026-10-29` | `2026-10-29` |
+| created_at | `18:30:20.976529+00` | `18:30:23.050822+00` |
+| line id | `ed036607…` | `aa69ad33…` |
+
+Five fields, four of them different, none of them supplied by the op. That is 28.2a (`issue_date` is the server's `current_date` because the payload had none — replay it another day and the document is dated then), 28.2b, 28.2c and 28.2d in a single row: put the same log on two nodes, or replay it tomorrow, and `state_hash` disagrees at the first document. The probe rows were deleted afterwards, and the quotation series still advanced to `QT-000003` — which is the same point about global counters: nothing about them is restorable.
+
+The journal path failed before writing anything. An `advance.receive` probe without `payment_date` returned `duplicate key value violates unique constraint "journal_entries_entry_number_key"`, `Key (entry_number)=(JE-202610) already exists`, and the stack shows exactly the chain 28.2c describes: `sync_advance_receive` inserts → `trg_advance_accounting` → `advance_receipt_accounting_trigger` → `post_journal_entry` → `get_next_journal_number()`. One RPC is one transaction, so the advance row disappeared with the failure — clean failure, but no advance either. Two probes, two different reasons to be non-deterministic, and the numbering fault fires before the clock fallback is ever reached, because the row carrying `current_date` never lands.
+
+That failure is a finding, not a lab accident, and it is left standing: patching the number by hand would hide the condition B4 has to fix. The lab cannot post a journal entry today, which is worth knowing before anyone reads "the gate is green" as "the lab can run the business".
+
+What this proves: the audit's categories reproduce on the real schema, not just in the source text. What it does not prove: anything about two devices, which remains B6's rig, and nothing here exercises the online (no-`p_at`) path, which must stay byte-identical after B1.
