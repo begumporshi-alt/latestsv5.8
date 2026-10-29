@@ -72,11 +72,22 @@ function endpointKey(url: URL): string {
   return `other:${p.split('/').slice(0, 3).join('/')}`
 }
 
-let supabaseHost = ''
-try {
-  supabaseHost = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL || '').host
-} catch {
-  supabaseHost = ''
+// Resolved lazily on first tracked request (not at module load): the
+// connection config can come from runtime injection (window.__SUPABASE_CONFIG__,
+// set by lib/runtime-config.ts) which may not be present when this module is
+// first imported. Read inline rather than importing runtime-config — nothing
+// in the client-creation chain may import back into this module.
+let supabaseHost: string | null = null
+function resolveSupabaseHost(): string {
+  if (supabaseHost === null) {
+    const raw = (typeof window !== 'undefined' && window.__SUPABASE_CONFIG__?.url) || process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+    try {
+      supabaseHost = new URL(raw).host
+    } catch {
+      supabaseHost = ''
+    }
+  }
+  return supabaseHost
 }
 
 function openDB(): Promise<IDBDatabase> {
@@ -181,10 +192,11 @@ async function measureAndRecord(res: Response, endpoint: string): Promise<void> 
  */
 export function trackedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const promise = fetch(input as RequestInfo, init)
-  if (typeof window === 'undefined' || !supabaseHost || !isEgressTrackingEnabled()) return promise
+  const host = resolveSupabaseHost()
+  if (typeof window === 'undefined' || !host || !isEgressTrackingEnabled()) return promise
   try {
     const url = new URL(typeof input === 'string' ? input : (input as Request).url)
-    if (url.host !== supabaseHost) return promise
+    if (url.host !== host) return promise
     promise.then((res) => {
       try { void measureAndRecord(res, endpointKey(url)) } catch { /* never break the caller */ }
       return res

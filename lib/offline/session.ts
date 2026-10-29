@@ -16,6 +16,7 @@
  */
 import { getMeta, setMeta } from './db'
 import { supabaseRaw } from '../supabase-raw'
+import { getSupabaseConfig } from '../runtime-config'
 
 export interface LastKnownUser {
   id: string
@@ -92,7 +93,7 @@ export async function resolveUserId(): Promise<string | null> {
 function readStoredSessionUser(): LastKnownUser | null {
   if (typeof window === 'undefined') return null
   try {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+    const url = getSupabaseConfig().url
     const ref = new URL(url).hostname.split('.')[0]
     if (!ref) return null
     const key = `sb-${ref}-auth-token`

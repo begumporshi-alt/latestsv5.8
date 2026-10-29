@@ -63,8 +63,9 @@ describe('network-error classification (lib/offline/cache)', () => {
   beforeAll(() => {
     process.env.NEXT_PUBLIC_SUPABASE_URL ||= 'https://test.supabase.co';
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||= 'test-anon-key';
-    // Dynamic require: lib/supabase creates its client at import time and
-    // needs the env vars set first (jest hoists static imports).
+    // Dynamic require: the wrapped client resolves its connection config on
+    // first use, so the env vars must exist before any request is classified
+    // (jest hoists static imports).
         isNetworkError = require('../cache').isNetworkError;
   });
 
