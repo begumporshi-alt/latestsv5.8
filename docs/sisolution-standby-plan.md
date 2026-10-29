@@ -668,3 +668,144 @@ A (ERP lib + tests) → submodule commit on `customer-search-improvements` + pus
 ### Not covered / next
 
 The Connection card's Test/Save buttons were verified through their command logic and the `get_connection` IPC round-trip, but not by scripted clicks inside the WKWebView. `hybrid` mode (outbox-up / delta-fetch-down sync policy) stays its own slice. Service keys typed into the cloud form are stored in `connection.json` (0600), as the plan specified.
+
+## 25. Hybrid sync policy — spec — drafted 2026-10-29
+
+Goal: one desktop install keeps working with **every operation, online and offline**, while a hosted Supabase project remains the book of record. Hybrid adds continuous replication to the mode switch shipped in §24: the local PostgreSQL stack becomes the shared working set (also for LAN clients), and a sync agent keeps it converged with the cloud.
+
+### 25.1 The three modes
+
+| mode | reads / auth | writes | offline means |
+|---|---|---|---|
+| `local` | local stack | local stack | irrelevant (nothing remote) |
+| `cloud` | cloud (browser Dexie replica for offline reads) | cloud `sync_apply` (browser outbox when offline) | cloud unreachable — per-browser queue |
+| `hybrid` | local stack (LAN clients included) | shared outbox in local PG → agent → cloud `sync_apply` | cloud unreachable — queue grows in the shared outbox, no operation is lost or blocked |
+
+Cloud remains a supported standalone mode; hybrid is additive.
+
+### 25.2 What exists today and is reused
+
+- `sync_apply(p_item_id, p_op, p_payload)` — one signature, 49 ops, two-layer idempotency (`sync_applied_items` claim + `sync_intent_keys`), `expected_updated_at` conflicts with `force`, conflict claims deleted so a forced retry re-executes (`20260909233000_offline_sync.sql:7-37,703-783`; final body `20260914150000_store_credit_cash_out.sql:150-317`). **Do not recreate a second signature**; the "9-arg" in project notes is `collect_customer_payment`, not `sync_apply`.
+- 55 mirrored tables with `updated_at` (trigger `touch_updated_at`) or `created_at` cursors, applied by plain PostgREST `.gt(cursor)` reads (`lib/offline/replica.ts:87-141`), count probe + daily full replace for deletes (`:199-227`).
+- Browser outbox state machine: UUID `item_id`, ordered drain, 2 attempts/drain, 3 s backoff, conflict parking (`lib/offline/sync.ts:113-240`, `lib/offline/outbox.ts:39-164`).
+- Entity PKs are client-generated UUIDs (e.g. invoices insert `p_payload->>'id'`); the server mints only human document numbers (`20260913150000:61-75`). This is what makes replay idempotent and cross-op references stable.
+- Stock: FIFO batches + `inventory_items` counters, `consume_fifo`, IOU shortfall rows, counter resync (`20261018120000`, `20261024120000`, `20261023180000`). Numbering: per-database sequences; unique `(tenant_id, invoice_number)` etc.; **payments have no unique number index** (`20260615013742_002_business_operations.sql:193,228`).
+- RLS: SELECT open to `authenticated` for whole-table sync; writes role-gated on 7 high-risk tables; `service_role` is BYPASSRLS (`compatibility/roles.sql:8`).
+
+### 25.3 Decision 1 — cloud is the single writer authority
+
+Business operations run **only** in the cloud database. The local stack never mints document numbers, never runs FIFO/ledger side effects for cloud-replicated work, and never accepts a row diff as an update. Rationale: every invariant (numbering, FIFO, IOU healing, counter resync, RLS role checks) lives inside the `sync_*` handlers; a row-level bidirectional sync would fork those invariants and produce two ledgers that only look equal. Rejected alternative: local-authority with merge — requires conflict-free replication of ledger state, which the schema does not support.
+
+### 25.4 Decision 2 — split planes
+
+- **Read + auth plane:** ERP browser → local stack (as in local mode today: offline layer sees "server down" only if the desktop stack dies).
+- **Write plane:** ERP browser → shared outbox RPC on the local stack → agent → cloud `sync_apply` → result back into outbox → delta pulls the row down.
+- **Down plane:** agent polls cloud deltas → upserts into local PG (service role).
+
+The browser's existing Dexie outbox stays the write path in `cloud` mode; in `hybrid` mode the outbox moves into the local database so all LAN clients share one queue and one drain.
+
+### 25.5 Data policy matrix
+
+| class | tables | direction | rule |
+|---|---|---|---|
+| A — mirror | the 55 replicated tables | cloud → local only | upsert by `id`; no local business writes outside the agent; cursors on server-side `updated_at`/`created_at` |
+| B — ops | the 49-op surface (invoices, payments, returns, PO/GRN/purchase returns, quotations, deliveries, projects, products/customers/employees, warehouses, transfers, store credit, advances, expenses, quick sell) | local → cloud as ops | only through the outbox; never as row diffs |
+| C — local state | `hybrid_outbox`, `hybrid_state`, sync logs, browser cache | local only | never replicated; excluded from deltas |
+| D — auth snapshot | `auth.users`, `public.profiles` | cloud → local | profiles ride class A; users come from the GoTrue admin API (see 25.9) |
+
+Deletes: class A needs tombstones — cloud hard-deletes leave no trace for a cursor read, so a migration adds `sync_tombstones(id bigint identity, table_name text, row_id uuid, tenant_id uuid, deleted_at timestamptz default now())` with delete triggers on every class-A table that hard-deletes; the agent replicates tombstones down and applies deletes locally. Retention 90 days. The count probe + weekly full replace remain as backstops, not as the primary delete mechanism.
+
+### 25.6 Up path — shared outbox
+
+```sql
+create table public.hybrid_outbox (
+  item_id uuid primary key,            -- the client idempotency key (same as today's outbox)
+  user_id uuid not null,               -- acting user; replay identity
+  op text not null, payload jsonb not null,
+  created_at timestamptz not null default now(),
+  attempts int not null default 0, status text not null default 'pending', -- pending|synced|conflict|failed
+  last_error text, server_result jsonb, conflict jsonb, synced_at timestamptz
+);
+```
+- The ERP enqueues through a local RPC (`hybrid_enqueue`) that stamps `user_id = auth.uid()`; the payload is exactly today's `sync_apply` payload (including `expected_updated_at`).
+- The agent drains per user in `created_at` order — same semantics as the browser outbox — and calls a new **`sync_apply_as(p_user_id, p_item_id, p_op, p_payload)`** granted to `service_role` only, whose body is the existing `sync_apply` body with the identity taken from the argument. No user tokens are minted; replay survives token expiry.
+- Results: `duplicate`/`synced` → store `server_result`, mark synced (the delta brings the canonical row incl. the real invoice number; `client_temp_number` remains the UI's provisional label until then). `conflict` → park with `server_row` for operator resolution in Sync Center (reuse the existing conflict UI patterns). Transport errors → backoff, cap at 5 attempts, then `failed` with a visible banner.
+- Ordering: strict per-user FIFO; a poisoning op parks and blocks only that user's later ops (documented tradeoff, same as the browser today).
+
+### 25.7 Down path
+
+- One cursor per class-A table in `hybrid_state` (`replica:delta_cursor:<name>` equivalent), advanced only after a committed upsert batch.
+- Cadence adapts: hot tables (invoices, invoice_items, payments, inventory_*, customers) every 2–5 s while a client is active; warm tables 30 s; cold tables 5–15 min; full replace weekly in an idle window; count probe every 20 cycles. Active = an outbox drain or a UI request in the last minute.
+- Upserts run as the service role in a single transaction per table batch; failures never advance the cursor.
+- **Echo guard:** the agent is the only writer of business rows locally, and up-traffic is op-based, so delta-applied rows can never be re-enqueued. Any future trigger-based capture must set `session_replication_role = replica`-style guards.
+- Read-your-writes: the ERP's pending overlay (`lib/offline/pending.ts`) covers the gap between "op synced" and "row arrived"; target ≤5 s convergence with the agent running.
+
+### 25.8 Conflict rules
+
+| situation | rule |
+|---|---|
+| create replay | idempotent: `item_id` claim returns the stored result; a global `sync_intent_keys` PK collision across users still needs fixing to `(user_id, key)` (migration, see 25.12) |
+| update vs update | `expected_updated_at` mismatch → park; operator chooses keep-local (retry with `force`) or take-server (discard) |
+| status change vs edit | same check plus the legal-transition guard in the handler; cancel-vs-edit resolves to cancel unless forced |
+| ledger appends (payments, stock movements, journal) | immutable; corrections are new ops, never updates |
+| delete vs update | delete ops carry `expected_updated_at`; a tombstone for an id with a pending local update parks that op |
+| delete when already deleted | treated as success (idempotent) |
+| counters / stock on hand | never client-sent; the server recomputes; local counters are display data refreshed by deltas + overlay |
+| two installs editing the same row | both replay into the cloud; the second gets a conflict and parks — no silent merge |
+
+### 25.9 Identity, auth, and RLS parity
+
+- **Shared JWT secret.** `connection.json` gains `jwtSecret` (0600, typed once in the Connection card; never sent to a browser). The local PostgREST validates cloud-issued access tokens, so `auth.uid()` and role claims are identical on both ends. Without this, local RLS would see a different identity than the cloud and every role-gated write would diverge.
+- **Offline login.** Local GoTrue keeps serving; it must hold the same users. The agent snapshots `auth.users` via the cloud GoTrue admin API (service key) after each successful heartbeat. Known limits: password hashes must be present in the admin payload (verify before S4); users created in the cloud after the last snapshot cannot log in offline; offline refresh tokens are capped by their TTL.
+- **Full-mirror disclosure.** The local database holds every tenant row (RLS still restricts API roles). Accepted for a single-operator desktop; anything multi-tenant needs the LAN/security slice (25.13).
+- **Seeding.** Hybrid starts from an empty local database filled by the agent's first full replace plus the auth snapshot — a failback dump import stays the standby path, not the hybrid path.
+
+### 25.10 Failure modes
+
+| failure | behavior |
+|---|---|
+| cloud unreachable | reads continue; ops queue in the shared outbox; status pill shows "offline — N pending"; no op is dropped |
+| agent crash | `hybrid_state` untouched (cursor advances only on commit); supervisor restarts it; single-flight lock row prevents two agents |
+| partial down-batch | transaction rolls back, cursor stays; retry from the same point |
+| duplicate delivery | `item_id` / `sync_intent_keys` dedupe; the second result is returned, not re-applied |
+| outbox growth | disk quota check; over cap → hard banner, new ops still accepted but sync paused (never silent drop) |
+| clock skew | cursors use server `updated_at`/`created_at` only; local timestamps are display data |
+| target change (new project URL) | connection fingerprint in `hybrid_state`; mismatch resets cursors and forces a full replace |
+| conflict storm | parked ops surface in Sync Center with counts; drain continues for unaffected users |
+| replayed create with a colliding number | impossible against the cloud (authority mints); locally the temp number is cosmetic |
+
+### 25.11 Egress budget
+
+Down traffic dominates. Delta reads pull only changed rows but re-select all columns; mitigations: explicit column lists for the five hot tables, `Range` pagination at 1000 rows, cold-table intervals of minutes, no count probe more than every 20 cycles, weekly full replace in one idle window. The existing egress tracker learns to label both planes (`local`, `cloud`) so the budget is observable; the §24 requirement of bounded egress still applies.
+
+### 25.12 ERP-side and shell prerequisites (additive)
+
+1. Migration `sync_tombstones` + delete triggers (class A).
+2. Migration `sync_apply_as(p_user_id, p_item_id, p_op, p_payload)` for `service_role`, delegating to the existing body.
+3. Migration fixing `sync_intent_keys` PK to `(user_id, intent_key)`.
+4. Optional: unique number index for payments (today duplicates pass silently).
+5. Client: split read/write endpoints in hybrid mode (`lib/supabase.ts` read client → local; write client → cloud or outbox), and a thin local outbox adapter replacing Dexie's outbox in hybrid mode. This is the largest ERP change and is why hybrid ships in slices.
+6. Shell: a third mode (`hybrid`) in the Connection card, a `jwtSecret` field (masked like the other keys), and the agent as a supervised child in `scripts/packaged-supervisor.mjs` with its own single-flight lock and status entry (`connection.replication`).
+
+### 25.13 Slices and exit criteria
+
+- **S1 — tombstones + down-sync agent.** Agent pulls cloud → local; hybrid writes blocked with a clear banner. Exit: after a cloud sale, local rows converge without a refresh; a cloud delete propagates; cursor survives an agent kill; egress measured.
+- **S2 — shared outbox + up-drain for sales.** `hybrid_outbox`, `hybrid_enqueue`, `sync_apply_as`, agent drain; POS quick sell and invoice create only. Exit: offline sale queues and lands in the cloud with the cloud number after reconnect; duplicate replay is a no-op; conflict parks visibly.
+- **S3 — all 49 ops, conflict UI, numbering reconciliation, delete ops.** Exit: every op either syncs or parks with an actionable reason; local temp numbers replaced by canonical ones.
+- **S4 — auth snapshot + shared JWT secret.** Exit: cloud-issued tokens work against local RLS; offline login works for snapshotted users.
+- **S5 — LAN clients.** Bind the gateway beyond loopback, per-client auth, and the TLS/permission decision (separate slice — currently loopback-only by design). Realtime emulation (LISTEN/NOTIFY → SSE for notifications) rides here; only `hooks/use-notifications.ts` consumes Realtime today.
+
+### 25.14 Test plan
+
+Two stacks (local + cloud-sim on override ports, as in §24). Scenarios: partition the cloud mid-sale and reconnect; replay the same op twice; edit the same product on both ends; delete on cloud with a pending local update; kill -9 the agent mid-batch; 200-op backlog; clock skew injection; target switch mid-queue; assert convergence with table fingerprints and outbox states, never by eyeballing UI.
+
+### 25.15 Open decisions (recommendations inline)
+
+1. **Auth for replay** — recommend `sync_apply_as` (service-role) over minting per-user tokens; it keeps the `auth.uid()` contract without token lifecycle.
+2. **Tombstones in cloud migrations** — recommend yes; without them deletes rely on count probes and full replaces, which is both lossy and expensive.
+3. **Outbox payload secrecy** — recommend plaintext under the 0700 data dir (the local DB already holds the same business data); no second encryption layer to manage.
+4. **GoTrue admin snapshot** — confirm the admin API returns password hashes before S4; if it does not, offline login degrades to "last online session + refresh window" and that must be documented in the UI.
+
+### Explicit non-goals
+
+No cloud → local push/Realtime dependency (polling is the contract; hosted Supabase does not grant customers replication slots to rely on). No multi-tenant local mirror, no merge of two offline edits of the same invoice (park only), no mobile, no Windows, no automatic conflict resolution beyond `force`.
