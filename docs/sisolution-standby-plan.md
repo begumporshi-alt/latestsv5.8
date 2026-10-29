@@ -907,3 +907,35 @@ The determinism audit is the bulk of the work: ~52 `sync_*` handlers, ~20 trigge
 ### 26.14 Acceptance
 
 Two devices go offline, each executes sales, refunds, returns, stock adjustments, and customer edits; they reconnect in an arbitrary order; after relay settles, `state_hash(position)` is equal on both devices and the cloud. Repeat with injected clock skew, a kill -9 mid-push, a rejected oversell, and a third device bootstrapping from a snapshot. Any hash mismatch fails the slice.
+
+## 27. Isolated lab database and the replay audit — 2026-10-29
+
+The determinism work needs a database that can be broken freely. It targets a second Supabase project (eu-west-3, PostgreSQL 17.11), never the live business project: its connection string lives in a 0600 file outside the repository, no key is written into the repo, and the tool refuses to write to any project ref that is not listed in `db-lab/targets.json`. The live project is not in that list.
+
+### 27.1 The tool
+
+`sisolution-standby/db-lab/` (commit `1874507`) pins the git-tracked migrations at the ERP commit (`git archive HEAD`, 330 files, sha256 manifest), applies them to the allowlisted project, and records every applied file with its hash in a git-ignored state file. Commands: `snapshot` / `snapshot --check`, `status`, `plan`, `apply --yes`, `reset --yes`, `verify`, `fingerprint`. Each file runs in its own transaction; a failure stops the run and the state is saved so the next run resumes at that file.
+
+Lab result: 330 files applied; 76 tables, 59 with RLS, 214 policies, 193 functions; exactly one `sync_apply(p_item_id uuid, p_op text, p_payload jsonb)`; `handle_new_user` with `on_auth_user_created` on `auth.users`; fingerprint `cbcacf4b…` saved to `db-lab/baselines/lab.json`. The lab has no `replica_*` tables because the app creates those for its local mirror; migrations never do.
+
+### 27.2 Finding: the migration chain is not replayable from an empty database
+
+This is not a tooling nuisance; it changes what "the cloud schema" means for §26. Each class below was hit while replaying, and each is now a marker next to the pinned file, hashed into state and refused if edited later.
+
+| class | examples |
+|---|---|
+| **Seed collisions** | `003_seed_data` seeds a category slug that `013_import_categories_brands` inserts again; `clear_seed_data` deletes parents before children; 6 seeded deliveries have a NULL `invoice_id` that a FK still references. |
+| **Out-of-band DDL** | `purchase_returns` tables, the `grn_accounting` trigger, `purchase_returns_status_check`, and the scalar `get_fifo_inventory_value` existed only in the live database; migrations assume them. |
+| **Broken files** | One file saved with literal `\n` instead of newlines (psql reads it as a meta-command); six files end without a semicolon on their last statement; one defines `restore_fifo` with `UPDATE ... ORDER BY`, which Postgres rejects at create time and which therefore never applied anywhere. |
+| **Production data repairs** | Five files purge or repair specific production rows (INV-940607 …, INV-940647, the `testsup` supplier, the opening inventory balance). Each hard-codes ids and asserts on production totals, so each aborts itself on an empty database and defines no runtime schema. |
+
+### 27.3 What this means for the op-log design
+
+- **§26.6 genesis snapshot is not a convenience.** "Genesis is a snapshot of the current cloud database at position 0" is the only workable anchor: migrations cannot reproduce that database, so they cannot be the bootstrap path. A lab built from migrations differs from production in ways a hash would detect immediately.
+- **§26.5 schema_version gating needs one canonical schema, taken from a dump.** The version a device records must identify the dumped schema, not a migration count.
+- **S0 cannot assume handler parity with production.** The lab's handlers are the tracked chain's; production may carry out-of-band definitions. Before trusting a golden-replay fixture, diff the lab fingerprint against a fingerprint of a production dump; any difference is either a migration to write or a lab marker to add.
+- **Add a replay gate.** `reset --yes && apply --yes && verify --baseline db-lab/baselines/lab.json` replays 330 files and compares the fingerprint. A migration that is not replayable, or that changes the schema unintentionally, fails there rather than on a customer's machine.
+
+### 27.4 Exit criteria for this slice
+
+330 files applied with every deviation recorded; `verify` holds and the baseline is saved; `snapshot --check` matches the pinned commit. Next: create one throwaway user through the app's signup path, point the app at the lab in cloud mode via the Connection card, verify login and one write, then switch back to local.
