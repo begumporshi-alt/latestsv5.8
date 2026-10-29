@@ -671,6 +671,8 @@ The Connection card's Test/Save buttons were verified through their command logi
 
 ## 25. Hybrid sync policy — spec — drafted 2026-10-29
 
+> **Supersession (2026-10-29):** §25.3 (cloud sole writer authority), §25.4 (split planes), §25.6 (shared outbox as the only write path), §25.7 (delta mirror) and §25.5's tombstones are replaced by **§26 — deterministic op-log replication**, after user direction that the standalone app must execute every operation locally, online and offline, with order-based convergence provable by a state hash. Still valid from §25: the mode matrix (25.1), current-state inventory (25.2), identity/RLS parity and auth snapshot (25.9), egress awareness (25.11), and the test approach (25.14).
+
 Goal: one desktop install keeps working with **every operation, online and offline**, while a hosted Supabase project remains the book of record. Hybrid adds continuous replication to the mode switch shipped in §24: the local PostgreSQL stack becomes the shared working set (also for LAN clients), and a sync agent keeps it converged with the cloud.
 
 ### 25.1 The three modes
@@ -809,3 +811,99 @@ Two stacks (local + cloud-sim on override ports, as in §24). Scenarios: partiti
 ### Explicit non-goals
 
 No cloud → local push/Realtime dependency (polling is the contract; hosted Supabase does not grant customers replication slots to rely on). No multi-tenant local mirror, no merge of two offline edits of the same invoice (park only), no mobile, no Windows, no automatic conflict resolution beyond `force`.
+
+## 26. Hybrid, revised — deterministic op-log replication — 2026-10-29
+
+User direction: the standalone app executes **every business operation locally** — billing, refunds, stock adjustments, customer lookups — online and offline; offline work is pushed to the cloud whenever a connection exists; devices sort ops by `(logical timestamp, device id)` and apply them in exactly that order, so the final state is identical everywhere and provable by state-hash comparison. No business operation waits in a queue.
+
+### 26.1 The model
+
+Every node — each device and the cloud — runs **one deterministic program** over the same op sequence. The objection to §25 ("the local database never applies business logic of its own") disappears: the local database does not run a second implementation, it runs the *same* implementation on the *same* input in the *same* order. Divergence in §25's rejected design came from two independent implementations merging row states; here there is one implementation and a total order. The cloud is the durable log, the snapshot host, and an equal replica — not an oracle that decides outcomes.
+
+- **Op** = `{ op_id uuid, device_id, hlc (wall, counter), user_id, op, payload, schema_version, p_at }` — the existing 49-op `sync_apply` surface, with identity and time carried *inside* the op instead of read from the environment.
+- **Order key** = `(hlc.wall, hlc.counter, device_id, op_id)`. Wall clocks are Hybrid Logical Clock values clamped to ±5 min of the cloud receipt time; ties break deterministically.
+- **Execution** = append to the local log and apply immediately. The operation is real the moment the user presses the button. The unsynced **log tail** is durable transport state — it records what to send, but nothing is deferred: the business logic already ran, locally.
+- **Sync** = push the tail to the cloud ingest RPC and pull ops after the local head. Push can be continuous or on demand ("sync now"); it is idempotent and resumable.
+
+### 26.2 Total order, rewind, and catch-up
+
+A device applies its own op at its current HLC, which is always later than every op it has seen — so local work never rewinds. A remote op that sorts **before** the last applied op (possible after a partition) triggers a rewind to the last checkpoint at or before that position and a replay. With HLC and a 5-minute clamp, rewinds are rare; checkpoint every 500 ops bounds the cost. While catching up the UI shows "Syncing — catching up" and marks recently created documents as provisional; with the numbering policy below, their numbers never change.
+
+### 26.3 Determinism requirements (the real work)
+
+A state hash can only match if the program is a pure function of `(state, op)`. The audit is concrete and bounded:
+
+1. **No wall clock in state.** Handlers and triggers must use the op's `p_at`, not `now()` / `clock_timestamp()`. Sites today: document-number generators, GRN numbering (`clock_timestamp()` text), `created_at`/`updated_at` defaults and `touch_updated_at`, journal and activity-log timestamps.
+2. **No ambient ids.** Row ids come from payloads (already true for invoices). Audit every `gen_random_uuid()` default on state tables; ids that today default server-side must move into the op.
+3. **Deterministic orderings.** Every `ORDER BY` inside a handler needs a unique tie-break (`..., id`). Precedent already in the code (`20260926120000_pos_payment_application.sql:75` uses `created_at asc, id asc`); the FIFO/shortfall paths must all match.
+4. **Deterministic numbering.** See 26.4.
+5. **Deterministic failure.** Guards (oversell policy, legal status transitions, role checks) must decide from state alone. A rejected op is **appended to the log with its rejection reason**, so every node rejects it identically instead of each retrying into a different outcome. Today's `{status:'conflict'}` return is replaced by a log entry.
+6. **No hidden state.** No reads of `request.jwt.claims` inside state-changing paths beyond the authorization envelope already recorded in the op (`user_id`, `schema_version`); no `search_path`- or setting-dependent behaviour.
+
+### 26.4 Numbering policy (decision needed, default proposed)
+
+| option | consequence |
+|---|---|
+| **Per-device series — `INV-<D3>-000123`** (recommended) | number is minted at execution and carried in the op; immutable across catch-up and replays; uniqueness is structural; format changes for new documents (legacy numbers remain valid) |
+| Log-ordered global counter (`INV-000123` as today) | numbers stay uniform, but a rewind replays ops in a new position and **renumbers documents already printed/handed to customers** — rejected |
+
+Recommendation: per-device series; the device suffix is derived once at install and stored in `connection.json`. Sequences stay in the schema for compatibility but are not used by op handlers.
+
+### 26.5 Versioning: ops are data, handlers are code
+
+Op replay must be identical on every node, so **all nodes in a sync group must run the same schema version**. Each op records `schema_version`; ingest rejects mismatched versions and devices block sync until upgraded. An upgrade is: drain the tail → migrate → bump the version → take a fresh snapshot. Without this gate, any handler change silently forks history.
+
+### 26.6 Snapshots and bootstrap
+
+State is never replayed from genesis. The log is anchored at **snapshots**: full state dump + log position + schema version + state hash. Genesis is a snapshot of the current cloud database at position 0. A new device bootstraps from the latest snapshot plus the tail; snapshots are taken every N ops or 24 h and pruned to the latest few. This replaces the 55-table delta mirror for hybrid: devices no longer fetch table deltas at all — they receive ops, which are far smaller.
+
+### 26.7 State hash — the proof
+
+`state_hash()` = sha256 over canonical, pk-ordered dumps of the state tables (driven by a table registry, not hand-written lists). After each checkpoint, a device reports `(position, state_hash)` to the cloud; the cloud compares it with its own hash at the same position and with other devices'. A mismatch halts relay for that device, re-delivers from the last common snapshot, replays, and reports a bug with both hashes. Hash equality at equal positions is the acceptance criterion for every slice — no "looks right" UI checks.
+
+### 26.8 Ingestion and authorization
+
+Devices post ops to `op_ingest` with the user's cloud JWT; the cloud authorizes the op (role/tenant/RLS-equivalent checks against its own state) *before* it enters the shared log, then appends it with the canonical order key. Rejected ops are appended with a reason, never silently dropped. The log is append-only; no node may rewrite history. The local stack validates the same checks locally, so an op that will be rejected locally is rejected before it is shown as done.
+
+### 26.9 What §25 keeps, what it loses
+
+- **Kept:** the mode matrix and connection UI (§24/25.1); the 49-op payload surface (now the log entry format); shared JWT secret and auth snapshot for offline login (§25.9); offline-session handling; egress awareness; the two-stack test rig.
+- **Dropped for hybrid:** tombstones (deletes are ops), delta cursors and count probes (no table mirror), the shared-outbox-as-write-path (the log tail replaces it, without deferring execution), and `expected_updated_at` conflicts (order replaces check-and-retry; stale-order edits apply but are visibly ordered — see 26.10).
+- **Reused as the executor:** the `sync_apply` body becomes the deterministic executor, called with `(op payload, p_at, user_id)` instead of reading `auth.uid()` and `now()`.
+
+### 26.10 Semantics that change, and must be shown in the UI
+
+- A late-arriving op that sorts earlier **wins** (it is earlier in the total order); the device replays and the later edit visibly reverts. Users must see "updated by another device at HH:MM" rather than silent flips.
+- Business guards still reject: selling more than exists under `allow_oversell=false`, cancelling a cancelled invoice, paying a deleted one. Rejections are permanent log entries with reasons and per-device notices.
+- Counters and stock are deterministic results of the op sequence, never inputs.
+
+### 26.11 Failure modes (v2)
+
+| failure | behaviour |
+|---|---|
+| offline | local execution continues; tail grows; no hash is claimed until positions match |
+| cloud down | same; sync resumes idempotently |
+| rewind | replay from checkpoint ≤ incoming op; provisional numbers immutable (26.4) |
+| partition with divergent heads | order key resolves; both sides converge after exchange |
+| rejected op | appended with reason on every node; user sees it once, from the cloud echo |
+| schema drift | ingest refuses; devices block sync with an upgrade banner |
+| snapshot corruption | re-request; snapshot is content-addressed by state hash |
+| clock abuse | HLC clamped ±5 min against cloud receipt time; append order still total |
+| rogue device | cloud authorization gates ingestion; log is append-only and auditable |
+
+### 26.12 Slices and exit criteria
+
+- **S0 — determinism harness.** Op-time plumbing (`p_at`), per-device numbering, tie-breaks in every handler, `state_hash()` registry, and a golden-replay test: apply a fixture log to two fresh databases → identical hashes. Exit: fixtures cover create/update/cancel/refund/adjustment/FIFO-shortfall and match.
+- **S1 — single-device relay.** Log tail ↔ cloud ingest, snapshot bootstrap, on-demand and continuous push, hash report. Exit: a device works offline for a day of ops, reconnects, cloud state hash equals the device's; a second fresh device bootstraps from snapshot + tail and matches.
+- **S2 — multi-device order.** HLC, rewind/replay, catch-up UX, per-device numbering in the UI. Exit: two devices execute interleaved offline work, sync in either order, hashes match; injected skew and mid-batch kills do not diverge.
+- **S3 — all 49 ops + rejection UX.** Exit: every op either applies or is a logged rejection with a reason; no silent differences.
+- **S4 — auth snapshot + shared JWT secret.** Exit: offline login for snapshotted users; cloud tokens satisfy local RLS.
+- **S5 — LAN clients + realtime emulation** (LISTEN/NOTIFY → SSE; today only `hooks/use-notifications.ts` uses Realtime).
+
+### 26.13 Cost and risks
+
+The determinism audit is the bulk of the work: ~52 `sync_*` handlers, ~20 triggers, and 13 number generators touched (S0). Risks: handler changes without a version bump (mitigated by the ingest gate), rewinds under bad clocks (clamped, rare), snapshot size (compressed, pruned), and tail growth on long offline periods (disk quota banner, no silent drop). Everything else — networking, snapshots, hashing — is conventional.
+
+### 26.14 Acceptance
+
+Two devices go offline, each executes sales, refunds, returns, stock adjustments, and customer edits; they reconnect in an arbitrary order; after relay settles, `state_hash(position)` is equal on both devices and the cloud. Repeat with injected clock skew, a kill -9 mid-push, a rejected oversell, and a third device bootstrapping from a snapshot. Any hash mismatch fails the slice.
