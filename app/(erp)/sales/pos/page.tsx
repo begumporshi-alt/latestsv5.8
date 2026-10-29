@@ -2767,12 +2767,27 @@ export default function POSPage() {
             />
             <kbd className="absolute right-3 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground pointer-events-none">/</kbd>
           </div>
+          {/* Filters + scan share one row on phones. Each used to be its own
+              full-width row of the mobile column holding a ~38px icon, costing
+              ~114px of vertical space before the first product. A 3-column grid
+              splits the width exactly; from sm up the wrapper is `contents`, so
+              the buttons become direct children of the controls row and the
+              desktop layout is untouched.
+
+              This wrapper is `relative` because the filter dropdowns anchor to
+              it on phones: a ~114px button cannot host a 224px panel, so
+              `right-0 w-56` pushed the brand list ~94px off the left edge of
+              the screen. The panels are `left-0 right-0` here (full row width)
+              and only fall back to per-button `sm:right-0 sm:w-56` once the
+              wrapper is `contents`. Moving or un-positioning this div will
+              re-break the dropdowns. */}
+          <div className="relative grid grid-cols-3 gap-2 sm:contents">
           {/* Brand filter — icon-only until a brand is picked, then shows its name */}
-          <div className="relative shrink-0">
+          <div className="min-w-0 sm:relative">
             <button
               type="button"
               onClick={() => setBrandDropdownOpen(!brandDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
+              className={`flex w-full items-center justify-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition sm:w-auto sm:justify-start ${
                 selectedBrand ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by brand"
@@ -2780,13 +2795,13 @@ export default function POSPage() {
               <Tag className="w-4 h-4 shrink-0" />
               {selectedBrand && (
                 <>
-                  <span className="max-w-[100px] truncate">{brands.find(b => b.id === selectedBrand)?.name}</span>
+                  <span className="min-w-0 max-w-[100px] truncate">{brands.find(b => b.id === selectedBrand)?.name}</span>
                   <span
                     role="button"
                     tabIndex={0}
                     onClick={(e) => { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedBrand(''); setBrandSearch(''); } }}
-                    className="ml-0.5 hover:text-red-500"
+                    className="ml-0.5 shrink-0 hover:text-red-500"
                   >
                     <X className="w-3 h-3" />
                   </span>
@@ -2794,7 +2809,7 @@ export default function POSPage() {
               )}
             </button>
             {brandDropdownOpen && (
-              <div className="absolute top-full right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 w-56 overflow-hidden">
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 overflow-hidden sm:left-auto sm:right-0 sm:w-56">
                 <div className="p-2 border-b border-border">
                   <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -2831,11 +2846,11 @@ export default function POSPage() {
             )}
           </div>
           {/* Category filter — icon-only until a category is picked, then shows its name */}
-          <div className="relative shrink-0">
+          <div className="min-w-0 sm:relative">
             <button
               type="button"
               onClick={() => setCategoryDropdownOpen(!categoryDropdownOpen)}
-              className={`flex items-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition ${
+              className={`flex w-full items-center justify-center gap-1.5 border rounded-xl px-2.5 py-2.5 text-sm bg-white hover:border-blue-300 focus:outline-none focus:border-blue-500 transition sm:w-auto sm:justify-start ${
                 selectedCategory ? 'border-blue-500 text-blue-600' : 'border-border text-muted-foreground'
               }`}
               title="Filter by category"
@@ -2843,13 +2858,13 @@ export default function POSPage() {
               <LayoutGrid className="w-4 h-4 shrink-0" />
               {selectedCategory && (
                 <>
-                  <span className="max-w-[100px] truncate">{categories.find(c => c.id === selectedCategory)?.name}</span>
+                  <span className="min-w-0 max-w-[100px] truncate">{categories.find(c => c.id === selectedCategory)?.name}</span>
                   <span
                     role="button"
                     tabIndex={0}
                     onClick={(e) => { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); }}
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); setSelectedCategory(''); setCategorySearch(''); } }}
-                    className="ml-0.5 hover:text-red-500"
+                    className="ml-0.5 shrink-0 hover:text-red-500"
                   >
                     <X className="w-3 h-3" />
                   </span>
@@ -2857,7 +2872,7 @@ export default function POSPage() {
               )}
             </button>
             {categoryDropdownOpen && (
-              <div className="absolute top-full right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 w-56 overflow-hidden">
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-border rounded-lg shadow-lg z-50 overflow-hidden sm:left-auto sm:right-0 sm:w-56">
                 <div className="p-2 border-b border-border">
                   <div className="relative">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -2893,18 +2908,18 @@ export default function POSPage() {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2">
             <button
               onClick={() => setShowScanner(true)}
               title="Scan Barcode"
-              className="flex items-center justify-center gap-2 border border-border bg-white rounded-xl px-3 py-2.5 text-sm hover:bg-muted transition text-muted-foreground hover:text-foreground shrink-0"
+              aria-label="Scan barcode"
+              className="flex w-full min-w-0 items-center justify-center gap-2 border border-border bg-white rounded-xl px-2.5 py-2.5 text-sm hover:bg-muted transition text-muted-foreground hover:text-foreground sm:w-auto"
             >
               <Camera className="w-4 h-4" />
               <span className="hidden sm:inline">Scan</span>
             </button>
-            {/* The cart's mobile entry point is the persistent bottom bar, not
-                a button here: this row scrolls away with the products. */}
           </div>
+          {/* The cart's mobile entry point is the persistent bottom bar, not
+              a button here: this row scrolls away with the products. */}
           <div className="flex items-center gap-2 relative">
             {/* Searchable Customer Selector */}
             <div className="flex-1 sm:flex-none relative">
