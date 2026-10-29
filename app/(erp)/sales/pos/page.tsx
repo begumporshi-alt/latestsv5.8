@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, Eye, EyeOff, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Layers, Printer, Keyboard, Tag, LayoutGrid, Warehouse } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, SlidersHorizontal, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Layers, Printer, Keyboard, Tag, LayoutGrid, Warehouse } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -2021,8 +2021,6 @@ export default function POSPage() {
   const cartPanelRef = useRef<HTMLDivElement>(null);
   const cartListRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const footerToggleRef = useRef<HTMLButtonElement>(null);
-  const listHBeforeFooterRef = useRef(0);
   const [cartHeightOverride, setCartHeightOverride] = useState<number | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   // Pinned cart footer: while the auto-grown cart's footer is scrolled out of
@@ -2032,75 +2030,45 @@ export default function POSPage() {
   const [footerPinned, setFooterPinned] = useState(false);
   const [footerBarRect, setFooterBarRect] = useState({ h: 0, left: 0, width: 0 });
   const cartFooterRef = useRef<HTMLDivElement>(null);
-  const toggleCartFooter = () => {
-    // The toggle must stay put on screen: the cart grows for the
-    // footer, so afterwards scroll the page by whatever the
-    // button drifted, keeping the user's view anchored here.
-    // Shared by the button click and the Shift+L shortcut.
-    const btn = footerToggleRef.current;
-    if (!btn) return;
-    if (!showCartFooter) {
-      // Remember the list's rendered height so opening the footer grows the
-      // panel instead of shrinking a list that had slack (which would lift
-      // the button the user just clicked).
-      listHBeforeFooterRef.current = cartListRef.current?.offsetHeight ?? 0;
-    }
-    const startTop = btn.getBoundingClientRect().top;
-    // The ERP layout scrolls inside <main>, not the window.
-    const scroller = posRootRef.current?.parentElement;
-    setShowCartFooter(p => !p);
-    // The panel settles over several frames (footer renders first,
-    // then the auto-grow override lands), so keep re-correcting
-    // every frame until the height is stable and the drift is 0.
-    // Any user scroll/input cancels the correction immediately —
-    // otherwise this loop would undo the user's own scrolling.
-    // Shift+L is exempt: it IS this toggle, fired via the shortcut.
-    let lastH = -1;
-    let calm = 0;
-    let frames = 0;
-    let done = false;
-    const stop = () => { done = true; };
-    const onKeyStop = (e: KeyboardEvent) => { if (!(e.shiftKey && e.code === 'KeyL')) stop(); };
-    const stopOpts: AddEventListenerOptions = { capture: true, passive: true };
-    window.addEventListener('wheel', stop, stopOpts);
-    window.addEventListener('touchstart', stop, stopOpts);
-    window.addEventListener('keydown', onKeyStop, { capture: true });
-    const cleanup = () => {
-      window.removeEventListener('wheel', stop, stopOpts);
-      window.removeEventListener('touchstart', stop, stopOpts);
-      window.removeEventListener('keydown', onKeyStop, { capture: true });
-    };
-    const tick = () => {
-      if (done || ++frames > 180) { cleanup(); return; }
-      const h = cartPanelRef.current?.offsetHeight ?? -1;
-      const dy = Math.round(btn.getBoundingClientRect().top - startTop);
-      if (Math.abs(dy) > 1) {
-        // Scroll the document first — it holds the overflow
-        // created by the page growing. <main> is the scroller
-        // only when the layout constrains it, and feeding it
-        // first can starve the document mid-animation: <main>
-        // stays "scrollable" but saturated, so the drift would
-        // lag behind the panel's height transition.
-        const se = document.scrollingElement;
-        let applied = 0;
-        if (se) {
-          const before = se.scrollTop;
-          se.scrollTop = before + dy;
-          applied = se.scrollTop - before;
-        }
-        const rest = dy - applied;
-        if (Math.abs(rest) > 0 && scroller && scroller.scrollHeight > scroller.clientHeight + 1) scroller.scrollTop += rest;
-        calm = 0;
-      } else {
-        calm++;
-      }
-      const settled = h === lastH && calm > 10;
-      lastH = h;
-      if (settled) { cleanup(); return; }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
+  // Sale details is a disclosure panel that rises from the footer. It is
+  // deliberately *not* an inline expansion: growing the footer inside the
+  // panel pushed the fields below the fold (the panel grew past the viewport
+  // and the page had to scroll), shrank the item list on mobile, and moved the
+  // Pay button away from under the cursor. As an overlay the cart geometry —
+  // list height, footer position, primary action — never changes.
+  const [showSaleDetails, setShowSaleDetails] = useState(false);
+  const saleDetailsId = `${useId()}-sale-details`;
+  const closeSaleDetails = () => {
+    setShowSaleDetails(false);
+    requestAnimationFrame(() => {
+      const btn = Array.from(document.querySelectorAll<HTMLElement>('[data-sale-details-toggle]'))
+        .find(el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
+      btn?.focus();
+    });
   };
+  const toggleSaleDetails = () => {
+    if (showSaleDetails) { closeSaleDetails(); return; }
+    setShowSaleDetails(true);
+    // The footer is rendered twice (in flow + pinned clone); focus the copy
+    // that is actually painted.
+    requestAnimationFrame(() => {
+      const panel = Array.from(document.querySelectorAll<HTMLElement>('[data-sale-details-panel]'))
+        .find(el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
+      panel?.focus();
+    });
+  };
+  // Dismiss the panel on an outside press, like any popover. Matches the panel
+  // and the toggle so both footer copies (in flow + pinned) behave the same.
+  useEffect(() => {
+    if (!showSaleDetails) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      if (t?.closest('[data-sale-details-panel], [data-sale-details-toggle]')) return;
+      setShowSaleDetails(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [showSaleDetails]);
   const [cartAutoGrow, setCartAutoGrow] = useState(() => {
     if (typeof window === 'undefined') return true;
     return sessionStorage.getItem('posCartAutoGrow') !== 'off';
@@ -2154,16 +2122,14 @@ export default function POSPage() {
     }
     prevCartCount.current = cart.length;
   }, [cart.length]);
-  const [showCartFooter, setShowCartFooter] = useState(false);
   // Auto-grow: from 3 items the cart extends downward (the page grows with it)
   // so every item stays visible; past 50 items growth stops and the list
   // scrolls internally. "Reset size" in the cart header turns it off.
-  // The expanded footer always gets room: the panel grows downward so the list
-  // (and the toggle the user just clicked) never shifts.
+  // Sale details is an overlay and never participates in this calculation.
   useEffect(() => {
-    if (cart.length > 50 && !showCartFooter) return; // freeze at the 50-item height
+    if (cart.length > 50) return; // freeze at the 50-item height
     const itemGrow = cartAutoGrow && cart.length >= 3;
-    if (!showCartFooter && !itemGrow) {
+    if (!itemGrow) {
       setCartHeightOverride(null);
       return;
     }
@@ -2193,12 +2159,11 @@ export default function POSPage() {
       const natural = items.length
         ? listPad + (items[items.length - 1].getBoundingClientRect().bottom - items[0].getBoundingClientRect().top)
         : list.scrollHeight;
-      const desired = panel.offsetHeight - list.offsetHeight
-        + (showCartFooter ? Math.max(Math.ceil(natural), listHBeforeFooterRef.current) : Math.ceil(natural));
+      const desired = panel.offsetHeight - list.offsetHeight + Math.ceil(natural);
       setCartHeightOverride(desired > avail ? desired : null);
     });
     return () => cancelAnimationFrame(raf);
-  }, [cart.length, cartAutoGrow, showCartFooter, cartMaximized]);
+  }, [cart.length, cartAutoGrow, cartMaximized]);
   // Geometry for the pinned footer clone: panel left/width and footer height.
   useEffect(() => {
     let raf = 0;
@@ -2217,7 +2182,7 @@ export default function POSPage() {
     if (cartFooterRef.current) ro.observe(cartFooterRef.current);
     window.addEventListener('resize', measure);
     return () => { ro.disconnect(); window.removeEventListener('resize', measure); cancelAnimationFrame(raf); };
-  }, [cartHeightOverride, cartMaximized, showCartFooter, cart.length]);
+  }, [cartHeightOverride, cartMaximized, cart.length]);
   // Pin decision: the in-flow footer keeps its space (only visually hidden
   // while pinned), so its rect is always the true flow position.
   useEffect(() => {
@@ -2237,7 +2202,7 @@ export default function POSPage() {
     window.addEventListener('scroll', update, { passive: true });
     window.addEventListener('resize', update);
     return () => { window.removeEventListener('scroll', update); window.removeEventListener('resize', update); cancelAnimationFrame(raf); };
-  }, [cartHeightOverride, cartMaximized, showCartFooter, cart.length, orderComplete]);
+  }, [cartHeightOverride, cartMaximized, cart.length, orderComplete]);
   useEffect(() => {
     sessionStorage.setItem('posCartAutoGrow', cartAutoGrow ? 'on' : 'off');
   }, [cartAutoGrow]);
@@ -2261,6 +2226,10 @@ export default function POSPage() {
         if (pickingWarehouseLine) { setPickingWarehouseLine(null); return; }
         if (viewingBatchLine) { setViewingBatchLine(null); return; }
         if (editingAllocLine) { setEditingAllocLine(null); return; }
+        // Sale details is layered above the cart: Esc closes it instead of
+        // removing the line the cart cursor happens to rest on (the removal
+        // gesture further down).
+        if (showSaleDetails) { closeSaleDetails(); return; }
         // Esc inside a pos cart field closes the field in one press (blur +
         // drop the ring), so the next Esc removes the line; other inputs just
         // blur.
@@ -2278,7 +2247,6 @@ export default function POSPage() {
           removeFromCart(line.id, line.selected_unit?.id || undefined);
           return;
         }
-        if (showCartFooter) { setShowCartFooter(false); return; }
         if (showMobileCart) { setShowMobileCart(false); return; }
         if (cartMaximized) { setCartMaximized(false); return; }
         return;
@@ -2328,7 +2296,7 @@ export default function POSPage() {
       }
       if (shiftKey && e.code === 'KeyL') {
         e.preventDefault();
-        if (cart.length > 0) toggleCartFooter();
+        if (cart.length > 0) toggleSaleDetails();
         return;
       }
       if (e.key === '/') {
@@ -2391,7 +2359,7 @@ export default function POSPage() {
   // `allocation` is in the deps because cartLineFields() reads it via
   // lineAllocation() — without it the handler computes stale field lists (e.g.
   // no Batch button) until some other dep happens to change.
-  }, [showCheckout, showShortcuts, showCartFooter, showMobileCart, cartMaximized, cart.length, cart, activeCartLine, activeCartField, processing, pickingWarehouseLine, viewingBatchLine, editingAllocLine, allocation]);
+  }, [showCheckout, showShortcuts, showSaleDetails, showMobileCart, cartMaximized, cart.length, cart, activeCartLine, activeCartField, processing, pickingWarehouseLine, viewingBatchLine, editingAllocLine, allocation]);
   const [defaultProductImage, setDefaultProductImage] = useState('');
   const [showImageModal, setShowImageModal] = useState(false);
   const [imageModalProduct, setImageModalProduct] = useState<ProductData | null>(null);
@@ -2476,122 +2444,179 @@ export default function POSPage() {
     }
   }
 
-  // Cart footer: toggle + (expanded totals form | Total + Pay row). Rendered
-  // in flow inside the panel; while pinned, the same content is portaled as a
-  // fixed bar at the viewport bottom and the in-flow copy is only hidden.
-  const renderCartFooter = (extraClass: string, inFlow: boolean) => (
-    <div
-      ref={inFlow ? cartFooterRef : undefined}
-      className={`border-t border-border bg-white ${extraClass}`}
-      style={inFlow ? undefined : { position: 'fixed', bottom: 0, left: footerBarRect.left, width: footerBarRect.width, zIndex: 90, boxShadow: '0 -4px 12px rgba(15, 23, 42, 0.08)' }}
-    >
-      {/* Collapse toggle */}
-      <button
-        ref={inFlow ? footerToggleRef : undefined}
-        onClick={() => toggleCartFooter()}
-        className="w-full flex items-center justify-between px-3 py-2 border border-blue-200 bg-blue-50/60 text-blue-600 hover:bg-blue-100/60 transition text-xs font-medium"
+  // Cart footer: a fixed-height action bar (Sale details · Total · Pay) with a
+  // "Sale details" panel that rises above it. Rendered in flow inside the
+  // panel; while pinned, the same content is portaled as a fixed bar at the
+  // viewport bottom and the in-flow copy is only hidden.
+  const adjustmentCount =
+    (discount > 0 ? 1 : 0) +
+    (extraDiscount > 0 ? 1 : 0) +
+    (shipping > 0 ? 1 : 0) +
+    (vatSettings.enabled && applyVat ? 1 : 0);
+  const renderCartFooter = (extraClass: string, inFlow: boolean) => {
+    const panelId = inFlow ? saleDetailsId : `${saleDetailsId}-pinned`;
+    return (
+      <div
+        ref={inFlow ? cartFooterRef : undefined}
+        className={`relative border-t border-border bg-white ${extraClass}`}
+        style={inFlow ? undefined : { position: 'fixed', bottom: 0, left: footerBarRect.left, width: footerBarRect.width, zIndex: 90, boxShadow: '0 -4px 12px rgba(15, 23, 42, 0.08)' }}
       >
-        <span className="flex items-center gap-1.5">
-          <Eye className="w-3.5 h-3.5" />
-          {showCartFooter ? 'Hide footer' : 'See more in list (Optional)'}
-        </span>
-        <span className="flex items-center gap-1.5">
-          <kbd className="rounded border border-blue-200 bg-white px-1 text-[10px] font-semibold text-blue-400">⇧L</kbd>
-          {showCartFooter ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-        </span>
-      </button>
-
-      {showCartFooter && (
-        <div className="p-2.5 space-y-2">
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Date</label>
-              <input type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground leading-none mb-0.5">Reference</label>
-              <input type="text" value={reference} onChange={e => setReference(e.target.value)} className="w-full border border-border rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Ref. person (optional)" />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Cart Discount %</span>
-              <div className="w-28">
-                <UnitInput unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="rounded-lg text-xs" />
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Extra Discount ৳</span>
-              <div className="w-28">
-                <UnitInput prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Shipping /Service Fee ৳</span>
-              <div className="w-28">
-                <UnitInput prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-0.5 text-sm">
-            <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span>{formatCurrency(subtotal + itemDiscountTotal)}</span></div>
-            {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item Discounts</span><span>-{formatCurrency(itemDiscountTotal)}</span></div>}
-            {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart Discount ({discount}%)</span><span>-{formatCurrency(cartDiscountAmount)}</span></div>}
-            {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra Discount</span><span>-{formatCurrency(extraDiscount)}</span></div>}
-            {shipping > 0 && <div className="flex justify-between text-blue-700"><span>Shipping /Service Fee</span><span>+{formatCurrency(shipping)}</span></div>}
-            {vatSettings.enabled && (
-              <div className="flex justify-between items-center pt-1 border-t border-border">
-                <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={applyVat}
-                    onChange={e => setApplyVat(e.target.checked)}
-                    className="w-3.5 h-3.5 accent-blue-600"
-                  />
-                  VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
-                </label>
-                {applyVat && <span className="text-xs text-blue-700 font-medium">+{formatCurrency(posVat.taxAmount)}</span>}
-              </div>
-            )}
-            <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
-          </div>
-
-          <button
-            onClick={openCheckout}
-            disabled={processing || !selectedCustomer}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 rounded-xl transition disabled:opacity-60 text-sm flex items-center justify-center gap-2"
-          >
-            <Receipt className="w-4 h-4" />
-            {processing ? 'Processing...' : `Checkout · ${formatCurrency(grandTotal)}`}
-          </button>
-
-          <button
-            onClick={() => setShowCartFooter(false)}
-            className="w-full flex items-center justify-center gap-1 text-sm text-muted-foreground hover:text-foreground transition pb-0.5"
-          >
-            Turn back <ChevronUp className="w-3 h-3" />
-          </button>
+        {/* Applied adjustments stay readable while the panel is closed — a
+            discount or charge must never be invisible behind the disclosure.
+            Fixed-height row so opening/closing (and clearing an adjustment
+            while the panel is open) never reflows the list or the bar. */}
+        <div className="flex h-6 items-center px-3 text-[11px]">
+          {adjustmentCount > 0 ? (
+            <span className="truncate text-muted-foreground">
+              {[
+                discount > 0 ? `Discount ${discount}% (−${formatCurrency(cartDiscountAmount)})` : null,
+                extraDiscount > 0 ? `Extra −${formatCurrency(extraDiscount)}` : null,
+                shipping > 0 ? `Shipping +${formatCurrency(shipping)}` : null,
+                vatSettings.enabled && applyVat ? `VAT +${formatCurrency(posVat.taxAmount)}` : null,
+              ].filter(Boolean).join(' · ')}
+            </span>
+          ) : (
+            <span className="text-muted-foreground/70">No discounts or charges</span>
+          )}
         </div>
-      )}
 
-      {!showCartFooter && (
-        <div className="px-2.5 py-2 flex items-center justify-between">
-          <div className="flex justify-between font-bold text-sm text-foreground w-full"><span>Total</span><span>{formatCurrency(grandTotal)}</span></div>
+        {/* Action row — never moves: the disclosure grows upward, not the bar. */}
+        <div className="flex items-center gap-2 px-2.5 py-2">
+          <button
+            onClick={toggleSaleDetails}
+            aria-expanded={showSaleDetails}
+            aria-controls={panelId}
+            data-sale-details-toggle
+            title="Invoice date, reference, discounts and charges (Shift+L)"
+            className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-2 min-[380px]:px-2.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${showSaleDetails ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-border bg-white text-foreground hover:bg-muted/70'}`}
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+            <span className="hidden min-[380px]:inline">Sale details</span>
+            <span className="min-[380px]:hidden">Details</span>
+            {adjustmentCount > 0 && (
+              <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-blue-600 px-1 text-[10px] font-bold leading-none text-white">
+                {adjustmentCount}
+              </span>
+            )}
+            <ChevronUp className={`w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 ${showSaleDetails ? 'rotate-180' : ''}`} />
+          </button>
+
+          <div className="ml-auto min-w-0 shrink-0 text-right leading-none">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Total</div>
+            <div className="mt-1 truncate text-[15px] font-bold tabular-nums text-foreground">{formatCurrency(grandTotal)}</div>
+          </div>
+
           <button
             onClick={openCheckout}
             disabled={processing || !selectedCustomer}
-            className="ml-3 shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2.5 rounded-lg transition disabled:opacity-60 text-sm flex items-center gap-1.5"
+            title={!selectedCustomer ? 'Select a customer to continue' : undefined}
+            className="shrink-0 bg-blue-600 hover:bg-blue-700 text-white font-bold h-9 px-3 min-[420px]:px-3.5 rounded-lg transition disabled:opacity-60 text-sm flex items-center gap-1.5"
           >
             <Receipt className="w-4 h-4" />
             Pay
-            <kbd className="rounded bg-white/20 px-1 text-[10px] font-semibold leading-4">⇧P</kbd>
+            <kbd className="hidden min-[420px]:inline rounded bg-white/20 px-1 text-[10px] font-semibold leading-4">⇧P</kbd>
           </button>
         </div>
-      )}
-    </div>
-  );
+
+        {showSaleDetails && (
+          <div
+            id={panelId}
+            data-sale-details-panel
+            role="region"
+            aria-label="Sale details"
+            tabIndex={-1}
+            className="animate-sheet-up absolute inset-x-0 bottom-full z-20 flex max-h-[min(60vh,440px)] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-border bg-white shadow-[0_-16px_40px_-12px_rgba(15,23,42,0.28)] focus:outline-none"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-border px-3 pb-2 pt-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">Sale details</h3>
+                <p className="text-[11px] text-muted-foreground">Optional fields and adjustments for this invoice</p>
+              </div>
+              <button
+                onClick={closeSaleDetails}
+                aria-label="Close sale details"
+                className="-mr-1 -mt-0.5 rounded-md p-1 text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-3 py-3">
+              <section className="space-y-2">
+                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Invoice</h4>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label htmlFor={`${panelId}-date`} className="mb-1 block text-[11px] font-medium text-muted-foreground">Date</label>
+                    <input id={`${panelId}-date`} type="date" value={invoiceDate} onChange={e => setInvoiceDate(e.target.value)} className="h-8 w-full rounded-lg border border-border px-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                  </div>
+                  <div>
+                    <label htmlFor={`${panelId}-ref`} className="mb-1 block text-[11px] font-medium text-muted-foreground">Reference</label>
+                    <input id={`${panelId}-ref`} type="text" value={reference} onChange={e => setReference(e.target.value)} className="h-8 w-full rounded-lg border border-border px-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20" placeholder="Person or note" />
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-2">
+                <h4 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Adjustments</h4>
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor={`${panelId}-disc`} className="text-xs font-medium text-muted-foreground">Cart discount</label>
+                  <div className="w-28">
+                    <UnitInput id={`${panelId}-disc`} unit="%" min="0" max="100" value={discount} onChange={e => setDiscount(Number(e.target.value))} className="rounded-lg text-xs" />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor={`${panelId}-extra`} className="text-xs font-medium text-muted-foreground">Extra discount</label>
+                  <div className="w-28">
+                    <UnitInput id={`${panelId}-extra`} prefix="৳" min="0" step="0.01" value={extraDiscount} onChange={e => setExtraDiscount(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <label htmlFor={`${panelId}-ship`} className="text-xs font-medium text-muted-foreground">Shipping / service fee</label>
+                  <div className="w-28">
+                    <UnitInput id={`${panelId}-ship`} prefix="৳" min="0" step="0.01" value={shipping} onChange={e => setShipping(Number(e.target.value) || 0)} className="rounded-lg text-xs" />
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-0.5 text-sm">
+                <h4 className="pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Summary</h4>
+                <div className="flex justify-between text-muted-foreground"><span>Subtotal</span><span className="tabular-nums">{formatCurrency(subtotal + itemDiscountTotal)}</span></div>
+                {itemDiscountTotal > 0 && <div className="flex justify-between text-amber-600"><span>Item discounts</span><span className="tabular-nums">-{formatCurrency(itemDiscountTotal)}</span></div>}
+                {discount > 0 && <div className="flex justify-between text-red-500"><span>Cart discount ({discount}%)</span><span className="tabular-nums">-{formatCurrency(cartDiscountAmount)}</span></div>}
+                {extraDiscount > 0 && <div className="flex justify-between text-red-500"><span>Extra discount</span><span className="tabular-nums">-{formatCurrency(extraDiscount)}</span></div>}
+                {shipping > 0 && <div className="flex justify-between text-blue-700"><span>Shipping / service fee</span><span className="tabular-nums">+{formatCurrency(shipping)}</span></div>}
+                {vatSettings.enabled && (
+                  <div className="flex justify-between items-center pt-1 border-t border-border">
+                    <label htmlFor={`${panelId}-vat`} className="flex items-center gap-2 text-xs font-medium text-muted-foreground cursor-pointer">
+                      <input
+                        id={`${panelId}-vat`}
+                        type="checkbox"
+                        checked={applyVat}
+                        onChange={e => setApplyVat(e.target.checked)}
+                        className="w-3.5 h-3.5 accent-blue-600"
+                      />
+                      VAT ({vatSettings.rate}%{vatSettings.mode === 'inclusive' ? ', in prices' : ''})
+                    </label>
+                    {applyVat && <span className="text-xs text-blue-700 font-medium tabular-nums">+{formatCurrency(posVat.taxAmount)}</span>}
+                  </div>
+                )}
+                <div className="flex justify-between font-bold text-base text-foreground pt-1 border-t border-border"><span>Total</span><span className="tabular-nums">{formatCurrency(grandTotal)}</span></div>
+              </section>
+            </div>
+
+            <div className="border-t border-border px-3 py-2">
+              <button
+                onClick={closeSaleDetails}
+                className="h-9 w-full rounded-lg border border-border bg-white text-sm font-semibold text-foreground transition hover:bg-muted"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div ref={posRootRef} className="flex flex-col lg:flex-row lg:h-[var(--pos-h,calc(100dvh_-_104px))] transition-[height] duration-300 ease-out gap-4 animate-fade-in">
@@ -3506,7 +3531,7 @@ export default function POSPage() {
                 ['Delete / Esc', 'Remove selected line'],
                 ['Arrows (checkout)', 'Choose payment option'],
                 ['Enter (checkout)', 'Next → then Charge'],
-                ['Shift+L', 'Toggle "See more in list"'],
+                ['Shift+L', 'Open sale details'],
                 ['Esc', 'Close / step back'],
                 ['?', 'This cheat-sheet'],
               ].map(([k, d]) => (
