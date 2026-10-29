@@ -53,6 +53,10 @@ begin
 end;
 $function$;
 
-grant execute on function get_next_journal_number() to anon, authenticated;
+-- No GRANT here: create or replace keeps whatever ACL the target database
+-- already has. The hosted project grants EXECUTE to authenticated and
+-- service_role; the standby candidate is default-deny by design and the
+-- rehearsal clones re-grant the cloud surface from compatibility/grants-parity.sql.
+-- Granting anon here would widen access in every target.
 
 commit;
