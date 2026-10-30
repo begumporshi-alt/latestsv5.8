@@ -1,14 +1,41 @@
 # CUTOVER — move sisolution to a new Supabase project
 
-Status: **data captured, restore kit built and validated. Waiting on the new
-Supabase project.**
+Status: **restore complete and verified on the new project. Remaining work is
+dashboard-side (auth settings, Netlify env, edge functions).**
 
 | | |
 |---|---|
 | Source project | `qdnbefqmcxjvddlabeww` · `ap-southeast-2` · PostgreSQL 17.6 |
+| Target project | `vkvurkuzahclerqnsqbz` · `eu-north-1` · PostgreSQL 17.11 |
 | Archive | `~/Backups/sisolution/cutover-20261030-1817.dump` · 7.1 MB · `3e6e78ff…38629` |
 | Captured | 2026-10-30 18:17 (+06) |
+| Restored | 2026-10-30 18:52 (+06) |
 | Contents | 79 tables · 79,148 rows · 8 auth users · 222 RLS policies · 77 triggers |
+
+### Restore result
+
+```
+tables compared : 79      total rows : 79148 (expected 79148)
+OK  public tables 79      OK  RLS policies 222      OK  triggers 77
+OK  auth.users 8          OK  debits - credits = 0
+OK  invoices/payments: 1 accounting trigger each
+OK  next journal number JE-969278 is unused
+OK  verify/00_verify_schema.sql   OK  verify/01_app_contract.sql
+PASS
+```
+
+Independently confirmed on the target: 8/8 users carry bcrypt hashes, 8/8 are
+confirmed and have identities, 4 profiles (all active, zero orphans — matches
+the source count), `supabase_migrations.schema_migrations` holds all 124 rows,
+`pg_cron` is installed with both jobs scheduled, and the REST API answers anon
+(200), service-role reads, and `get_next_journal_number()` → `JE-969278`.
+
+> **Region deviation.** The new project is in `eu-north-1`, not the
+> `ap-southeast-2` recommended below. Every RLS-guarded page load pays the
+> extra round-trip. Recreating in `ap-southeast-2` (or `ap-southeast-1`) is
+> cheap *now* — the dump and this kit re-run in about three minutes — and
+> expensive later. Decide before the app is pointed at it.
+
 
 The archive was taken after the three PR #208 migrations were applied, so it
 includes `write_off_product_stock` and the 9-argument `create_stock_reduction`.
@@ -54,31 +81,20 @@ Then enable, under Database → Extensions:
 - `pg_cron` — required for the nightly reconciliation and the overdue-invoice digest
 - `supabase_vault`, `pg_stat_statements`
 
-### 2. Fill in `.env`
+### 2. Fill in `.env` — **done**
 
-```bash
-cd ~/Desktop/sisolution-new
-cp .env.example .env      # already done; edit the values
-```
-
-Four values, from Project Settings → API and → Database:
-
-```
-NEXT_PUBLIC_SUPABASE_URL=https://<ref>.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon key>
-SUPABASE_SERVICE_ROLE_KEY=<service_role key>
-NEXT_PUBLIC_SUPABASE_DB_URL=postgresql://postgres.<ref>:<pw>@aws-1-ap-southeast-2.pooler.supabase.com:5432/postgres
-```
+Four values are in place. One correction was applied: the file also carried a
+`NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY` line duplicating the service-role key.
+It has been removed, and `lib/admin-auth.ts` no longer accepts a
+`NEXT_PUBLIC_`-prefixed fallback at all — webpack substitutes those names at
+build time, so the mere reference risks inlining a key that bypasses RLS into a
+browser bundle. The build was re-checked afterwards: zero occurrences of the
+service key in `.next/static`.
 
 Use the **session pooler on 5432**, not the 6543 the old `.env` used. The
 transaction pooler drops DDL sessions.
 
-The service role key deliberately has no `NEXT_PUBLIC_` prefix. Anything with
-that prefix is inlined into the browser bundle, publishing a key that bypasses
-every RLS policy. `lib/admin-auth.ts` reads `SUPABASE_SERVICE_ROLE_KEY` first, so
-nothing else needs to change.
-
-### 3. Restore and verify
+### 3. Restore and verify — **done**
 
 ```bash
 cd db
@@ -86,32 +102,59 @@ cd db
 ./05_verify.py  --url "$NEW_DB_URL"
 ```
 
-`05_verify.py` must print `PASS`. If it prints `FAILED`, stop — do not point the
-app at that database.
+All four passes reported `exit=0 errors=0`. `05_verify.py` printed `PASS`.
+A fresh backup of the new database was then taken with `scripts/db-backup.sh`
+(6.1 MB, TOC verified to contain `products` and `auth.users`).
 
-### 4. Cut the application over
 
-```bash
-npm run build          # confirm it builds with the new env
-```
+### 4. Cut the application over — **partly done**
 
-Then update the deployment environment (Netlify → Site settings → Environment
-variables) with the same four values, and redeploy.
+`npm run build` passes with the new env; the new project ref is inlined into the
+client bundle and the old ref appears nowhere under `.next`.
 
-### 5. Three things that will silently keep pointing at the old database
+Still to do:
 
-1. **Client-side config cache.** `lib/runtime-config.ts` writes the connection
-   config to `localStorage` under `sisolution.runtime-config`, and the service
-   worker serves cached HTML. A device that boots from cache keeps writing to the
-   **old** project. Bump the cache key in that file before deploying, or the
-   first load after cutover is a coin flip.
-2. **Edge functions.** `supabase/functions/db-backup` and `db-restore` must be
-   redeployed to the new project. They read `SUPABASE_URL` and
+- **Netlify** → Site settings → Environment variables: the same four values,
+  then redeploy. The Netlify CLI is not installed locally, so this is a
+  dashboard step.
+- **Supabase Auth** on the new project: enable email sign-in, set Site URL and
+  the redirect allow-list to the deployed domain, configure SMTP if magic links
+  are used. See §6.
+- **Edge functions** (`db-backup`, `db-restore`): the local Supabase CLI is
+  authenticated to the *MedFind* org, which does not contain
+  `vkvurkuzahclerqnsqbz`. Run `supabase login` for the new account, then:
+
+  ```bash
+  supabase link --project-ref vkvurkuzahclerqnsqbz
+  supabase functions deploy db-backup db-restore
+  ```
+
+### 5. Three things that silently keep pointing at the old database
+
+1. **Client-side config cache — fixed.** `lib/runtime-config.ts` now scopes the
+   `localStorage` key to the project ref this build was compiled against
+   (`sisolution.runtime-config.<ref>`), so an entry written by a pre-cutover
+   bundle is unreachable after deploy. The legacy unscoped key is deleted on
+   first load. No manual bump is required for future cutovers.
+2. **Edge functions — pending.** See §4; they read `SUPABASE_URL` and
    `SUPABASE_SERVICE_ROLE_KEY` from the platform environment, which changes with
    the project.
-3. **Nightly backup.** `scripts/db-backup.sh` reads
-   `NEXT_PUBLIC_SUPABASE_DB_URL`. It will keep backing up the old project until
-   that value changes.
+3. **Nightly backup — fixed.** The launchd agent
+   `com.sisolution.db-backup` ran the *old* repository's script, so it would
+   have kept dumping the old project. It now points at
+   `~/Desktop/sisolution-new/scripts/db-backup.sh`, which reads this repo's
+   `.env`. The agent was unloaded during the edit and could not be re-bootstrapped
+   from the automation context (`Bootstrap failed: 5`, reproducible with a
+   minimal test plist). Load it once from your own terminal:
+
+   ```bash
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sisolution.db-backup.plist
+   ```
+
+   Until then the 03:00 job will not fire; the script itself has been run
+   manually and works against the new database. If the machine logs out and back
+   in first, launchd loads it automatically.
+
 
 ### 6. Auth after cutover
 
