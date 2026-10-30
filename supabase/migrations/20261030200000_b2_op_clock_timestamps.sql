@@ -6385,6 +6385,73 @@ BEGIN
 END;
 $function$;
 
+-- Owner pins (§28.9 invariant). Most of these bodies replace functions the
+-- dump already owns; a few overloads exist only in the migration chain, so on
+-- a candidate they are created by the migrating role. Owner must be postgres
+-- for SECURITY DEFINER to resolve identically on every node.
+alter function public.cancel_invoice(p_invoice_id uuid, p_reason text, p_cancelled_by text, p_reverse_due_collections boolean) owner to postgres;
+alter function public.cash_out_store_credit(p_credit_id uuid, p_amount numeric, p_payment_account_id uuid, p_notes text, p_expected_updated_at timestamp with time zone) owner to postgres;
+alter function public.consume_fifo(p_invoice_item_id uuid, p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_unit_cost numeric) owner to postgres;
+alter function public.consume_fifo(p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_invoice_item_id uuid) owner to postgres;
+alter function public.convert_quotation_to_invoice(p_quotation_id uuid, p_options jsonb) owner to postgres;
+alter function public.create_opening_batch(p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_unit_cost numeric, p_batch_type text, p_reference_type text, p_reference_id uuid, p_notes text, p_tenant_id uuid) owner to postgres;
+alter function public.create_stock_reduction(p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_unit_cost numeric, p_reference_type text, p_reference_id uuid, p_notes text, p_tenant_id uuid, p_debit_account_code text) owner to postgres;
+alter function public.deduct_stock_on_invoice_item() owner to postgres;
+alter function public.edit_invoice(p_invoice_id uuid, p_new_data json, p_edited_by text, p_reason text) owner to postgres;
+alter function public.heal_negative_batches_and_resync(p_product_id uuid, p_warehouse_id uuid) owner to postgres;
+alter function public.invoice_accounting_trigger() owner to postgres;
+alter function public.invoice_status_cogs_trigger() owner to postgres;
+alter function public.payment_accounting_trigger() owner to postgres;
+alter function public.payment_po_amount_paid_trigger() owner to postgres;
+alter function public.post_cogs_je_from_item_insert() owner to postgres;
+alter function public.post_grn_journal(p_grn_id uuid) owner to postgres;
+alter function public.post_grn_journal(p_grn_id uuid, p_absorbed_value numeric, p_absorbed_receipt_value numeric) owner to postgres;
+alter function public.post_journal_entry(p_description text, p_lines jsonb, p_entry_date date, p_reference_type text, p_reference_id uuid, p_tenant_id uuid) owner to postgres;
+alter function public.post_journal_entry(p_description text, p_entry_date date, p_reference_type text, p_reference_id uuid, p_lines json, p_customer_id uuid, p_supplier_id uuid) owner to postgres;
+alter function public.post_quick_sell_cost_je(p_invoice_id uuid) owner to postgres;
+alter function public.purchase_order_cancellation_trigger() owner to postgres;
+alter function public.push_notification(p_type text, p_settings_key text, p_title text, p_body text, p_entity_type text, p_entity_id uuid, p_href text, p_roles text[], p_user_id uuid, p_dedupe_hours integer) owner to postgres;
+alter function public.quick_sell_create(p_payload jsonb) owner to postgres;
+alter function public.receive_grn(p_supplier_id uuid, p_purchase_order_id uuid, p_warehouse_id uuid, p_items json, p_notes text) owner to postgres;
+alter function public.recompute_customer_balances(p_customer_id uuid) owner to postgres;
+alter function public.recompute_supplier_balances(p_supplier_id uuid) owner to postgres;
+alter function public.record_fund_transfer(p_from_account_id uuid, p_to_account_id uuid, p_amount numeric, p_transfer_date date, p_notes text) owner to postgres;
+alter function public.record_manual_payable_payment(p_payable_je_id uuid, p_amount numeric, p_wht_amount numeric, p_payment_date date, p_payment_method text, p_cash_account_id uuid, p_reference_number text, p_notes text) owner to postgres;
+alter function public.record_sales_return(p_invoice_id uuid, p_refund_method text, p_refund_account_id uuid, p_items json, p_created_by uuid) owner to postgres;
+alter function public.restore_stock_on_invoice_item_delete() owner to postgres;
+alter function public.sync_advance_apply(p_payload jsonb) owner to postgres;
+alter function public.sync_advance_receive(p_payload jsonb) owner to postgres;
+alter function public.sync_advance_refund(p_payload jsonb) owner to postgres;
+alter function public.sync_customer_update(p_payload jsonb) owner to postgres;
+alter function public.sync_delivery_status(p_payload jsonb) owner to postgres;
+alter function public.sync_delivery_update(p_payload jsonb) owner to postgres;
+alter function public.sync_employee_update(p_payload jsonb) owner to postgres;
+alter function public.sync_expense_create(p_payload jsonb) owner to postgres;
+alter function public.sync_expense_update(p_payload jsonb) owner to postgres;
+alter function public.sync_invoice_create(p_payload jsonb) owner to postgres;
+alter function public.sync_invoice_status(p_payload jsonb) owner to postgres;
+alter function public.sync_payment_create(p_payload jsonb) owner to postgres;
+alter function public.sync_po_cancel(p_payload jsonb) owner to postgres;
+alter function public.sync_po_create(p_payload jsonb) owner to postgres;
+alter function public.sync_po_payment(p_payload jsonb) owner to postgres;
+alter function public.sync_po_status(p_payload jsonb) owner to postgres;
+alter function public.sync_po_update(p_payload jsonb) owner to postgres;
+alter function public.sync_product_status(p_payload jsonb) owner to postgres;
+alter function public.sync_product_update(p_payload jsonb) owner to postgres;
+alter function public.sync_project_update(p_payload jsonb) owner to postgres;
+alter function public.sync_purchase_return_create(p_payload jsonb) owner to postgres;
+alter function public.sync_quotation_create(p_payload jsonb) owner to postgres;
+alter function public.sync_quotation_status(p_payload jsonb) owner to postgres;
+alter function public.sync_quotation_update(p_payload jsonb) owner to postgres;
+alter function public.sync_stock_transfer_create(p_payload jsonb) owner to postgres;
+alter function public.sync_store_credit_expire(p_payload jsonb) owner to postgres;
+alter function public.sync_store_credit_issue(p_payload jsonb) owner to postgres;
+alter function public.sync_supplier_payable_payment(p_payload jsonb) owner to postgres;
+alter function public.sync_supplier_update(p_payload jsonb) owner to postgres;
+alter function public.sync_transfer_create(p_payload jsonb) owner to postgres;
+alter function public.touch_updated_at() owner to postgres;
+alter function public.update_credit_balance_on_redemption() owner to postgres;
+
 -- Column defaults (112 columns): now() -> op_at().
 alter table public.account_balance_recompute_audit alter column done_at set default op_at();
 alter table public.accounts alter column created_at set default op_at();
