@@ -11,7 +11,7 @@ import { loadQuickSellSettings } from '@/lib/quick-sell-settings';
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
 import JsBarcode from 'jsbarcode';
-import { Package, Plus, Search, CreditCard as Edit, Trash2, TriangleAlert as AlertTriangle, ChartBar as BarChart3, Boxes, TrendingDown, RefreshCw, X, ChevronDown, ChevronRight, Info, Settings, Barcode, Printer, Download, Upload, CircleCheck as CheckCircle2 } from 'lucide-react';
+import { Package, PackageMinus, Plus, Search, CreditCard as Edit, Trash2, RotateCcw, TriangleAlert as AlertTriangle, ChartBar as BarChart3, Boxes, TrendingDown, RefreshCw, X, ChevronDown, ChevronRight, Info, Settings, Barcode, Printer, Download, Upload, CircleCheck as CheckCircle2 } from 'lucide-react';
 import type { Product, Category, Brand, Warehouse as WarehouseType } from '@/lib/types';
 import { LABEL_SIZES, resolveLabelConfig, fitNameFontSize } from '@/lib/label-sizes';
 import Pagination from '@/components/ui/AppPagination';
@@ -90,6 +90,8 @@ export default function InventoryPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState<ProductWithStock | null>(null);
   const [deletingProduct, setDeletingProduct] = useState<ProductWithStock | null>(null);
+  // One or many products whose remaining stock is being written off.
+  const [writeOffTargets, setWriteOffTargets] = useState<ProductWithStock[] | null>(null);
   const [barcodeProduct, setBarcodeProduct] = useState<ProductWithStock | null>(null);
   const [batchesProduct, setBatchesProduct] = useState<ProductWithStock | null>(null);
   const [showManageModal, setShowManageModal] = useState(false);
@@ -253,6 +255,10 @@ export default function InventoryPage() {
     const searchCols = ['name', 'sku', 'barcode'];
     const list = products.filter(p => {
       const matchSearch = !search || matchesTokens(p, searchCols, tokens);
+      // Soft-deleted rows (is_active = false) are hidden by default so the list
+      // total matches the "Total Products" card, which counts active only. The
+      // Status filter's "Inactive" option is the single way back to them.
+      const matchActive = filterStatus === 'inactive' ? p.is_active === false : p.is_active !== false;
       const matchCat = !filterCategory || p.category_id === filterCategory;
       const matchBrand = !filterBrand || p.brand_id === filterBrand;
       const matchWarehouse = !filterWarehouse || (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0) > 0;
@@ -268,7 +274,7 @@ export default function InventoryPage() {
       const matchColor = !filterColor || p.product_colors?.some(c => c.name === filterColor);
       const matchSize = !filterSize || p.product_sizes?.some(s => s.name === filterSize);
       const matchUnit = !filterUnit || (p.unit && p.unit.toLowerCase() === filterUnit.toLowerCase());
-      return matchSearch && matchCat && matchBrand && matchWarehouse && matchStockTracking && matchStatus && matchColor && matchSize && matchUnit;
+      return matchSearch && matchActive && matchCat && matchBrand && matchWarehouse && matchStockTracking && matchStatus && matchColor && matchSize && matchUnit;
     });
     if (!search || tokens.length === 0) return list;
     return rankRows(list, p => [p.name, p.sku || '', p.barcode || ''], tokens);
@@ -301,6 +307,26 @@ export default function InventoryPage() {
         }
         return sum + value;
       }, 0), [filtered, filterWarehouse, fifoValueMap, inventoryByWarehouse]);
+
+  // Value carried by one product: product-level FIFO layers plus qty × cost_price
+  // for pairs with no layer. Same formula as the "Filtered value" chip, so a
+  // write-off quotes the number the page is already showing.
+  const productValue = (p: ProductWithStock): number => {
+    let value = fifoValueMap[p.id] || 0;
+    for (const wid of Object.keys(inventoryByWarehouse[p.id] || {})) {
+      if (fifoValueMap[`${p.id}|${wid}`] === undefined) {
+        value += pairFifoValue(p.id, wid, Number(p.cost_price || 0));
+      }
+    }
+    return value;
+  };
+  // Deleted products still carrying stock or layers — the write-off backlog.
+  // Value can outlive the counter (one deleted product has 300 units in layers
+  // with zero on hand), so both sides are checked.
+  const orphanedInactive = useMemo(
+    () => products.filter(p => p.is_active === false && ((p.total_stock || 0) !== 0 || (fifoValueMap[p.id] || 0) > 0)),
+    [products, fifoValueMap]
+  );
 
   function getStockBadge(qty: number, min: number) {
     if (qty < 0) return <span className="badge-status bg-red-100 text-red-700 border border-red-200">Oversold (IOU)</span>;
@@ -357,6 +383,33 @@ export default function InventoryPage() {
       loadData(true);
     }
     setDeletingProduct(null);
+  }
+
+  // Undo a soft delete: deletion only flips is_active to false, so restoring is
+  // the same write in reverse. Available from Status → Inactive.
+  async function handleRestore(product: ProductWithStock) {
+    if (!networkMonitor.getState().online) {
+      try {
+        await enqueueOp('product.status', {
+          idempotency_key: crypto.randomUUID(),
+          id: product.id,
+          is_active: true,
+          expected_updated_at: (product as any)?.updated_at || null,
+        }, `Restore product — ${product.name}`);
+        toast({ title: 'Queued offline', description: 'The product will be restored when you reconnect.' });
+        loadData(true);
+      } catch (err: any) {
+        toast({ title: 'Error', description: err?.message || 'Could not queue the restore', variant: 'destructive' });
+      }
+      return;
+    }
+    const { error } = await supabase.from('products').update({ is_active: true }).eq('id', product.id);
+    if (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } else {
+      toast({ title: 'Restored', description: `${product.name} is active again` });
+      loadData(true);
+    }
   }
 
   return (
@@ -465,6 +518,7 @@ export default function InventoryPage() {
           <option value="out">Out of Stock</option>
           <option value="sold_out">Sold Out (Zero after Sales)</option>
           <option value="negative">Negative (Oversold IOU)</option>
+          <option value="inactive">Inactive (deleted)</option>
         </select>
         <button
           type="button"
@@ -531,6 +585,27 @@ export default function InventoryPage() {
         </div>
       )}
 
+      {filterStatus === 'inactive' && orphanedInactive.length > 0 && (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-900">
+              {orphanedInactive.length} deleted product{orphanedInactive.length === 1 ? '' : 's'} still hold stock worth {formatCurrency(orphanedInactive.reduce((s, p) => s + productValue(p), 0))}
+            </p>
+            <p className="text-xs text-amber-800 mt-0.5">
+              Their value is excluded from the inventory totals, but the stock and its journal entries are still on the books. Write it off if the goods are gone, or restore the product if the deletion was a mistake.
+            </p>
+          </div>
+          <button
+            onClick={() => setWriteOffTargets(orphanedInactive)}
+            className="shrink-0 flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition"
+          >
+            <PackageMinus className="w-3.5 h-3.5" />
+            Write off all
+          </button>
+        </div>
+      )}
+
       <div className="table-wrapper">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -562,7 +637,7 @@ export default function InventoryPage() {
                 </tr>
               ) : (
                 pagedFiltered.map((p) => (
-                  <tr key={p.id} className={`hover:bg-muted/30 transition-colors ${!p.is_active ? 'opacity-50' : ''}`}>
+                  <tr key={p.id} className="hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 bg-muted rounded-lg overflow-hidden shrink-0">
@@ -604,7 +679,14 @@ export default function InventoryPage() {
                     </td>
                     <td className="px-4 py-3 text-sm text-right text-foreground">{formatCurrency(p.cost_price)}</td>
                     <td className="px-4 py-3 text-sm text-right font-semibold text-foreground">{formatCurrency(p.sale_price)}</td>
-                    <td className="px-4 py-3">{getStockBadge(p.total_stock || 0, p.min_stock_level)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col items-start gap-1">
+                        {!p.is_active && (
+                          <span className="badge-status bg-gray-100 text-gray-600 border border-gray-200">Inactive</span>
+                        )}
+                        {getStockBadge(p.total_stock || 0, p.min_stock_level)}
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <button onClick={() => setBarcodeProduct(p)} title="View Barcode" className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition">
@@ -613,9 +695,23 @@ export default function InventoryPage() {
                         <button onClick={() => setEditingProduct(p)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition">
                           <Edit className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => setDeletingProduct(p)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {/* Write-off is a cleanup action for deleted products
+                            holding stock, not a per-row control on the 1,400
+                            live rows — it would bury the other actions. */}
+                        {!p.is_active && ((p.total_stock || 0) !== 0 || (fifoValueMap[p.id] || 0) > 0) && (
+                          <button onClick={() => setWriteOffTargets([p])} title="Write off remaining stock" className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-muted-foreground hover:text-amber-600 transition">
+                            <PackageMinus className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {p.is_active ? (
+                          <button onClick={() => setDeletingProduct(p)} title="Delete product" className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        ) : (
+                          <button onClick={() => handleRestore(p)} title="Restore product" className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-green-50 text-muted-foreground hover:text-green-600 transition">
+                            <RotateCcw className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -641,7 +737,15 @@ export default function InventoryPage() {
         <ProductModal categories={categories} brands={brands} warehouses={warehouses} unitTypes={unitTypes} product={editingProduct} onClose={() => setEditingProduct(null)} onSaved={() => loadData(true)} />
       )}
       {deletingProduct && (
-        <DeleteConfirmModal product={deletingProduct} onClose={() => setDeletingProduct(null)} onConfirm={handleDelete} />
+        <DeleteConfirmModal product={deletingProduct} stockValue={productValue(deletingProduct)} onClose={() => setDeletingProduct(null)} onConfirm={handleDelete} />
+      )}
+      {writeOffTargets && (
+        <WriteOffModal
+          targets={writeOffTargets}
+          valueFor={productValue}
+          onClose={() => setWriteOffTargets(null)}
+          onDone={() => { setWriteOffTargets(null); loadData(true); }}
+        />
       )}
       {barcodeProduct && (
         <BarcodeModal product={barcodeProduct} onClose={() => setBarcodeProduct(null)} />
@@ -666,7 +770,9 @@ export default function InventoryPage() {
   );
 }
 
-function DeleteConfirmModal({ product, onClose, onConfirm }: { product: ProductWithStock; onClose: () => void; onConfirm: () => void }) {
+function DeleteConfirmModal({ product, stockValue = 0, onClose, onConfirm }: { product: ProductWithStock; stockValue?: number; onClose: () => void; onConfirm: () => void }) {
+  const qty = product.total_stock || 0;
+  const holdsStock = qty !== 0 || stockValue > 0;
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl">
@@ -675,12 +781,131 @@ function DeleteConfirmModal({ product, onClose, onConfirm }: { product: ProductW
             <Trash2 className="w-6 h-6 text-red-600" />
           </div>
           <h2 className="text-lg font-bold text-center mb-2">Delete Product?</h2>
-          <p className="text-sm text-muted-foreground text-center mb-6">
-            Are you sure you want to delete <span className="font-semibold text-foreground">{product.name}</span>? This action cannot be undone.
+          <p className={`text-sm text-muted-foreground text-center ${holdsStock ? 'mb-4' : 'mb-6'}`}>
+            Are you sure you want to delete <span className="font-semibold text-foreground">{product.name}</span>? It will be hidden from inventory and all product lists, but its stock and sales history are kept. You can restore it later from Status → Inactive.
           </p>
+          {holdsStock && (
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-6 text-left">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-800">
+                This product still holds <span className="font-semibold">{qty} unit{qty === 1 ? '' : 's'}</span>
+                {stockValue > 0 && <> worth <span className="font-semibold">{formatCurrency(stockValue)}</span></>}
+                {' '}across your warehouses. Deleting hides the product but keeps that stock on the books — use Write off stock on the row if the goods are gone.
+              </p>
+            </div>
+          )}
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
             <button onClick={onConfirm} className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition">Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WriteOffModal({ targets, valueFor, onClose, onDone }: {
+  targets: ProductWithStock[];
+  valueFor: (p: ProductWithStock) => number;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const totalUnits = targets.reduce((s, p) => s + (p.total_stock || 0), 0);
+  const totalValue = targets.reduce((s, p) => s + valueFor(p), 0);
+
+  async function handleConfirm() {
+    // Financial write: the RPC consumes FIFO layers and posts a journal entry,
+    // so it must run against the server rather than the offline outbox.
+    if (!networkMonitor.getState().online) {
+      toast({ title: 'Offline', description: 'Writing off stock posts a journal entry, so it needs a connection.', variant: 'destructive' });
+      return;
+    }
+    setBusy(true);
+    const failures: string[] = [];
+    let units = 0;
+    for (const p of targets) {
+      const { data, error } = await supabase.rpc('write_off_product_stock', {
+        p_product_id: p.id,
+        p_reason: reason.trim() || null,
+      });
+      if (error) failures.push(`${p.name}: ${error.message}`);
+      else units += Number((data as any)?.quantity || 0);
+    }
+    setBusy(false);
+    if (failures.length > 0) {
+      toast({
+        title: `${failures.length} of ${targets.length} write-offs failed`,
+        description: failures.slice(0, 3).join(' · '),
+        variant: 'destructive',
+      });
+    } else {
+      toast({
+        title: 'Stock written off',
+        description: `${units} unit${units === 1 ? '' : 's'} removed from ${targets.length} product${targets.length === 1 ? '' : 's'}.`,
+      });
+    }
+    onDone();
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="p-6 overflow-y-auto">
+          <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <PackageMinus className="w-6 h-6 text-amber-600" />
+          </div>
+          <h2 className="text-lg font-bold text-center mb-2">
+            Write off stock{targets.length > 1 ? ` for ${targets.length} products` : ''}?
+          </h2>
+          <p className="text-sm text-muted-foreground text-center mb-4">
+            The remaining quantity is removed from inventory, its FIFO layers are consumed and a journal entry is posted. This cannot be undone.
+          </p>
+
+          <div className="border border-border rounded-lg divide-y divide-border max-h-52 overflow-y-auto mb-4">
+            {targets.map(p => {
+              const qty = p.total_stock || 0;
+              const value = valueFor(p);
+              return (
+                <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
+                    <p className="text-xs text-muted-foreground font-mono">{p.sku}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-semibold text-foreground">{qty} unit{qty === 1 ? '' : 's'}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {formatCurrency(value)}
+                      {qty === 0 && value > 0 && ' · ledger only'}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center justify-between bg-muted/50 rounded-lg px-3 py-2 mb-4 text-sm">
+            <span className="font-medium text-foreground">Total</span>
+            <span className="font-semibold text-foreground">
+              {totalUnits} unit{totalUnits === 1 ? '' : 's'} · {formatCurrency(totalValue)}
+            </span>
+          </div>
+
+          <label className="block text-xs font-medium text-muted-foreground mb-1">Reason (optional)</label>
+          <input
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="e.g. damaged, obsolete, deleted product"
+            className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 mb-6"
+          />
+
+          <div className="flex gap-3">
+            <button onClick={onClose} disabled={busy} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50">Cancel</button>
+            <button onClick={handleConfirm} disabled={busy} className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50">
+              {busy ? 'Writing off…' : 'Write off'}
+            </button>
           </div>
         </div>
       </div>
