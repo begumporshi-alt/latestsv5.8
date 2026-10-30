@@ -17,6 +17,9 @@ import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, unitAllowsDe
 import ProductSearchInput from '@/components/ui/ProductSearchInput';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
 import { UnitInput } from '@/components/ui/unit-input';
+import { AccountSelect } from '@/components/ui/account-select';
+import type { CashBankAccount } from '@/components/ui/account-select';
+import { FundsOverride, fundsShortfall, fundsAvailable } from '@/components/ui/funds-override';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { printNode } from '@/lib/print';
@@ -927,7 +930,8 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
     reference: '',
     payment_type: 'credit' as 'credit' | 'partial' | 'full',
     amount_paid: 0,
-    payment_method: 'bank_transfer' as PaymentMethod,
+    payment_method: '' as PaymentMethod,
+    account_id: '',
     payment_reference: '',
     cart_discount_percent: 0,
     extra_discount: 0,
@@ -938,6 +942,9 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
   const [showAddSupplier, setShowAddSupplier] = useState(false);
   const [supplierList, setSupplierList] = useState(suppliers);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+  const [selectedAccount, setSelectedAccount] = useState<CashBankAccount | null>(null);
+  const [allowNegative, setAllowNegative] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
   const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string; is_default?: boolean }[]>([]);
   const [headerWarehouseId, setHeaderWarehouseId] = useState('');
   const [showAddProduct, setShowAddProduct] = useState(false);
@@ -1180,6 +1187,16 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
     if (items.length === 0) { setError('Please add at least one item'); return; }
     if (form.payment_type === 'partial' && form.amount_paid <= 0) { setError('Please enter payment amount for partial payment'); return; }
     if (form.payment_type === 'partial' && form.amount_paid >= totalAmount) { setError('Partial payment must be less than total. Use "Full Payment" instead.'); return; }
+    if (amountPaid > 0 && !form.payment_method) { setError('Select a payment method'); return; }
+    if (amountPaid > 0 && !form.account_id) { setError('Select the cash/bank account the payment is made from'); return; }
+    if (amountPaid > 0 && fundsShortfall(selectedAccount, amountPaid) > 0.005) {
+      if (selectedAccount?.is_cash) {
+        setError(`Insufficient cash in ${selectedAccount.name} — ${formatCurrency(fundsAvailable(selectedAccount))} available. Cash accounts cannot go negative.`);
+        return;
+      }
+      if (!allowNegative) { setError('This payment overdraws the account — tick the override or choose another account'); return; }
+      if (!overrideReason.trim()) { setError('Enter a reason for the overdraft override'); return; }
+    }
 
     // Offline: queue the PO; sync_po_create replays it atomically (PO +
     // items + optional payment-at-order-time, with the AP journal and
@@ -1202,6 +1219,9 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
           total_amount: totalAmount,
           amount_paid: amountPaid > 0 ? amountPaid : 0,
           payment_method: form.payment_method,
+          account_id: form.account_id || null,
+          allow_negative: allowNegative,
+          override_reason: overrideReason || null,
           payment_reference: form.payment_reference || null,
           notes: form.notes || null,
           reference: form.reference || null,
@@ -1297,6 +1317,9 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
         amount: amountPaid,
         payment_method: form.payment_method,
         payment_date: form.order_date,
+        account_id: form.account_id || null,
+        allow_negative: allowNegative,
+        override_reason: overrideReason || null,
         reference_number: form.payment_reference || null,
         notes: form.payment_type === 'full' ? 'Full payment at order time' : 'Partial payment at order time',
         payment_for: 'supplier_payment',
@@ -1525,10 +1548,12 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                   <div>
                     <label className="block text-xs font-medium mb-1 text-green-800">Payment Method *</label>
                     <select
+                      required
                       value={form.payment_method}
                       onChange={e => setForm({ ...form, payment_method: e.target.value as PaymentMethod })}
                       className="w-full border border-green-300 bg-white rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500/20"
                     >
+                      <option value="">Select method</option>
                       {paymentMethods.length > 0 ? (
                         paymentMethods.map(pm => (
                           <option key={pm.code} value={pm.code}>{pm.name}</option>
@@ -1543,6 +1568,13 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                       )}
                     </select>
                   </div>
+                  <AccountSelect
+                    label="Paid From"
+                    required
+                    value={form.account_id}
+                    onChange={accountId => setForm({ ...form, account_id: accountId })}
+                    onAccountChange={setSelectedAccount}
+                  />
                   <div>
                     <label className="block text-xs font-medium mb-1 text-green-800">Reference / Transaction ID</label>
                     <input
@@ -1554,6 +1586,14 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                     />
                   </div>
                 </div>
+                <FundsOverride
+                  account={selectedAccount}
+                  amount={amountPaid}
+                  allowNegative={allowNegative}
+                  onAllowNegativeChange={setAllowNegative}
+                  reason={overrideReason}
+                  onReasonChange={setOverrideReason}
+                />
                 {form.payment_type === 'partial' && (
                   <div>
                     <label className="block text-xs font-medium mb-1 text-green-800">Payment Amount *</label>
@@ -1886,18 +1926,24 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
   const [form, setForm] = useState({
     amount: balance,
     wht: 0,
-    payment_method: 'bank_transfer' as PaymentMethod,
+    payment_method: '' as PaymentMethod,
+    account_id: '',
     payment_date: new Date().toISOString().split('T')[0],
     reference_number: '',
     notes: '',
   });
   const [saving, setSaving] = useState(false);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
+  const [selectedAccount, setSelectedAccount] = useState<CashBankAccount | null>(null);
+  const [allowNegative, setAllowNegative] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
 
   useEffect(() => {
     supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order')
       .then(({ data }) => { if (data && data.length > 0) setPaymentMethods(data); });
   }, []);
+
+  const cashOut = Math.max(0, Number(form.amount || 0) - Number(form.wht || 0));
   const [error, setError] = useState('');
 
   async function handleSubmit(e: React.FormEvent) {
@@ -1906,6 +1952,18 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
     if (form.amount > balance) { setError(`Amount cannot exceed balance (${formatCurrency(balance)})`); return; }
     if ((form.wht || 0) < 0) { setError('Withholding cannot be negative'); return; }
     if ((form.wht || 0) >= form.amount) { setError('Withholding must be less than the payment amount'); return; }
+    if (!form.payment_method) { setError('Select a payment method'); return; }
+    if (!form.account_id) { setError('Select the cash/bank account the payment is made from'); return; }
+
+    // Mirror of the database funds guard.
+    if (fundsShortfall(selectedAccount, cashOut) > 0.005) {
+      if (selectedAccount?.is_cash) {
+        setError(`Insufficient cash in ${selectedAccount.name} — ${formatCurrency(fundsAvailable(selectedAccount))} available. Cash accounts cannot go negative.`);
+        return;
+      }
+      if (!allowNegative) { setError('This payment overdraws the account — tick the override or choose another account'); return; }
+      if (!overrideReason.trim()) { setError('Enter a reason for the overdraft override'); return; }
+    }
 
     setSaving(true);
     setError('');
@@ -1922,6 +1980,9 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
           amount: form.amount,
           wht_amount: form.wht || 0,
           payment_method: form.payment_method,
+          account_id: form.account_id,
+          allow_negative: allowNegative,
+          override_reason: overrideReason || null,
           payment_date: form.payment_date,
           reference_number: form.reference_number || null,
           notes: form.notes || null,
@@ -1947,6 +2008,9 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
       wht_amount: form.wht || 0,
       payment_method: form.payment_method,
       payment_date: form.payment_date,
+      account_id: form.account_id || null,
+      allow_negative: allowNegative,
+      override_reason: overrideReason || null,
       reference_number: form.reference_number || null,
       notes: form.notes || null,
       payment_for: 'supplier_payment',
@@ -1989,23 +2053,42 @@ function RecordPOPaymentModal({ order, onClose, onSaved }: { order: PurchaseOrde
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium mb-1">Payment Method *</label>
-            <select required value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value as PaymentMethod })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
-              {paymentMethods.length > 0 ? (
-                paymentMethods.map(pm => <option key={pm.code} value={pm.code}>{pm.name}</option>)
-              ) : (
-                <>
-                  <option value="bank_transfer">Bank Transfer</option>
-                  <option value="cash">Cash</option>
-                  <option value="bkash">bKash</option>
-                  <option value="nagad">Nagad</option>
-                  <option value="card">Card</option>
-                  <option value="cheque">Cheque</option>
-                </>
-              )}
-            </select>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Payment Method *</label>
+              <select required value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value as PaymentMethod })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+                <option value="">Select method</option>
+                {paymentMethods.length > 0 ? (
+                  paymentMethods.map(pm => <option key={pm.code} value={pm.code}>{pm.name}</option>)
+                ) : (
+                  <>
+                    <option value="cash">Cash</option>
+                    <option value="bank_transfer">Bank Transfer</option>
+                    <option value="bkash">bKash</option>
+                    <option value="nagad">Nagad</option>
+                    <option value="card">Card</option>
+                    <option value="cheque">Cheque</option>
+                  </>
+                )}
+              </select>
+            </div>
+            <AccountSelect
+              label="Paid From"
+              required
+              value={form.account_id}
+              onChange={accountId => setForm({ ...form, account_id: accountId })}
+              onAccountChange={setSelectedAccount}
+            />
           </div>
+
+          <FundsOverride
+            account={selectedAccount}
+            amount={cashOut}
+            allowNegative={allowNegative}
+            onAllowNegativeChange={setAllowNegative}
+            reason={overrideReason}
+            onReasonChange={setOverrideReason}
+          />
 
           <div>
             <label className="block text-xs font-medium mb-1">Payment Date</label>
