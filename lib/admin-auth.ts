@@ -5,9 +5,22 @@ import { createClient, type SupabaseClient, type User } from '@supabase/supabase
 // forwarded access token and checks their role in profiles before acting.
 
 const SERVICE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-// This repo stores the service key as NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY
-// (server-side .env only); accept the conventional name too.
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY;
+
+// The service-role key must never be inlined into a client bundle.
+//
+// Next/webpack statically substitutes the literal expression
+// `process.env.NEXT_PUBLIC_<name>` at build time, wherever it appears — in
+// server bundles, and in any client bundle that happens to import this
+// module. That substitution is what would publish a key that bypasses every
+// RLS policy. Bracket access is not statically substituted: it resolves at
+// runtime on the server, and yields undefined in the browser.
+//
+// The fallback is retained so deployments that still store the key under the
+// prefixed name keep working. The preferred end state is to rename the
+// variable to SUPABASE_SERVICE_ROLE_KEY and drop the fallback entirely.
+const SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env['NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY'];
 
 export { SERVICE_URL, SERVICE_ROLE_KEY };
 
