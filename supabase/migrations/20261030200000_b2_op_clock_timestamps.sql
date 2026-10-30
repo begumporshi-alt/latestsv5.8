@@ -582,7 +582,7 @@ BEGIN
     'advance_applications_reversed', v_total_advance_reversed
   );
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.cash_out_store_credit(p_credit_id uuid, p_amount numeric, p_payment_account_id uuid, p_notes text DEFAULT NULL::text, p_expected_updated_at timestamp with time zone DEFAULT NULL::timestamp with time zone)
  RETURNS jsonb
@@ -680,7 +680,7 @@ begin
     'entry_number', v_entry_number,
     'new_balance', v_new_balance);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.consume_fifo(p_invoice_item_id uuid, p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_unit_cost numeric)
  RETURNS void
@@ -821,7 +821,7 @@ BEGIN
      SET cost_price = COALESCE(v_avg_base_cost * v_cf, p_unit_cost)
    WHERE id = p_invoice_item_id;
 END
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.consume_fifo(p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_invoice_item_id uuid)
  RETURNS numeric
@@ -898,7 +898,7 @@ BEGIN
 
   RETURN v_cogs_total;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.convert_quotation_to_invoice(p_quotation_id uuid, p_options jsonb DEFAULT '{}'::jsonb)
  RETURNS jsonb
@@ -1056,7 +1056,7 @@ BEGIN
     'invoice_status', v_invoice_status,
     'amount_paid', v_amount_paid
   );
-END $function$
+END $function$;
 
 CREATE OR REPLACE FUNCTION public.create_opening_batch(p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_unit_cost numeric, p_batch_type text DEFAULT 'opening'::text, p_reference_type text DEFAULT 'product_creation'::text, p_reference_id uuid DEFAULT NULL::uuid, p_notes text DEFAULT NULL::text, p_tenant_id uuid DEFAULT '00000000-0000-0000-0000-000000000001'::uuid)
  RETURNS uuid
@@ -1215,7 +1215,7 @@ BEGIN
 
   RETURN v_batch_id;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.create_stock_reduction(p_product_id uuid, p_warehouse_id uuid, p_quantity numeric, p_unit_cost numeric, p_reference_type text DEFAULT 'stock_adjustment'::text, p_reference_id uuid DEFAULT NULL::uuid, p_notes text DEFAULT 'Stock decrease adjustment'::text, p_tenant_id uuid DEFAULT '00000000-0000-0000-0000-000000000001'::uuid, p_debit_account_code text DEFAULT '3900'::text)
  RETURNS uuid
@@ -1340,7 +1340,7 @@ BEGIN
 
   RETURN v_audit_batch_id;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.deduct_stock_on_invoice_item()
  RETURNS trigger
@@ -1447,7 +1447,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.edit_invoice(p_invoice_id uuid, p_new_data json, p_edited_by text DEFAULT NULL::text, p_reason text DEFAULT NULL::text)
  RETURNS json
@@ -2023,7 +2023,7 @@ BEGIN
   RETURN json_build_object('success', true, 'invoice_id', p_invoice_id, 'old_total', v_invoice.total_amount, 'new_total', v_new_total,
     'advance_applications_reversed', v_total_advance_reversed);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.heal_negative_batches_and_resync(p_product_id uuid, p_warehouse_id uuid)
  RETURNS void
@@ -2095,7 +2095,7 @@ BEGIN
    WHERE product_id = p_product_id
      AND warehouse_id = p_warehouse_id;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.invoice_accounting_trigger()
  RETURNS trigger
@@ -2197,7 +2197,7 @@ NEW.customer_id
 
 RETURN NEW;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.invoice_status_cogs_trigger()
  RETURNS trigger
@@ -2267,7 +2267,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.payment_accounting_trigger()
  RETURNS trigger
@@ -2431,7 +2431,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.payment_po_amount_paid_trigger()
  RETURNS trigger
@@ -2455,7 +2455,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.post_cogs_je_from_item_insert()
  RETURNS trigger
@@ -2605,7 +2605,7 @@ BEGIN
 
   RETURN NEW;
 END
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.post_grn_journal(p_grn_id uuid)
  RETURNS jsonb
@@ -2672,7 +2672,7 @@ BEGIN
 
   RETURN jsonb_build_object('posted', true, 'amount', v_total, 'je_id', v_je_id);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.post_grn_journal(p_grn_id uuid, p_absorbed_value numeric DEFAULT 0, p_absorbed_receipt_value numeric DEFAULT 0)
  RETURNS jsonb
@@ -2770,7 +2770,7 @@ BEGIN
 
   RETURN jsonb_build_object('posted', true, 'amount', v_total, 'je_id', v_je_id);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.post_journal_entry(p_description text, p_lines jsonb, p_entry_date date DEFAULT op_date(), p_reference_type text DEFAULT NULL::text, p_reference_id uuid DEFAULT NULL::uuid, p_tenant_id uuid DEFAULT '00000000-0000-0000-0000-000000000001'::uuid)
  RETURNS uuid
@@ -2834,7 +2834,7 @@ BEGIN
   
   RETURN v_entry_id;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.post_journal_entry(p_description text, p_entry_date date DEFAULT op_date(), p_reference_type text DEFAULT NULL::text, p_reference_id uuid DEFAULT NULL::uuid, p_lines json DEFAULT NULL::json, p_customer_id uuid DEFAULT NULL::uuid, p_supplier_id uuid DEFAULT NULL::uuid)
  RETURNS uuid
@@ -2892,7 +2892,7 @@ BEGIN
 
   RETURN v_entry_id;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.post_quick_sell_cost_je(p_invoice_id uuid)
  RETURNS uuid
@@ -3039,7 +3039,7 @@ BEGIN
     );
   END IF;
 END
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.purchase_order_cancellation_trigger()
  RETURNS trigger
@@ -3121,7 +3121,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.push_notification(p_type text, p_settings_key text, p_title text, p_body text, p_entity_type text DEFAULT NULL::text, p_entity_id uuid DEFAULT NULL::uuid, p_href text DEFAULT NULL::text, p_roles text[] DEFAULT NULL::text[], p_user_id uuid DEFAULT NULL::uuid, p_dedupe_hours integer DEFAULT 0)
  RETURNS void
@@ -3159,7 +3159,7 @@ BEGIN
     END LOOP;
   END IF;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.quick_sell_create(p_payload jsonb)
  RETURNS jsonb
@@ -3422,7 +3422,7 @@ BEGIN
     'products_reused', v_reused_count
   );
 END
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.receive_grn(p_supplier_id uuid, p_purchase_order_id uuid DEFAULT NULL::uuid, p_warehouse_id uuid DEFAULT NULL::uuid, p_items json DEFAULT NULL::json, p_notes text DEFAULT NULL::text)
  RETURNS json
@@ -3702,7 +3702,7 @@ BEGIN
 
   RETURN json_build_object('grn_id', v_grn_id, 'grn_number', v_grn_number,
                            'cost_updates', v_cost_updates, 'sale_price_updates', v_sale_updates);
-END $function$
+END $function$;
 
 CREATE OR REPLACE FUNCTION public.recompute_customer_balances(p_customer_id uuid)
  RETURNS integer
@@ -3757,7 +3757,7 @@ BEGIN
 
   RETURN 1;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.recompute_supplier_balances(p_supplier_id uuid DEFAULT NULL::uuid)
  RETURNS integer
@@ -3848,7 +3848,7 @@ BEGIN
 
   RETURN (SELECT count(*) FROM suppliers);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.record_fund_transfer(p_from_account_id uuid, p_to_account_id uuid, p_amount numeric, p_transfer_date date DEFAULT op_date(), p_notes text DEFAULT NULL::text)
  RETURNS json
@@ -3939,7 +3939,7 @@ BEGIN
     'to_balance', v_to_balance
   );
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.record_manual_payable_payment(p_payable_je_id uuid, p_amount numeric, p_wht_amount numeric DEFAULT 0, p_payment_date date DEFAULT op_date(), p_payment_method text DEFAULT 'cash'::text, p_cash_account_id uuid DEFAULT NULL::uuid, p_reference_number text DEFAULT NULL::text, p_notes text DEFAULT NULL::text)
  RETURNS json
@@ -4050,7 +4050,7 @@ BEGIN
     'remaining', GREATEST(v_outstanding - p_amount, 0)
   );
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.record_sales_return(p_invoice_id uuid, p_refund_method text, p_refund_account_id uuid DEFAULT NULL::uuid, p_items json DEFAULT NULL::json, p_created_by uuid DEFAULT NULL::uuid)
  RETURNS json
@@ -4436,7 +4436,7 @@ BEGIN
     'cash_refund_amount', v_cash_refund,
     'cogs_reversal', v_total_cogs
   );
-END $function$
+END $function$;
 
 CREATE OR REPLACE FUNCTION public.restore_stock_on_invoice_item_delete()
  RETURNS trigger
@@ -4530,7 +4530,7 @@ BEGIN
 
   RETURN OLD;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_advance_apply(p_payload jsonb)
  RETURNS jsonb
@@ -4605,7 +4605,7 @@ begin
     'applied_amount', v_amount
   );
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_advance_receive(p_payload jsonb)
  RETURNS jsonb
@@ -4635,7 +4635,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'advance_id', v_id, 'advance_number', v_number);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_advance_refund(p_payload jsonb)
  RETURNS jsonb
@@ -4711,7 +4711,7 @@ begin
     'refunded_amount', v_amount
   );
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_customer_update(p_payload jsonb)
  RETURNS jsonb
@@ -4756,7 +4756,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'customer_id', v_id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_delivery_status(p_payload jsonb)
  RETURNS jsonb
@@ -4783,7 +4783,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'delivery_status', v_status);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_delivery_update(p_payload jsonb)
  RETURNS jsonb
@@ -4821,7 +4821,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'delivery_id', v_d.id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_employee_update(p_payload jsonb)
  RETURNS jsonb
@@ -4863,7 +4863,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'employee_id', v_id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_expense_create(p_payload jsonb)
  RETURNS jsonb
@@ -4913,7 +4913,7 @@ begin
 
   return to_jsonb(v_res) || jsonb_build_object('status', 'synced');
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_expense_update(p_payload jsonb)
  RETURNS jsonb
@@ -4945,7 +4945,7 @@ begin
 
   return to_jsonb(v_res) || jsonb_build_object('status', 'synced');
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_invoice_create(p_payload jsonb)
  RETURNS jsonb
@@ -5134,7 +5134,7 @@ begin
     'invoice_number', v_number
   );
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_invoice_status(p_payload jsonb)
  RETURNS jsonb
@@ -5174,7 +5174,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'invoice_status', v_status);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_payment_create(p_payload jsonb)
  RETURNS jsonb
@@ -5258,7 +5258,7 @@ begin
     'invoice_status', v_status
   );
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_po_cancel(p_payload jsonb)
  RETURNS jsonb
@@ -5325,7 +5325,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'po_id', v_po.id, 'po_number', v_po.po_number);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_po_create(p_payload jsonb)
  RETURNS jsonb
@@ -5419,7 +5419,7 @@ BEGIN
 
   RETURN jsonb_build_object('status', 'synced', 'po_id', v_po_id, 'po_number', v_number);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_po_payment(p_payload jsonb)
  RETURNS jsonb
@@ -5473,7 +5473,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'payment_number', v_num);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_po_status(p_payload jsonb)
  RETURNS jsonb
@@ -5513,7 +5513,7 @@ BEGIN
 
   RETURN jsonb_build_object('status', 'synced', 'po_id', v_po.id, 'po_status', v_status);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_po_update(p_payload jsonb)
  RETURNS jsonb
@@ -5581,7 +5581,7 @@ BEGIN
 
   RETURN jsonb_build_object('status', 'synced', 'po_id', v_po.id, 'po_number', v_po.po_number);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_product_status(p_payload jsonb)
  RETURNS jsonb
@@ -5615,7 +5615,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'product_id', v_row.id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_product_update(p_payload jsonb)
  RETURNS jsonb
@@ -5753,7 +5753,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'product_id', v_pid);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_project_update(p_payload jsonb)
  RETURNS jsonb
@@ -5798,7 +5798,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'project_id', v_row.id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_purchase_return_create(p_payload jsonb)
  RETURNS jsonb
@@ -5896,7 +5896,7 @@ begin
   return jsonb_build_object('status', 'synced', 'return_id', v_id,
     'return_number', v_number, 'refund_amount', v_total);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_quotation_create(p_payload jsonb)
  RETURNS jsonb
@@ -5993,7 +5993,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'quotation_id', v_id, 'quote_number', v_number);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_quotation_status(p_payload jsonb)
  RETURNS jsonb
@@ -6029,7 +6029,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'quotation_id', v_q.id, 'quotation_status', v_status);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_quotation_update(p_payload jsonb)
  RETURNS jsonb
@@ -6111,7 +6111,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'quotation_id', v_q.id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_stock_transfer_create(p_payload jsonb)
  RETURNS jsonb
@@ -6174,7 +6174,7 @@ BEGIN
   RETURN jsonb_build_object('status', 'synced', 'transfer_id', v_id,
     'transfer_number', v_number);
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_store_credit_expire(p_payload jsonb)
  RETURNS jsonb
@@ -6206,7 +6206,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'credit_id', v_credit.id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_store_credit_issue(p_payload jsonb)
  RETURNS jsonb
@@ -6267,7 +6267,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'credit_id', v_id, 'credit_number', v_number);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_supplier_payable_payment(p_payload jsonb)
  RETURNS jsonb
@@ -6290,7 +6290,7 @@ begin
 
   return to_jsonb(v_res) || jsonb_build_object('status', 'synced');
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_supplier_update(p_payload jsonb)
  RETURNS jsonb
@@ -6336,7 +6336,7 @@ begin
 
   return jsonb_build_object('status', 'synced', 'supplier_id', v_row.id);
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.sync_transfer_create(p_payload jsonb)
  RETURNS jsonb
@@ -6357,7 +6357,7 @@ begin
 
   return to_jsonb(v_res) || jsonb_build_object('status', 'synced');
 end;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.touch_updated_at()
  RETURNS trigger
@@ -6367,7 +6367,7 @@ BEGIN
   NEW.updated_at = op_at();
   RETURN NEW;
 END;
-$function$
+$function$;
 
 CREATE OR REPLACE FUNCTION public.update_credit_balance_on_redemption()
  RETURNS trigger
@@ -6383,7 +6383,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$function$
+$function$;
 
 -- Column defaults (112 columns): now() -> op_at().
 alter table public.account_balance_recompute_audit alter column done_at set default op_at();
