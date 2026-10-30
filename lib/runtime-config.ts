@@ -24,7 +24,23 @@ export interface SupabaseConfig {
 }
 
 const INJECTED_KEY = '__SUPABASE_CONFIG__';
-const CACHE_KEY = 'sisolution.runtime-config';
+
+// The cache key is scoped to the Supabase project this build was compiled
+// against. Without that, a device booting from stale cached HTML keeps
+// reading a config that points at the PREVIOUS project and silently writes
+// there after a cutover. Scoping the key makes the old entry unreachable the
+// moment the build targets a new project ref, with no manual bump required.
+function buildProjectRef(): string {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!url) return 'runtime';
+  const host = url.replace(/^https?:\/\//, '').split('/')[0];
+  return host.split('.')[0] || 'runtime';
+}
+
+const CACHE_KEY = `sisolution.runtime-config.${buildProjectRef()}`;
+// Pre-cutover builds wrote to the unscoped key; drop it so a stale config
+// cannot linger in storage after this version is deployed.
+const LEGACY_CACHE_KEY = 'sisolution.runtime-config';
 
 declare global {
   interface Window {
@@ -42,12 +58,16 @@ export function getSupabaseConfig(): SupabaseConfig {
   if (typeof window !== 'undefined') {
     const injected = sanitize(window[INJECTED_KEY]);
     if (injected) {
-      try { window.localStorage.setItem(CACHE_KEY, JSON.stringify(injected)); } catch { /* private mode etc. */ }
+      try {
+        window.localStorage.setItem(CACHE_KEY, JSON.stringify(injected));
+        window.localStorage.removeItem(LEGACY_CACHE_KEY);
+      } catch { /* private mode etc. */ }
       return injected;
     }
     try {
       const cached = sanitize(JSON.parse(window.localStorage.getItem(CACHE_KEY) ?? 'null'));
       if (cached) return cached;
+      window.localStorage.removeItem(LEGACY_CACHE_KEY);
     } catch { /* corrupt cache — fall through */ }
   }
   // Server side (and any client fallback): runtime env, which on the server
