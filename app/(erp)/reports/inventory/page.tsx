@@ -34,7 +34,7 @@ export default function InventoryReportPage() {
         while (true) {
           const { data: pageData } = await supabase
           .from('inventory_items')
-          .select('*, product:products(name, sku, unit, cost_price, sale_price, min_stock_level, category:categories(id, name)), warehouse:warehouses(id, name)')
+          .select('*, product:products(name, sku, unit, cost_price, sale_price, min_stock_level, is_active, category:categories(id, name)), warehouse:warehouses(id, name)')
           .order('id')
           .range(pg * 1000, (pg + 1) * 1000 - 1);
           allItems = allItems.concat(pageData || []);
@@ -42,6 +42,10 @@ export default function InventoryReportPage() {
           pg++;
         }
       }
+      // Soft-deleted products are excluded here as well as from the valuation
+      // total, otherwise the table would list rows the "Stock Value" header
+      // does not count.
+      allItems = allItems.filter((i: any) => i.product?.is_active !== false);
 
       // Per-pair FIFO values and the valuation total come from one set-based
       // RPC instead of downloading every positive batch row. Pair entries
