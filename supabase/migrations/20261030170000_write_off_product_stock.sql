@@ -149,6 +149,8 @@ BEGIN
 END;
 $function$;
 
+ALTER FUNCTION write_off_product_stock(uuid, text) OWNER TO postgres;
+REVOKE ALL ON FUNCTION write_off_product_stock(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION write_off_product_stock(uuid, text) TO authenticated;
 
 COMMENT ON FUNCTION write_off_product_stock IS

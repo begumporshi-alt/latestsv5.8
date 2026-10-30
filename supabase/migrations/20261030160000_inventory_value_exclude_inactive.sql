@@ -135,6 +135,8 @@ AS $$
   FROM scalars s;
 $$;
 
+ALTER FUNCTION get_inventory_page_aggregates(boolean) OWNER TO postgres;
+REVOKE ALL ON FUNCTION get_inventory_page_aggregates(boolean) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION get_inventory_page_aggregates(boolean) TO authenticated;
 
 COMMIT;

@@ -153,6 +153,8 @@ BEGIN
 END;
 $function$;
 
+ALTER FUNCTION public.create_stock_reduction(uuid, uuid, numeric, numeric, text, uuid, text, uuid, text) OWNER TO postgres;
+REVOKE ALL ON FUNCTION public.create_stock_reduction(uuid, uuid, numeric, numeric, text, uuid, text, uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.create_stock_reduction(uuid, uuid, numeric, numeric, text, uuid, text, uuid, text) TO authenticated;
 
 COMMENT ON FUNCTION public.create_stock_reduction IS
@@ -276,6 +278,8 @@ BEGIN
 END;
 $function$;
 
+ALTER FUNCTION write_off_product_stock(uuid, text) OWNER TO postgres;
+REVOKE ALL ON FUNCTION write_off_product_stock(uuid, text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION write_off_product_stock(uuid, text) TO authenticated;
 
 COMMIT;
