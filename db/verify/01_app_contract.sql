@@ -1,0 +1,138 @@
+-- ============================================================================
+-- 01_app_contract.sql
+--
+-- Asserts that every table and RPC the Next.js application references exists.
+-- Generated from a static scan of app/, components/, lib/ and hooks/.
+-- 53 tables, 68 RPCs.
+-- ============================================================================
+DO $$
+DECLARE
+  missing text[] := ARRAY[]::text[];
+BEGIN
+  IF to_regclass('public.accounts') IS NULL THEN missing := missing || 'table accounts'; END IF;
+  IF to_regclass('public.activity_logs') IS NULL THEN missing := missing || 'table activity_logs'; END IF;
+  IF to_regclass('public.app_settings') IS NULL THEN missing := missing || 'table app_settings'; END IF;
+  IF to_regclass('public.attendance') IS NULL THEN missing := missing || 'table attendance'; END IF;
+  IF to_regclass('public.bank_reconciliation_items') IS NULL THEN missing := missing || 'table bank_reconciliation_items'; END IF;
+  IF to_regclass('public.brands') IS NULL THEN missing := missing || 'table brands'; END IF;
+  IF to_regclass('public.categories') IS NULL THEN missing := missing || 'table categories'; END IF;
+  IF to_regclass('public.cost_price_history') IS NULL THEN missing := missing || 'table cost_price_history'; END IF;
+  IF to_regclass('public.customer_advance_applications') IS NULL THEN missing := missing || 'table customer_advance_applications'; END IF;
+  IF to_regclass('public.customer_advance_refunds') IS NULL THEN missing := missing || 'table customer_advance_refunds'; END IF;
+  IF to_regclass('public.customer_advances') IS NULL THEN missing := missing || 'table customer_advances'; END IF;
+  IF to_regclass('public.customer_notes') IS NULL THEN missing := missing || 'table customer_notes'; END IF;
+  IF to_regclass('public.customer_store_credits') IS NULL THEN missing := missing || 'table customer_store_credits'; END IF;
+  IF to_regclass('public.customers') IS NULL THEN missing := missing || 'table customers'; END IF;
+  IF to_regclass('public.deliveries') IS NULL THEN missing := missing || 'table deliveries'; END IF;
+  IF to_regclass('public.delivery_items') IS NULL THEN missing := missing || 'table delivery_items'; END IF;
+  IF to_regclass('public.employees') IS NULL THEN missing := missing || 'table employees'; END IF;
+  IF to_regclass('public.goods_receipt_notes') IS NULL THEN missing := missing || 'table goods_receipt_notes'; END IF;
+  IF to_regclass('public.inventory_batches') IS NULL THEN missing := missing || 'table inventory_batches'; END IF;
+  IF to_regclass('public.inventory_items') IS NULL THEN missing := missing || 'table inventory_items'; END IF;
+  IF to_regclass('public.inventory_reconciliation_log') IS NULL THEN missing := missing || 'table inventory_reconciliation_log'; END IF;
+  IF to_regclass('public.invoice_edit_history') IS NULL THEN missing := missing || 'table invoice_edit_history'; END IF;
+  IF to_regclass('public.invoice_item_batch_consumption') IS NULL THEN missing := missing || 'table invoice_item_batch_consumption'; END IF;
+  IF to_regclass('public.invoice_items') IS NULL THEN missing := missing || 'table invoice_items'; END IF;
+  IF to_regclass('public.invoices') IS NULL THEN missing := missing || 'table invoices'; END IF;
+  IF to_regclass('public.journal_entries') IS NULL THEN missing := missing || 'table journal_entries'; END IF;
+  IF to_regclass('public.journal_lines') IS NULL THEN missing := missing || 'table journal_lines'; END IF;
+  IF to_regclass('public.notification_reads') IS NULL THEN missing := missing || 'table notification_reads'; END IF;
+  IF to_regclass('public.notifications') IS NULL THEN missing := missing || 'table notifications'; END IF;
+  IF to_regclass('public.online_orders') IS NULL THEN missing := missing || 'table online_orders'; END IF;
+  IF to_regclass('public.payment_methods') IS NULL THEN missing := missing || 'table payment_methods'; END IF;
+  IF to_regclass('public.payments') IS NULL THEN missing := missing || 'table payments'; END IF;
+  IF to_regclass('public.product_colors') IS NULL THEN missing := missing || 'table product_colors'; END IF;
+  IF to_regclass('public.product_sizes') IS NULL THEN missing := missing || 'table product_sizes'; END IF;
+  IF to_regclass('public.product_units') IS NULL THEN missing := missing || 'table product_units'; END IF;
+  IF to_regclass('public.products') IS NULL THEN missing := missing || 'table products'; END IF;
+  IF to_regclass('public.profiles') IS NULL THEN missing := missing || 'table profiles'; END IF;
+  IF to_regclass('public.projects') IS NULL THEN missing := missing || 'table projects'; END IF;
+  IF to_regclass('public.purchase_order_items') IS NULL THEN missing := missing || 'table purchase_order_items'; END IF;
+  IF to_regclass('public.purchase_orders') IS NULL THEN missing := missing || 'table purchase_orders'; END IF;
+  IF to_regclass('public.purchase_reminders') IS NULL THEN missing := missing || 'table purchase_reminders'; END IF;
+  IF to_regclass('public.purchase_return_items') IS NULL THEN missing := missing || 'table purchase_return_items'; END IF;
+  IF to_regclass('public.purchase_returns') IS NULL THEN missing := missing || 'table purchase_returns'; END IF;
+  IF to_regclass('public.quotation_items') IS NULL THEN missing := missing || 'table quotation_items'; END IF;
+  IF to_regclass('public.quotations') IS NULL THEN missing := missing || 'table quotations'; END IF;
+  IF to_regclass('public.sales_return_items') IS NULL THEN missing := missing || 'table sales_return_items'; END IF;
+  IF to_regclass('public.sales_returns') IS NULL THEN missing := missing || 'table sales_returns'; END IF;
+  IF to_regclass('public.stock_movements') IS NULL THEN missing := missing || 'table stock_movements'; END IF;
+  IF to_regclass('public.store_credit_redemptions') IS NULL THEN missing := missing || 'table store_credit_redemptions'; END IF;
+  IF to_regclass('public.suppliers') IS NULL THEN missing := missing || 'table suppliers'; END IF;
+  IF to_regclass('public.unit_types') IS NULL THEN missing := missing || 'table unit_types'; END IF;
+  IF to_regclass('public.user_module_access') IS NULL THEN missing := missing || 'table user_module_access'; END IF;
+  IF to_regclass('public.warehouses') IS NULL THEN missing := missing || 'table warehouses'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='account_monthly_net') THEN missing := missing || 'rpc account_monthly_net'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='cancel_invoice') THEN missing := missing || 'rpc cancel_invoice'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='cash_out_store_credit') THEN missing := missing || 'rpc cash_out_store_credit'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='collect_customer_advance') THEN missing := missing || 'rpc collect_customer_advance'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='collect_customer_payment') THEN missing := missing || 'rpc collect_customer_payment'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='convert_quotation_to_invoice') THEN missing := missing || 'rpc convert_quotation_to_invoice'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='correct_batch_cost') THEN missing := missing || 'rpc correct_batch_cost'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='create_opening_batch') THEN missing := missing || 'rpc create_opening_batch'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='create_stock_reduction') THEN missing := missing || 'rpc create_stock_reduction'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='delete_duplicate_cogs_je') THEN missing := missing || 'rpc delete_duplicate_cogs_je'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='delete_manual_journal_entry') THEN missing := missing || 'rpc delete_manual_journal_entry'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='edit_invoice') THEN missing := missing || 'rpc edit_invoice'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='edit_manual_journal_entry') THEN missing := missing || 'rpc edit_manual_journal_entry'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_credit_number') THEN missing := missing || 'rpc generate_credit_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_customer_code') THEN missing := missing || 'rpc generate_customer_code'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_delivery_number') THEN missing := missing || 'rpc generate_delivery_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_invoice_number') THEN missing := missing || 'rpc generate_invoice_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_payment_number') THEN missing := missing || 'rpc generate_payment_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_pos_number') THEN missing := missing || 'rpc generate_pos_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_purchase_order_number') THEN missing := missing || 'rpc generate_purchase_order_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_purchase_payment_number') THEN missing := missing || 'rpc generate_purchase_payment_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_quotation_number') THEN missing := missing || 'rpc generate_quotation_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='generate_supplier_code') THEN missing := missing || 'rpc generate_supplier_code'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_account_balance_drift') THEN missing := missing || 'rpc get_account_balance_drift'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_balance_sheet') THEN missing := missing || 'rpc get_balance_sheet'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_batch_cost_outliers') THEN missing := missing || 'rpc get_batch_cost_outliers'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_batch_stock_by_product_warehouse') THEN missing := missing || 'rpc get_batch_stock_by_product_warehouse'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_cash_flow') THEN missing := missing || 'rpc get_cash_flow'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_cogs_audit') THEN missing := missing || 'rpc get_cogs_audit'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_cogs_history_gap_breakdown') THEN missing := missing || 'rpc get_cogs_history_gap_breakdown'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_customer_ar_statement') THEN missing := missing || 'rpc get_customer_ar_statement'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_customer_period_statement') THEN missing := missing || 'rpc get_customer_period_statement'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_fifo_ledger_overview') THEN missing := missing || 'rpc get_fifo_ledger_overview'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_inventory_page_aggregates') THEN missing := missing || 'rpc get_inventory_page_aggregates'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_inventory_reconciliation') THEN missing := missing || 'rpc get_inventory_reconciliation'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_invoice_item_cogs_detail') THEN missing := missing || 'rpc get_invoice_item_cogs_detail'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_negative_inventory_layers') THEN missing := missing || 'rpc get_negative_inventory_layers'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_next_journal_number') THEN missing := missing || 'rpc get_next_journal_number'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_payables_aging') THEN missing := missing || 'rpc get_payables_aging'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_receivables_aging') THEN missing := missing || 'rpc get_receivables_aging'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_related_accounts') THEN missing := missing || 'rpc get_related_accounts'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_shared_document') THEN missing := missing || 'rpc get_shared_document'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_supplier_ap_statement') THEN missing := missing || 'rpc get_supplier_ap_statement'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_trial_balance') THEN missing := missing || 'rpc get_trial_balance'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='get_unbalanced_journal_entries') THEN missing := missing || 'rpc get_unbalanced_journal_entries'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='heal_negative_batches_and_resync') THEN missing := missing || 'rpc heal_negative_batches_and_resync'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='increment_account_balance') THEN missing := missing || 'rpc increment_account_balance'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='pay_supplier_outstanding') THEN missing := missing || 'rpc pay_supplier_outstanding'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='period_net_credit') THEN missing := missing || 'rpc period_net_credit'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='period_net_debit') THEN missing := missing || 'rpc period_net_debit'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='post_journal_entry') THEN missing := missing || 'rpc post_journal_entry'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='post_manual_journal_entry') THEN missing := missing || 'rpc post_manual_journal_entry'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='purge_negative_inventory_layers') THEN missing := missing || 'rpc purge_negative_inventory_layers'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='quick_sell_create') THEN missing := missing || 'rpc quick_sell_create'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='receive_grn') THEN missing := missing || 'rpc receive_grn'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='recompute_account_balances') THEN missing := missing || 'rpc recompute_account_balances'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='record_fund_transfer') THEN missing := missing || 'rpc record_fund_transfer'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='record_manual_payable_payment') THEN missing := missing || 'rpc record_manual_payable_payment'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='record_manual_receivable_payment') THEN missing := missing || 'rpc record_manual_receivable_payment'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='record_sales_return') THEN missing := missing || 'rpc record_sales_return'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='reverse_fifo_on_purchase_return') THEN missing := missing || 'rpc reverse_fifo_on_purchase_return'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sales_breakdown') THEN missing := missing || 'rpc sales_breakdown'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sales_breakdown_detail') THEN missing := missing || 'rpc sales_breakdown_detail'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sales_monthly') THEN missing := missing || 'rpc sales_monthly'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sync_apply') THEN missing := missing || 'rpc sync_apply'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sync_stock_transfer_create') THEN missing := missing || 'rpc sync_stock_transfer_create'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='toggle_bank_reconciliation_item') THEN missing := missing || 'rpc toggle_bank_reconciliation_item'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='write_off_product_stock') THEN missing := missing || 'rpc write_off_product_stock'; END IF;
+
+  IF array_length(missing,1) > 0 THEN
+    RAISE EXCEPTION 'app contract broken, missing: %', array_to_string(missing, ', ');
+  END IF;
+  RAISE NOTICE 'app contract satisfied: 53 tables, 68 RPCs present';
+END $$;
