@@ -242,8 +242,6 @@ grant execute on function public.sync_apply(uuid, text, jsonb, timestamptz, text
 alter function public.sync_apply(uuid, text, jsonb, timestamptz, text, text) owner to postgres;
 
 comment on function public.sync_apply(uuid, text, jsonb, timestamptz, text, text) is
-  'Offline sync dispatcher. p_at/p_device_id/p_hlc carry the op envelope (B1); '
-  || 'the op runs under set_config(''sisolution.op_at'') so nested code reads '
-  || 'op_at()/op_date(). Omitting p_at keeps the server clock.';
+  'Offline sync dispatcher. p_at/p_device_id/p_hlc carry the op envelope (B1); the op runs under set_config(''sisolution.op_at'') so nested code reads op_at()/op_date(). Omitting p_at keeps the server clock.';
 
 commit;
