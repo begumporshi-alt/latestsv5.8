@@ -180,11 +180,19 @@ the `source` remote:
 git remote -v          # source -> ~/Desktop/Myapps/for final si/sisolution
 ```
 
-To publish it as a new GitHub repository:
+Published as a **private** GitHub repository under the same account that owns
+the old one (`begumporshi-alt`):
 
-```bash
-gh repo create sisolution-new --private --source=. --remote=origin --push
+```
+https://github.com/begumporshi-alt/sisolution-new
 ```
 
-Nothing has been committed yet — the first commit is yours to make once the
-project exists and `.env` is filled in.
+`main` tracks `origin/main`; the full history (667 commits) is pushed. Only
+`.env.example` is tracked — `.env`, `.env.source` and `.env*.local` are
+ignored, and no credential appears in any commit.
+
+The first push failed with `HTTP 400 / send-pack: unexpected disconnect` on a
+36 MB repository with no oversized blobs. Setting `http.postBuffer` to 512 MB
+and forcing `http.version` to HTTP/1.1 in the local git config fixed it; both
+settings are repo-local and not committed.
+
