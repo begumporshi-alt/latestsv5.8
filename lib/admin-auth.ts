@@ -5,9 +5,11 @@ import { createClient, type SupabaseClient, type User } from '@supabase/supabase
 // forwarded access token and checks their role in profiles before acting.
 
 const SERVICE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-// This repo stores the service key as NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY
-// (server-side .env only); accept the conventional name too.
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY;
+// Read the conventional name only. A `NEXT_PUBLIC_`-prefixed alias must never
+// be accepted here: webpack substitutes NEXT_PUBLIC_* at build time, so any
+// reference — even one that is never taken at runtime — would inline the
+// service-role key into a bundle that ships to the browser.
+const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 export { SERVICE_URL, SERVICE_ROLE_KEY };
 
