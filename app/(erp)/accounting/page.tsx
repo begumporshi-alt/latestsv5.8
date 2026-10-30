@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { UnitInput } from '@/components/ui/unit-input';
@@ -148,10 +149,15 @@ export default function AccountingPage() {
       const batchSize = 100;
       for (let i = 0; i < orderedEntryIds.length; i += batchSize) {
         const batchIds = orderedEntryIds.slice(i, i + batchSize);
-        const { data: batchLines } = await supabase.from('journal_lines')
-          .select('journal_entry_id, account_id, debit, credit')
-          .in('journal_entry_id', batchIds);
-        if (batchLines) allLines = allLines.concat(batchLines);
+        // 100 entries can exceed the 1,000-row response cap once each carries
+        // several lines; fetchAll paginates past it.
+        const batchLines = await fetchAll<any>(() =>
+          supabase.from('journal_lines')
+            .select('id, journal_entry_id, account_id, debit, credit')
+            .in('journal_entry_id', batchIds)
+            .order('id')
+        );
+        allLines = allLines.concat(batchLines);
       }
     }
 
@@ -394,14 +400,25 @@ export default function AccountingPage() {
       const { data: revenueAccounts } = await supabase.from('accounts').select('id').in('code', ['4000', '4001']);
       const revenueAccIds = (revenueAccounts || []).map(a => a.id);
       if (revenueAccIds.length > 0) {
-        const { data: revenueLines } = await supabase
-          .from('journal_lines')
-          .select('credit, journal_entry:journal_entries!inner(entry_date)')
-          .in('account_id', revenueAccIds)
-          .gte('journal_entries.entry_date', start)
-          .lte('journal_entries.entry_date', end);
+        // Unbounded before: a full-year range on revenue accounts runs to
+        // thousands of lines and was silently cut at 1,000, understating the
+        // monthly chart.
+        let revenueLines: any[] = [];
+        try {
+          revenueLines = await fetchAll<any>(() =>
+            supabase
+              .from('journal_lines')
+              .select('id, credit, journal_entry:journal_entries!inner(entry_date)')
+              .in('account_id', revenueAccIds)
+              .gte('journal_entries.entry_date', start)
+              .lte('journal_entries.entry_date', end)
+              .order('id')
+          );
+        } catch {
+          revenueLines = [];
+        }
 
-        for (const line of (revenueLines || [])) {
+        for (const line of revenueLines) {
           const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
           if (!je?.entry_date) continue;
           const d = new Date(je.entry_date);
@@ -418,14 +435,23 @@ export default function AccountingPage() {
 
       const expenseAccIds = (expenseAccounts || []).map(a => a.id);
       if (expenseAccIds.length > 0) {
-        const { data: expenseLines } = await supabase
-          .from('journal_lines')
-          .select('debit, journal_entry:journal_entries!inner(entry_date)')
-          .in('account_id', expenseAccIds)
-          .gte('journal_entries.entry_date', start)
-          .lte('journal_entries.entry_date', end);
+        // Same 1,000-row cap as revenue above.
+        let expenseLines: any[] = [];
+        try {
+          expenseLines = await fetchAll<any>(() =>
+            supabase
+              .from('journal_lines')
+              .select('id, debit, journal_entry:journal_entries!inner(entry_date)')
+              .in('account_id', expenseAccIds)
+              .gte('journal_entries.entry_date', start)
+              .lte('journal_entries.entry_date', end)
+              .order('id')
+          );
+        } catch {
+          expenseLines = [];
+        }
 
-        for (const line of (expenseLines || [])) {
+        for (const line of expenseLines) {
           const je = Array.isArray(line.journal_entry) ? line.journal_entry[0] : line.journal_entry;
           if (!je?.entry_date) continue;
           const d = new Date(je.entry_date);

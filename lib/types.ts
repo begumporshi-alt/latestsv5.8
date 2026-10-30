@@ -490,7 +490,11 @@ export interface Payment {
   collection_id?: string;
   payment_method: PaymentMethod;
   payment_date: string;
+  /** Cash/bank account the money actually moved through. NULL on historical
+   *  rows, which fall back to payment_methods.account_id. */
+  account_id?: string | null;
   reference_number?: string;
+  /** @deprecated Unused free-text field; use account_id. */
   bank_account?: string;
   notes?: string;
   created_at: string;

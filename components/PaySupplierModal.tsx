@@ -7,6 +7,9 @@ import { toast } from '@/hooks/use-toast';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { UnitInput } from '@/components/ui/unit-input';
+import { AccountSelect } from '@/components/ui/account-select';
+import type { CashBankAccount } from '@/components/ui/account-select';
+import { FundsOverride, fundsShortfall, fundsAvailable } from '@/components/ui/funds-override';
 import { X, HandCoins, CircleCheck as CheckCircle2, TriangleAlert as AlertTriangle } from 'lucide-react';
 
 interface DuePO {
@@ -52,7 +55,14 @@ export default function PaySupplierModal({
   const [allocations, setAllocations] = useState<Record<string, number>>({});
   const [wht, setWht] = useState(0);
   const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
-  const [paymentMethod, setPaymentMethod] = useState('bank_transfer');
+  // No default: the operator must choose both the method and the account the
+  // money actually leaves from. Defaulting to 'bank_transfer' is what routed
+  // every payment to a single bank account.
+  const [paymentMethod, setPaymentMethod] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [selectedAccount, setSelectedAccount] = useState<CashBankAccount | null>(null);
+  const [allowNegative, setAllowNegative] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [referenceNumber, setReferenceNumber] = useState('');
   const [notes, setNotes] = useState('');
@@ -123,6 +133,19 @@ export default function PaySupplierModal({
       setError(`${formatCurrency(unallocated)} is not allocated — allocate the full amount (supplier overpayments are not supported)`);
       return;
     }
+    if (!paymentMethod) { setError('Select a payment method'); return; }
+    if (!accountId) { setError('Select the cash/bank account the payment is made from'); return; }
+
+    // Mirror of the database funds guard, so the operator gets the message
+    // before the round-trip. The DB remains authoritative.
+    if (fundsShortfall(selectedAccount, cashOut) > 0.005) {
+      if (selectedAccount?.is_cash) {
+        setError(`Insufficient cash in ${selectedAccount.name} — ${formatCurrency(fundsAvailable(selectedAccount))} available. Cash accounts cannot go negative.`);
+        return;
+      }
+      if (!allowNegative) { setError('This payment overdraws the account — tick the override or choose another account'); return; }
+      if (!overrideReason.trim()) { setError('Enter a reason for the overdraft override'); return; }
+    }
 
     setSaving(true);
     try {
@@ -158,6 +181,9 @@ export default function PaySupplierModal({
             reference_number: referenceNumber || null,
             notes: notes || null,
             collection_id: collectionId,
+            account_id: accountId,
+            allow_negative: allowNegative,
+            override_reason: overrideReason || null,
           }, `PO payment ${formatCurrency(row.amount)} — ${po.po_number}`);
         }
         toast({
@@ -176,6 +202,9 @@ export default function PaySupplierModal({
         p_reference_number: referenceNumber || null,
         p_notes: notes || null,
         p_allocations: allocRows,
+        p_account_id: accountId,
+        p_allow_negative: allowNegative,
+        p_override_reason: overrideReason || null,
       });
       if (rpcError) throw rpcError;
 
@@ -313,26 +342,35 @@ export default function PaySupplierModal({
               )}
             </div>
 
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium mb-1">Method *</label>
                 <select
+                  required
                   value={paymentMethod}
                   onChange={e => setPaymentMethod(e.target.value)}
-                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                 >
+                  <option value="">Select method</option>
                   {paymentMethods.length > 0 ? (
                     paymentMethods.map(pm => <option key={pm.code} value={pm.code}>{pm.name}</option>)
                   ) : (
                     <>
-                      <option value="bank_transfer">Bank Transfer</option>
                       <option value="cash">Cash</option>
+                      <option value="bank_transfer">Bank Transfer</option>
                       <option value="cheque">Cheque</option>
                       <option value="bkash">bKash</option>
                     </>
                   )}
                 </select>
               </div>
+              <AccountSelect
+                label="Paid From"
+                required
+                value={accountId}
+                onChange={setAccountId}
+                onAccountChange={setSelectedAccount}
+              />
               <div>
                 <label className="block text-xs font-medium mb-1">Date</label>
                 <input
@@ -352,6 +390,15 @@ export default function PaySupplierModal({
                 />
               </div>
             </div>
+
+            <FundsOverride
+              account={selectedAccount}
+              amount={cashOut}
+              allowNegative={allowNegative}
+              onAllowNegativeChange={setAllowNegative}
+              reason={overrideReason}
+              onReasonChange={setOverrideReason}
+            />
 
             <div>
               <label className="block text-xs font-medium mb-1">Notes</label>

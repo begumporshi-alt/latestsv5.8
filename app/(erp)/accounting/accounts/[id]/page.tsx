@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { UnitInput } from '@/components/ui/unit-input';
@@ -103,23 +104,32 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
   }, [id]);
 
   const loadTransactions = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('journal_lines')
-      .select(`
-        id, journal_entry_id, account_id, debit, credit, description, sort_order,
-        journal_entries!inner(
-          id, entry_number, entry_date, description, reference_type, reference_id, customer_id, supplier_id
-        )
-      `)
-      .eq('account_id', id);
-
-    if (error) {
+    // PostgREST caps every response at 1,000 rows. Cash in Hand has ~1,600
+    // journal lines, so a plain .eq() query silently returned only the oldest
+    // 1,000 and every recent transaction — including transfers — was missing
+    // from this tab and from the period totals below it. fetchAll paginates
+    // past the cap; .order('id') gives the deterministic sort it requires.
+    let data: JournalLineRaw[];
+    try {
+      data = await fetchAll<JournalLineRaw>(() =>
+        supabase
+          .from('journal_lines')
+          .select(`
+            id, journal_entry_id, account_id, debit, credit, description, sort_order,
+            journal_entries!inner(
+              id, entry_number, entry_date, description, reference_type, reference_id, customer_id, supplier_id
+            )
+          `)
+          .eq('account_id', id)
+          .order('id')
+      );
+    } catch (error) {
       console.error('Error loading transactions:', error);
       setAllLines([]);
       return;
     }
 
-    const lines = (data || []) as unknown as JournalLineRaw[];
+    const lines = data;
     lines.sort((a, b) => {
       const dA = new Date(a.journal_entries.entry_date).getTime();
       const dB = new Date(b.journal_entries.entry_date).getTime();
@@ -135,11 +145,21 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
       setRelatedAccounts(data as RelatedAccount[]);
       return;
     }
-    // Fallback: query manually through journal lines
-    const { data: lines } = await supabase
-      .from('journal_lines')
-      .select('journal_entry_id')
-      .eq('account_id', id);
+    // Fallback: query manually through journal lines (paginated — this account
+    // can easily exceed the 1,000-row response cap).
+    let lines: { journal_entry_id: string }[];
+    try {
+      lines = await fetchAll<{ journal_entry_id: string }>(() =>
+        supabase
+          .from('journal_lines')
+          .select('id, journal_entry_id')
+          .eq('account_id', id)
+          .order('id')
+      );
+    } catch {
+      setRelatedAccounts([]);
+      return;
+    }
     if (!lines || lines.length === 0) { setRelatedAccounts([]); return; }
 
     const entryIds = lines.map(l => l.journal_entry_id);
@@ -168,14 +188,24 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
   }, [id]);
 
   const loadPartyBreakdown = useCallback(async () => {
-    // Get all journal lines for this account, with customer/supplier info
-    const { data: lines } = await supabase
-      .from('journal_lines')
-      .select(`
-        debit, credit,
-        journal_entries!inner(customer_id, supplier_id)
-      `)
-      .eq('account_id', id);
+    // Same 1,000-row cap applies here — without fetchAll the breakdown only
+    // ever saw the oldest slice of a busy account.
+    let lines: any[];
+    try {
+      lines = await fetchAll<any>(() =>
+        supabase
+          .from('journal_lines')
+          .select(`
+            id, debit, credit,
+            journal_entries!inner(customer_id, supplier_id)
+          `)
+          .eq('account_id', id)
+          .order('id')
+      );
+    } catch {
+      setPartyBreakdown([]);
+      return;
+    }
 
     if (!lines || lines.length === 0) { setPartyBreakdown([]); return; }
 
@@ -1127,7 +1157,7 @@ function BalanceAdjustmentPanel({ account, onAdjusted }: { account: Account; onA
             ))}
           </select>
           <p className="text-[11px] text-muted-foreground mt-1">
-            The offsetting side of the entry. Usually "Opening Balance Equity" (3900).
+            The offsetting side of the entry. Usually &ldquo;Opening Balance Equity&rdquo; (3900).
           </p>
         </div>
 

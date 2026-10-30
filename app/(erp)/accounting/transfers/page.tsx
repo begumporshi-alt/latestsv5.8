@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { formatCurrency, formatDate } from '@/lib/format';
+import { formatCurrency, formatDate, localDateISO } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
@@ -55,7 +55,7 @@ export default function TransfersPage() {
   const [fromAccount, setFromAccount] = useState('');
   const [toAccount, setToAccount] = useState('');
   const [amount, setAmount] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(localDateISO());
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -76,15 +76,18 @@ export default function TransfersPage() {
   useEffect(() => { loadData(); }, [period, customFrom, customTo]);
 
   function getPeriodRange() {
-    const today = new Date().toISOString().split('T')[0];
+    // Local date, not UTC: with toISOString() the "Today" filter used the UTC
+    // date, so between 00:00 and 05:59 Dhaka it excluded today's transfers
+    // entirely — including the Phase 3 deposit.
+    const today = localDateISO();
     if (period === 'today') return { from: today, to: today };
     if (period === 'last7') {
       const d = new Date(); d.setDate(d.getDate() - 6);
-      return { from: d.toISOString().split('T')[0], to: today };
+      return { from: localDateISO(d), to: today };
     }
     if (period === 'last30') {
       const d = new Date(); d.setDate(d.getDate() - 29);
-      return { from: d.toISOString().split('T')[0], to: today };
+      return { from: localDateISO(d), to: today };
     }
     if (period === 'custom') return { from: customFrom || '', to: customTo || '' };
     return { from: '', to: '' };

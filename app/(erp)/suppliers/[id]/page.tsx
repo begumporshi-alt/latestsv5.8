@@ -9,6 +9,9 @@ import { printNode } from '@/lib/print';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
 import { UnitInput } from '@/components/ui/unit-input';
+import { AccountSelect } from '@/components/ui/account-select';
+import type { CashBankAccount } from '@/components/ui/account-select';
+import { FundsOverride, fundsShortfall, fundsAvailable } from '@/components/ui/funds-override';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { ArrowLeft, Phone, Mail, MapPin, Building2, CreditCard, Calendar, ShoppingBag, DollarSign, Star, Pencil as Edit, Eye, Package, FileText, Plus, Truck, Warehouse, RotateCcw, Receipt, Printer, BookOpen, HandCoins, X } from 'lucide-react';
@@ -754,18 +757,19 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
     wht: 0,
     payment_date: new Date().toISOString().split('T')[0],
     payment_method: 'cash',
+    account_id: '',
     reference_number: '',
   });
   const [methods, setMethods] = useState<{ code: string; name: string; account_id?: string | null }[]>([]);
-  const [accounts, setAccounts] = useState<{ id: string; code: string; name: string; is_cash: boolean; is_bank: boolean }[]>([]);
+  const [selectedAccount, setSelectedAccount] = useState<CashBankAccount | null>(null);
+  const [allowNegative, setAllowNegative] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
     supabase.from('payment_methods').select('code, name, account_id').eq('is_active', true).order('sort_order')
       .then(({ data }) => { if (data && data.length > 0) setMethods(data); });
-    supabase.from('accounts').select('id, code, name, is_cash, is_bank').eq('is_active', true).order('code')
-      .then(({ data }) => setAccounts((data || []) as any[]));
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -776,6 +780,19 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
     if (amount > target.balance + 0.005) { setError(`Amount cannot exceed the outstanding balance (${formatCurrency(target.balance)})`); return; }
     if ((form.wht || 0) < 0) { setError('Withholding cannot be negative'); return; }
     if ((form.wht || 0) >= amount) { setError('Withholding must be less than the payment amount'); return; }
+    if (!form.payment_method) { setError('Select a payment method'); return; }
+    if (!form.account_id) { setError('Select the cash/bank account the payment is made from'); return; }
+
+    // Mirror of the database funds guard.
+    const cashOut = Math.max(0, amount - (form.wht || 0));
+    if (fundsShortfall(selectedAccount, cashOut) > 0.005) {
+      if (selectedAccount?.is_cash) {
+        setError(`Insufficient cash in ${selectedAccount.name} — ${formatCurrency(fundsAvailable(selectedAccount))} available. Cash accounts cannot go negative.`);
+        return;
+      }
+      if (!allowNegative) { setError('This payment overdraws the account — tick the override or choose another account'); return; }
+      if (!overrideReason.trim()) { setError('Enter a reason for the overdraft override'); return; }
+    }
 
     setSaving(true);
     try {
@@ -783,10 +800,8 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
       // live outstanding balance and relies on the same triggers; the
       // manual payable wraps record_manual_payable_payment.
       if (!networkMonitor.getState().online) {
-        // Resolve the cash account offline from already-loaded methods/accounts
-        const methodAccount = methods.find(m => m.code === form.payment_method);
-        const cashAccountId = methodAccount?.account_id
-          || (accounts.find(a => a.is_cash || a.is_bank)?.id ?? null);
+        // The account was chosen explicitly on the form; no method lookup.
+        const cashAccountId = form.account_id;
         if (target.kind === 'po') {
           await enqueueOp('po.payment', {
             idempotency_key: crypto.randomUUID(),
@@ -795,6 +810,9 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
             amount,
             wht_amount: form.wht || 0,
             payment_method: form.payment_method,
+            account_id: cashAccountId,
+            allow_negative: allowNegative,
+            override_reason: overrideReason || null,
             payment_date: form.payment_date,
             reference_number: form.reference_number || null,
           }, `PO payment ${formatCurrency(amount)} — ${target.label}`);
@@ -830,6 +848,9 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
           wht_amount: form.wht || 0,
           payment_method: form.payment_method,
           payment_date: form.payment_date,
+          account_id: form.account_id,
+          allow_negative: allowNegative,
+          override_reason: overrideReason || null,
           reference_number: form.reference_number || null,
           payment_for: 'supplier_payment',
         });
@@ -837,16 +858,9 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
       } else {
         // Manual payable: one atomic RPC writes payment row + JE
         // (Dr AP / Cr cash / Cr WHT Payable) and maintains balances.
-        let whtCreditAccount: { id: string } | null = null;
-        const methodAccount = methods.length > 0
-          ? await supabase.from('payment_methods').select('account_id').eq('code', form.payment_method).eq('is_active', true).maybeSingle()
-          : null;
-        if (methodAccount && methodAccount.data && methodAccount.data.account_id) {
-          whtCreditAccount = { id: methodAccount.data.account_id };
-        } else {
-          whtCreditAccount = accounts.find(a => a.is_cash || a.is_bank) || null;
-        }
-        if (!whtCreditAccount) throw new Error('No cash/bank account found to pay from');
+        // The account was chosen explicitly on the form.
+        const whtCreditAccount = { id: form.account_id };
+        if (!whtCreditAccount.id) throw new Error('No cash/bank account found to pay from');
 
         const { error: rpcError } = await supabase.rpc('record_manual_payable_payment', {
           p_payable_je_id: target.id,
@@ -857,6 +871,8 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
           p_cash_account_id: whtCreditAccount.id,
           p_reference_number: form.reference_number || null,
           p_notes: `Payment made for ${target.label}`,
+          p_allow_negative: allowNegative,
+          p_override_reason: overrideReason || null,
         });
         if (rpcError) throw rpcError;
       }
@@ -908,19 +924,35 @@ function SupplierPaymentModal({ supplierId, target, onClose, onSaved }: {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium mb-1">Method *</label>
-              <select value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value })}
+              <select required value={form.payment_method} onChange={e => setForm({ ...form, payment_method: e.target.value })}
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
+                <option value="">Select method</option>
                 {(methods.length > 0 ? methods : [{ code: 'cash', name: 'Cash' }, { code: 'bank_transfer', name: 'Bank Transfer' }]).map(m => (
                   <option key={m.code} value={m.code}>{m.name}</option>
                 ))}
               </select>
             </div>
-            <div>
+            <AccountSelect
+              label="Paid From"
+              required
+              value={form.account_id}
+              onChange={accountId => setForm({ ...form, account_id: accountId })}
+              onAccountChange={setSelectedAccount}
+            />
+            <div className="col-span-2">
               <label className="block text-xs font-medium mb-1">Reference #</label>
               <input value={form.reference_number} onChange={e => setForm({ ...form, reference_number: e.target.value })} placeholder="Cheque / txn #"
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
             </div>
           </div>
+          <FundsOverride
+            account={selectedAccount}
+            amount={Math.max(0, Number(form.amount || 0) - Number(form.wht || 0))}
+            allowNegative={allowNegative}
+            onAllowNegativeChange={setAllowNegative}
+            reason={overrideReason}
+            onReasonChange={setOverrideReason}
+          />
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
             <button type="submit" disabled={saving} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60">

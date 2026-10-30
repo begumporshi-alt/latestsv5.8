@@ -81,6 +81,19 @@ export function formatDate(dateStr: string): string {
   });
 }
 
+/** Today as YYYY-MM-DD in the browser's local timezone.
+ *
+ *  Do not use `new Date().toISOString().split('T')[0]` for a business date:
+ *  toISOString() is UTC, so anywhere east of Greenwich it returns yesterday
+ *  for the first hours of the day (in Dhaka, 00:00–05:59). That is how the
+ *  Phase 3 transfer was stamped 30 Oct when it was posted on 31 Oct. */
+export function localDateISO(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr);
   const now = new Date();
