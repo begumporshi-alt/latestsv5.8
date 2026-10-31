@@ -168,7 +168,18 @@ export const OP_CACHE_KEYS: Record<string, string[]> = {
   'po.status': ['purchases:list'],
   'po.cancel': ['purchases:list'],
   'po.payment': ['purchases:list', 'dashboard:page-data'],
-  'grn.receive': ['purchases:list', 'dashboard:page-data'],
+  // A receipt moves stock, FIFO layers, cost prices, the PO's received
+  // quantities and the GL — every aggregate that reads any of them must drop.
+  // This map is the single source of truth for both paths: the offline
+  // overlay (outbox.ts) and the online RPC handler in purchases/grn both call
+  // invalidateQueryCachesForOp('grn.receive').
+  'grn.receive': [
+    'purchases:list',
+    'inventory:page-data',
+    'products:all',
+    'gate:stock',
+    'dashboard:page-data',
+  ],
   'purchase_return.create': ['purchases:list'],
   'supplier.create': ['purchases:refs', 'dashboard:page-data'],
   'supplier.update': ['purchases:refs', 'dashboard:page-data'],
@@ -1383,11 +1394,53 @@ function parentKeyOf(table: string, row: any): string | null {
 }
 
 /**
+ * Drop the wrapper's per-query read caches for the given source tables. Used
+ * by the op-based invalidation below and by the Realtime listener, which sees
+ * a table change without knowing which op caused it.
+ */
+export async function invalidateCachesForTables(tables: string[]): Promise<void> {
+  if (typeof window === 'undefined' || tables.length === 0) return
+  try {
+    const userId = await resolveUserId()
+    if (!userId) return
+    const db = getDB()
+    for (const table of tables) {
+      await db.cache.where('key').startsWith(`${userId}:q:from:${table}:`).delete()
+    }
+  } catch {
+    // best-effort — a stale list refreshes on the next replica change
+  }
+}
+
+/**
+ * Drop page-level cachedQuery aggregates by key prefix (the keys in
+ * lib/offline/keys.ts). Shared by the op-based invalidation and the Realtime
+ * listener, which learns about a change from a table name, not an op.
+ */
+export async function invalidateCacheKeys(prefixes: string[]): Promise<void> {
+  if (typeof window === 'undefined' || prefixes.length === 0) return
+  try {
+    const userId = await resolveUserId()
+    if (!userId) return
+    const db = getDB()
+    for (const prefix of prefixes) {
+      await db.cache.where('key').startsWith(`${userId}:${prefix}`).delete()
+    }
+  } catch {
+    // best-effort — a stale aggregate refreshes on its TTL
+  }
+}
+
+/**
  * Drop the wrapper's per-query read caches for the tables an op touches, so
  * offline page reads re-run through the replica engine and pick up the new
  * pending rows instead of serving the pre-enqueue cached list. Page-level
  * cachedQuery aggregates (OP_CACHE_KEYS) are dropped the same way — their
  * fetchers replay against the replica too and pick up the overlay.
+ *
+ * Online writes call this too: the cache keys are identical whether the row
+ * arrived through the outbox or straight from the server, so one map governs
+ * both paths.
  */
 export async function invalidateQueryCachesForOp(op: string): Promise<void> {
   try {
@@ -1395,15 +1448,8 @@ export async function invalidateQueryCachesForOp(op: string): Promise<void> {
     const tables = OP_TABLES[op]
     const keyPrefixes = OP_CACHE_KEYS[op] || []
     if ((!tables || tables.length === 0) && keyPrefixes.length === 0) return
-    const userId = await resolveUserId()
-    if (!userId) return
-    const db = getDB()
-    for (const table of tables || []) {
-      await db.cache.where('key').startsWith(`${userId}:q:from:${table}:`).delete()
-    }
-    for (const prefix of keyPrefixes) {
-      await db.cache.where('key').startsWith(`${userId}:${prefix}`).delete()
-    }
+    await invalidateCachesForTables(tables || [])
+    await invalidateCacheKeys(keyPrefixes)
   } catch {
     // best-effort — a stale list refreshes on the next outbox change
   }

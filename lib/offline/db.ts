@@ -149,6 +149,14 @@ export async function isOfflineStorageAvailable(): Promise<boolean> {
 
 /** Wipe every local trace of a user's data: local database, cache, queued work, and key. */
 export async function clearLocalData(): Promise<void> {
+  // Close the Realtime channel first — it holds a socket that would otherwise
+  // keep delivering change events for a session that no longer exists.
+  try {
+    const { stopRealtimeSync } = await import('./realtime')
+    stopRealtimeSync()
+  } catch {
+    // realtime module unavailable — nothing to stop
+  }
   try {
     const db = getDB()
     await Promise.all(db.tables.map(t => t.clear()))

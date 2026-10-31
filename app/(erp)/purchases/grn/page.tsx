@@ -10,8 +10,8 @@ import { Plus, Search, RefreshCw, X, Package, CircleCheck as CheckCircle, Eye, P
 import type { Supplier, Warehouse } from '@/lib/types';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
-import { cacheDelete } from '@/lib/offline/cache';
-import { CACHE_KEYS } from '@/lib/offline/keys';
+import { invalidateQueryCachesForOp } from '@/lib/offline/pending';
+import { awaitPendingWrites } from '@/lib/offline/write-refresh';
 import { printNode } from '@/lib/print';
 import GrnPrint from '@/components/GrnPrint';
 import SupplierSearchInput from '@/components/ui/SupplierSearchInput';
@@ -406,6 +406,10 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
   const [directWarehouse, setDirectWarehouse] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // The server commit and the local replica convergence are two different
+  // events. The panel reports the second one honestly instead of implying the
+  // device copy is already consistent.
+  const [localSync, setLocalSync] = useState<'idle' | 'syncing' | 'synced'>('idle');
   const [search, setSearch] = useState('');
   const [savedResult, setSavedResult] = useState<{
     grnNumber: string;
@@ -564,11 +568,13 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
       });
       if (rpcError) throw new Error(rpcError.message);
 
-      // POS gallery and the oversell gate serve local snapshots — drop them
-      // so the received stock shows up on the next visit instead of after
-      // the snapshot TTL. The write-refresh hook re-pulls the replica.
-      void cacheDelete(CACHE_KEYS.products);
-      void cacheDelete(CACHE_KEYS.gateStock);
+      // Drop every page cache this receipt invalidates. The map lives in
+      // lib/offline/pending (OP_CACHE_KEYS['grn.receive']) so the offline
+      // overlay path and this online path cannot drift apart: purchases list,
+      // inventory aggregate, product snapshot, oversell-gate snapshot and the
+      // dashboard. Without it the next page visit can serve a 60s-old
+      // aggregate that still shows the pre-receipt stock.
+      void invalidateQueryCachesForOp('grn.receive');
 
       const result = (data || {}) as {
         grn_number?: string;
@@ -595,6 +601,14 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
       });
       onSaved();
       setSaving(false);
+
+      // The server transaction is committed; the device copy converges on its
+      // own schedule (debounced write-refresh, then a targeted replica pull).
+      // Track it so the panel can state which of the two is true.
+      setLocalSync('syncing');
+      void awaitPendingWrites()
+        .then(() => setLocalSync('synced'))
+        .catch(() => setLocalSync('idle'));
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -625,6 +639,13 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                 {savedResult.poNumber && (
                   <p className="text-sm text-muted-foreground">{savedResult.poNumber} • {savedResult.supplierName}</p>
                 )}
+                <p className="text-xs text-muted-foreground mt-1">
+                  {localSync === 'synced'
+                    ? 'Server committed · offline copy on this device is up to date'
+                    : localSync === 'syncing'
+                      ? 'Server committed · updating the offline copy on this device…'
+                      : 'Server committed'}
+                </p>
               </div>
 
               <div className="border border-border rounded-lg overflow-hidden">

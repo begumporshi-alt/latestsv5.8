@@ -22,7 +22,7 @@ import {
   discardItem, clearResolvedItems,
 } from '@/lib/offline/outbox';
 import type { OutboxItem } from '@/lib/offline/db';
-import { replicaStatus, replicateAll, type ReplicaStatus } from '@/lib/offline/replica';
+import { replicaStatus, replicateAll, rebuildReplicaTable, type ReplicaStatus } from '@/lib/offline/replica';
 import { getWarmStatus, runWarm, type WarmStatus } from '@/lib/offline/warm';
 import { Database, FileBarChart, RefreshCw as RefreshIcon } from 'lucide-react';
 import InstallCard from '@/components/pwa/InstallCard';
@@ -286,10 +286,24 @@ export default function SyncCenterPage() {
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
               {replica.tables.map(t => (
-                <div key={t.name} className="border border-border rounded-lg px-3 py-2">
+                <div
+                  key={t.name}
+                  className="border border-border rounded-lg px-3 py-2"
+                  title={t.cursor ? `${t.name} — delta cursor ${t.cursor}` : `${t.name} — no delta cursor (full replace each run)`}
+                >
                   <p className="text-xs text-muted-foreground truncate">{t.name}</p>
                   <p className="text-lg font-bold text-foreground">{t.count.toLocaleString()}</p>
-                  <p className="text-[10px] text-muted-foreground">{t.lastSync ? timeAgo(t.lastSync) : 'never'}</p>
+                  <div className="flex items-center justify-between gap-1">
+                    <p className="text-[10px] text-muted-foreground">{t.lastSync ? timeAgo(t.lastSync) : 'never'}</p>
+                    <button
+                      onClick={() => { void rebuildReplicaTable(t.name).then(refresh); }}
+                      disabled={!online || (replica?.replicating ?? false)}
+                      title="Re-download this table in full — repairs a local copy whose delta cursor cannot see an edit"
+                      className="text-[10px] font-medium text-blue-600 hover:underline disabled:opacity-40 disabled:no-underline"
+                    >
+                      Rebuild
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

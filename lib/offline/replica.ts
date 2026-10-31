@@ -14,9 +14,16 @@
  * falls back to a full replace when rows disappear server-side; a full
  * replace also runs once a day as a convergence net.
  *
+ * purchase_order_items is the one line-item table that does NOT follow the
+ * created_at rule: GRNs, purchase returns and IOU absorption update
+ * received_quantity in place, so it carries updated_at like an editable table
+ * (migration 20261101090000).
+ *
  * Triggers: app start (after login), hourly while the tab is visible and
  * online (plus the moment connectivity returns or a hidden tab regains
- * visibility), and after every applied outbox change. Rows are sealed per-record with the user's
+ * visibility), after every applied outbox change, after every successful
+ * online write (lib/offline/write-refresh), and on another device's writes
+ * through Realtime (lib/offline/realtime). Rows are sealed per-record with the user's
  * AES-GCM key, so the local database is encrypted at rest exactly like the
  * page caches and the outbox.
  *
@@ -117,13 +124,20 @@ export const REPLICA_TABLES: ReplicaTableSpec[] = [
   { name: 'Quotations', table: 'quotations', store: 'replica_quotations', fetch: () => fetchAll(() => supabaseRaw.from('quotations').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('quotations').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Quotation items', table: 'quotation_items', store: 'replica_quotation_items', fetch: () => fetchAll(() => supabaseRaw.from('quotation_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('quotation_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Purchase orders', table: 'purchase_orders', store: 'replica_purchase_orders', fetch: () => fetchAll(() => supabaseRaw.from('purchase_orders').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_orders').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
-  { name: 'Purchase order items', table: 'purchase_order_items', store: 'replica_purchase_order_items', fetch: () => fetchAll(() => supabaseRaw.from('purchase_order_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_order_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
+  // Not append-only: receive_grn, purchase returns and IOU absorption UPDATE
+  // received_quantity / unit_cost in place, so this table needs the
+  // updated_at cursor (migration 20261101090000) — a created_at cursor would
+  // never see those edits.
+  { name: 'Purchase order items', table: 'purchase_order_items', store: 'replica_purchase_order_items', fetch: () => fetchAll(() => supabaseRaw.from('purchase_order_items').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_order_items').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Purchase reminders', table: 'purchase_reminders', store: 'replica_purchase_reminders', fetch: () => fetchAll(() => supabaseRaw.from('purchase_reminders').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_reminders').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Purchase returns', table: 'purchase_returns', store: 'replica_purchase_returns', fetch: () => fetchAll(() => supabaseRaw.from('purchase_returns').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_returns').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Purchase return items', table: 'purchase_return_items', store: 'replica_purchase_return_items', fetch: () => fetchAll(() => supabaseRaw.from('purchase_return_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('purchase_return_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'GRNs', table: 'goods_receipt_notes', store: 'replica_goods_receipt_notes', fetch: () => fetchAll(() => supabaseRaw.from('goods_receipt_notes').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('goods_receipt_notes').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Deliveries', table: 'deliveries', store: 'replica_deliveries', fetch: () => fetchAll(() => supabaseRaw.from('deliveries').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('deliveries').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
-  { name: 'Delivery items', table: 'delivery_items', store: 'replica_delivery_items', fetch: () => fetchAll(() => supabaseRaw.from('delivery_items').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('delivery_items').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
+  // delivered_quantity is updated in place by the delivery flow, so this table
+  // needs the updated_at cursor (migration 20261101093000) — created_at would
+  // never see a partial delivery.
+  { name: 'Delivery items', table: 'delivery_items', store: 'replica_delivery_items', fetch: () => fetchAll(() => supabaseRaw.from('delivery_items').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('delivery_items').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Customer advances', table: 'customer_advances', store: 'replica_customer_advances', fetch: () => fetchAll(() => supabaseRaw.from('customer_advances').select('*').order('id')), cursorColumn: 'updated_at', delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_advances').select('*').gt('updated_at', afterCursor).order('updated_at').order('id')) },
   { name: 'Advance refunds', table: 'customer_advance_refunds', store: 'replica_customer_advance_refunds', fetch: () => fetchAll(() => supabaseRaw.from('customer_advance_refunds').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_advance_refunds').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
   { name: 'Advance applications', table: 'customer_advance_applications', store: 'replica_customer_advance_applications', fetch: () => fetchAll(() => supabaseRaw.from('customer_advance_applications').select('*').order('id')), delta: (afterCursor) => fetchAll(() => supabaseRaw.from('customer_advance_applications').select('*').gt('created_at', afterCursor).order('created_at').order('id')) },
@@ -165,14 +179,39 @@ function notifyReplicaChanged(): void {
 
 let replicating = false
 
+/**
+ * Work requested while a run was already in flight. It is queued, never
+ * dropped: a targeted refresh that arrives during the hourly full pass used to
+ * be discarded silently, leaving the caller believing the local copy was
+ * fresh. A forced full pass collapses to a single pending flag.
+ */
+const queuedTables = new Set<string>()
+/** Tables queued for a forced full replace (Sync Center repair). */
+const queuedRebuilds = new Set<string>()
+let queuedFullPass = false
+/** Callers waiting for the queue to drain (one resolver per waiter). */
+let drainWaiters: Array<() => void> = []
+
+function waitForDrain(): Promise<void> {
+  return new Promise<void>((resolve) => drainWaiters.push(resolve))
+}
+
+function releaseDrain(): void {
+  const waiters = drainWaiters
+  drainWaiters = []
+  waiters.forEach((resolve) => resolve())
+}
+
 export function isReplicating(): boolean {
   return replicating
 }
 
 // One table's sync: delta pull when a cursor is fresh, full replace
 // otherwise, plus cursor/count bookkeeping. Shared by replicateAll and the
-// targeted refreshReplicaTables.
-async function replicateOne(spec: ReplicaTableSpec): Promise<void> {
+// targeted refreshReplicaTables. `forceFull` skips the delta path — the Sync
+// Center's per-table repair uses it when the local copy is suspected to have
+// drifted (a cursor cannot see a row rewritten with an older timestamp).
+async function replicateOne(spec: ReplicaTableSpec, forceFull = false): Promise<void> {
   const userId = await resolveUserId()
   if (!userId) return
   const key = await getUserKey(userId)
@@ -195,27 +234,47 @@ async function replicateOne(spec: ReplicaTableSpec): Promise<void> {
     let rows: Array<Record<string, any> & { id: string | number }> = []
     let replaceAllRows = true
     let applied = false
-    if (spec.delta) {
+    if (spec.delta && !forceFull) {
       const cursorKey = `replica:delta_cursor:${spec.name}`
       const cursor = await getMeta<string>(cursorKey)
       const lastFull = await getMeta<number>(`replica:last_full:${spec.name}`)
       if (cursor && lastFull != null && Date.now() - lastFull < REPLICA_FULL_REFRESH_MS) {
-        const newRows = await spec.delta(cursor)
-        // Apply BEFORE the count probe: an update replaces its row
-        // without changing the count, so a mismatch after the write
-        // isolates rows deleted server-side — the one change a
-        // timestamp cursor cannot see. Mismatch (or a failed probe)
-        // falls through to the full replace below, so removals converge
-        // within one refresh cycle. An edit that deletes and reinserts
-        // rows keeps the total count, so its ghost rows linger until
-        // the daily full replace.
-        await writeTable(spec, newRows, false)
+        const col = spec.cursorColumn ?? 'created_at'
+        const collected: Array<Record<string, any> & { id: string | number }> = []
+        let from = cursor
+        // Apply BEFORE the count probe: an update replaces its row without
+        // changing the count, so a mismatch after the write isolates rows
+        // deleted server-side — the one change a timestamp cursor cannot see.
+        // Mismatch (or a failed probe) falls through to the full replace
+        // below, so removals converge within one refresh cycle.
+        //
+        // The loop closes the other blind spot: rows committed *while* this
+        // fetch was paging have a timestamp newer than the newest row we
+        // applied. One cheap head request per pass tells us whether to keep
+        // paging, so a delta converges even under concurrent writes instead
+        // of leaving those rows for the next cycle.
+        for (let pass = 0; pass < 3; pass++) {
+          const batch = await spec.delta(from)
+          if (batch.length === 0) break
+          collected.push(...batch)
+          await writeTable(spec, batch, false)
+          const batchMax = batch.reduce<string | null>((m, r) => {
+            const ts = r[col]
+            return typeof ts === 'string' && ts && (!m || ts > m) ? ts : m
+          }, null)
+          if (batchMax) from = batchMax
+          const { count: residual } = await supabaseRaw
+            .from(spec.table)
+            .select('id', { count: 'exact', head: true })
+            .gt(col, from)
+          if (!residual) break
+        }
         const { count: serverCount, error: cntErr } = await supabaseRaw
           .from(spec.table)
           .select('id', { count: 'exact', head: true })
         const localCount = await db.table(spec.store).count()
         if (!cntErr && serverCount != null && serverCount === localCount) {
-          rows = newRows
+          rows = collected
           replaceAllRows = false
           applied = true
         }
@@ -252,15 +311,68 @@ async function replicateOne(spec: ReplicaTableSpec): Promise<void> {
   }
 }
 
+/** Refresh one named table, stopping early if the connection drops. */
+async function runTargeted(names: Iterable<string>, forceFull = false): Promise<void> {
+  for (const name of names) {
+    const spec = REPLICA[name]
+    if (!spec) continue
+    if (!networkMonitor.getState().online) return
+    await replicateOne(spec, forceFull)
+    notifyReplicaChanged()
+  }
+}
+
+/** One pass over every replica table plus the completion stamp. */
+async function runFullPass(): Promise<void> {
+  for (const spec of REPLICA_TABLES) {
+    if (!networkMonitor.getState().online) return
+    await replicateOne(spec)
+    notifyReplicaChanged()
+  }
+  await setMeta('replica:last_full_sync', Date.now())
+  notifyReplicaChanged()
+}
+
 /**
- * Full refresh of every replica table. Safe to call repeatedly — while a run
- * is in progress, further calls are ignored, and a run that completed within
- * the last minute is skipped unless `force` (the Sync Center button). A
- * network drop mid-run stops the run (tables already refreshed stay fresh).
+ * Apply everything that was queued behind the current run: per-table rebuilds,
+ * targeted pulls, and at most one forced full pass. Called by every run owner
+ * so a request that arrived mid-run can never be left pending — including a
+ * forced full pass requested while a *targeted* refresh was in flight.
+ */
+async function drainQueue(): Promise<void> {
+  while (queuedRebuilds.size > 0) {
+    const next = [...queuedRebuilds]
+    queuedRebuilds.clear()
+    await runTargeted(next, true)
+  }
+  while (queuedTables.size > 0) {
+    const next = [...queuedTables]
+    queuedTables.clear()
+    await runTargeted(next)
+  }
+  if (queuedFullPass && networkMonitor.getState().online) {
+    queuedFullPass = false
+    await runFullPass()
+    // runFullPass can be followed by more queued work; one extra sweep settles
+    // it because the loops above drain to empty and runFullPass enqueues
+    // nothing itself.
+    await drainQueue()
+  }
+}
+
+/**
+ * Full refresh of every replica table. Safe to call repeatedly — a run that
+ * completed within the last minute is skipped unless `force` (the Sync Center
+ * button). A network drop mid-run stops the run (tables already refreshed stay
+ * fresh). If a run is already in flight the request is QUEUED rather than
+ * dropped: a forced pass requested during the hourly cycle still happens, once.
  */
 export async function replicateAll(force = false): Promise<void> {
-  if (replicating) return
   if (!networkMonitor.getState().online) return
+  if (replicating) {
+    if (force) queuedFullPass = true
+    return waitForDrain()
+  }
   if (!force) {
     const recent = await getMeta<number>('replica:last_full_sync')
     if (recent && Date.now() - recent < REPLICA_MIN_INTERVAL_MS) return
@@ -272,16 +384,12 @@ export async function replicateAll(force = false): Promise<void> {
   replicating = true
   notifyReplicaChanged()
   try {
-    for (const spec of REPLICA_TABLES) {
-      if (!networkMonitor.getState().online) return
-      await replicateOne(spec)
-      notifyReplicaChanged()
-    }
-    await setMeta('replica:last_full_sync', Date.now())
-    notifyReplicaChanged()
+    await runFullPass()
+    await drainQueue()
   } finally {
     replicating = false
     notifyReplicaChanged()
+    releaseDrain()
   }
 }
 
@@ -291,14 +399,51 @@ export async function replicateAll(force = false): Promise<void> {
  * counters, units and customer replica stores on a short interval so pages
  * can serve reads locally; delta tables only download rows changed since
  * their cursor, so a quiet table costs one zero-row request.
+ *
+ * Requests that arrive while another run is in flight are queued and applied
+ * by that run before it finishes — the returned promise resolves once they
+ * have been applied, so a caller can await real convergence.
  */
 export async function refreshReplicaTables(names: string[]): Promise<void> {
-  if (replicating || !networkMonitor.getState().online) return
-  const specs = names.map(n => REPLICA[n]).filter(Boolean)
-  for (const spec of specs) {
-    if (!networkMonitor.getState().online) return
-    await replicateOne(spec)
+  if (!networkMonitor.getState().online || names.length === 0) return
+  if (replicating) {
+    for (const name of names) queuedTables.add(name)
+    return waitForDrain()
+  }
+  replicating = true
+  notifyReplicaChanged()
+  try {
+    await runTargeted(names)
+    await drainQueue()
+  } finally {
+    replicating = false
     notifyReplicaChanged()
+    releaseDrain()
+  }
+}
+
+/**
+ * Re-download one table in full, ignoring its delta cursor. This is the repair
+ * path: a timestamp cursor cannot see a row rewritten with an older value
+ * (a data-repair migration, a delete+reinsert that keeps the count), so the
+ * Sync Center offers a per-table rebuild instead of waiting for the daily
+ * full replace.
+ */
+export async function rebuildReplicaTable(name: string): Promise<void> {
+  if (!networkMonitor.getState().online || !REPLICA[name]) return
+  if (replicating) {
+    queuedRebuilds.add(name)
+    return waitForDrain()
+  }
+  replicating = true
+  notifyReplicaChanged()
+  try {
+    await runTargeted([name], true)
+    await drainQueue()
+  } finally {
+    replicating = false
+    notifyReplicaChanged()
+    releaseDrain()
   }
 }
 
@@ -360,7 +505,13 @@ export async function buildPosSnapshotFromReplica(): Promise<any[] | null> {
 export interface ReplicaStatus {
   replicating: boolean
   lastFullSync: number | null
-  tables: Array<{ name: string; count: number; lastSync: number | null }>
+  tables: Array<{
+    name: string
+    count: number
+    lastSync: number | null
+    /** Newest timestamp this table's delta cursor has applied, if it has one. */
+    cursor: string | null
+  }>
 }
 
 export async function replicaStatus(): Promise<ReplicaStatus> {
@@ -368,7 +519,8 @@ export async function replicaStatus(): Promise<ReplicaStatus> {
   for (const spec of REPLICA_TABLES) {
     const count = (await getMeta<number>(`replica:count:${spec.name}`)) ?? 0
     const lastSync = (await getMeta<number>(`replica:last_sync:${spec.name}`)) ?? null
-    tables.push({ name: spec.name, count, lastSync })
+    const cursor = (await getMeta<string>(`replica:delta_cursor:${spec.name}`)) ?? null
+    tables.push({ name: spec.name, count, lastSync, cursor })
   }
   return {
     replicating: replicating,
@@ -403,4 +555,11 @@ export async function startReplicator(): Promise<void> {
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && networkMonitor.getState().online) void replicateAll()
   })
+
+  // Another device's writes reach this one through Realtime rather than
+  // waiting for the hourly cycle. Best-effort: a project without Realtime
+  // enabled simply never fires and the cycle above remains the fallback.
+  void import('./realtime')
+    .then(({ startRealtimeSync }) => startRealtimeSync())
+    .catch(() => {})
 }
