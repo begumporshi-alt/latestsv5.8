@@ -10,7 +10,7 @@ import { enqueueOp } from '@/lib/offline/outbox';
 import { Plus, Search, MapPin, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Package, Truck, X, CreditCard as Edit, Printer, FileText, Filter, ChevronDown } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import { loadChallanItems } from '@/lib/challan-items';
-import { planDeliveryItemSync } from '@/lib/delivery-item-sync';
+import { planDeliveryItemSync, fetchInvoiceLinesForDelivery } from '@/lib/delivery-item-sync';
 import type { Delivery, DeliveryStatus, Customer } from '@/lib/types';
 import Pagination from '@/components/ui/AppPagination';
 import { printNode } from '@/lib/print';
@@ -476,10 +476,24 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
     // create and copies invoice items to delivery_items server-side.
     if (!networkMonitor.getState().online) {
       try {
+        // Lines to copy onto the challan ride in the queued payload, so the
+        // pending overlay can render them and an offline re-link is not lost.
+        // The read is served by the cache/replica when there is no connection.
+        const linkChanged = isEdit && (form.invoice_id || null) !== (delivery?.invoice_id ?? null);
+        const copyLines = form.invoice_id && (!isEdit || linkChanged)
+          ? await fetchInvoiceLinesForDelivery(form.invoice_id)
+          : [];
         if (isEdit) {
           await enqueueOp('delivery.update', {
             idempotency_key: crypto.randomUUID(),
             id: delivery!.id,
+            // The link is part of an edit — dropping it here used to make an
+            // offline re-link vanish without a trace. `items` is present ONLY
+            // on a re-link: the overlay treats it as "replace the challan's
+            // rows", so sending it on a plain edit would blank them.
+            invoice_id: form.invoice_id || null,
+            customer_id: form.customer_id || null,
+            ...(linkChanged ? { items: copyLines } : {}),
             delivery_date: form.delivery_date || null,
             delivery_address: form.delivery_address || null,
             delivery_city: form.delivery_city || null,
@@ -496,6 +510,7 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
             temp_number: tempNumber,
             customer_id: form.customer_id || null,
             invoice_id: form.invoice_id || null,
+            items: copyLines,
             delivery_date: form.delivery_date || null,
             delivery_address: form.delivery_address || null,
             delivery_city: form.delivery_city || null,
@@ -554,18 +569,15 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
       });
 
       if (action !== 'skip') {
-        const { data: invItems } = await supabase
-          .from('invoice_items')
-          .select('product_id, quantity, unit_name')
-          .eq('invoice_id', form.invoice_id);
+        const lines = await fetchInvoiceLinesForDelivery(form.invoice_id);
 
-        if (invItems && invItems.length > 0) {
-          const delItems = invItems.map((item: any) => ({
+        if (lines.length > 0) {
+          const delItems = lines.map((line) => ({
             delivery_id: deliveryId,
-            product_id: item.product_id,
-            quantity: Number(item.quantity),
-            delivered_quantity: Number(item.quantity),
-            unit_name: item.unit_name,
+            product_id: line.product_id,
+            quantity: line.quantity,
+            delivered_quantity: line.quantity,
+            unit_name: line.unit_name,
           }));
           const { error: delItemsError } = await supabase.from('delivery_items').insert(delItems);
           if (delItemsError) {

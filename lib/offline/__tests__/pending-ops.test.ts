@@ -14,6 +14,7 @@ import {
   NATURAL_KEYS,
   naturalKeyOf,
   dedupeByNaturalKey,
+  deriveEffects,
 } from '../pending';
 
 describe('pending overlay op maps (lib/offline/pending)', () => {
@@ -134,5 +135,82 @@ describe('natural-key dedupe (attendance upserts)', () => {
   test('naturalKeyOf is null for tables without a natural key', () => {
     expect(naturalKeyOf({ id: 'x' }, 'invoices')).toBeNull();
     expect(naturalKeyOf({ employee_id: 'e1', date: '2026-09-13' }, 'attendance')).toBe('e1|2026-09-13');
+  });
+});
+
+describe('offline delivery challans (lib/offline/pending)', () => {
+  const lines = [
+    { product_id: 'p1', quantity: 2, unit_name: 'pcs' },
+    { product_id: 'p2', quantity: 3, unit_name: null },
+  ];
+
+  test('delivery.create derives the challan lines from the payload', () => {
+    const effects = deriveEffects(
+      'delivery.create',
+      { id: 'dlv-1', invoice_id: 'inv-1', items: lines },
+      'item-1',
+      1_700_000_000_000,
+    );
+    const itemRows = effects.filter((e) => e.kind === 'row' && e.table === 'delivery_items');
+
+    expect(itemRows).toHaveLength(2);
+    expect(itemRows.map((e: any) => e.row)).toEqual([
+      expect.objectContaining({ delivery_id: 'dlv-1', product_id: 'p1', quantity: 2, delivered_quantity: 2 }),
+      expect.objectContaining({ delivery_id: 'dlv-1', product_id: 'p2', quantity: 3, delivered_quantity: 3 }),
+    ]);
+    expect(OP_TABLES['delivery.create']).toEqual(expect.arrayContaining(['deliveries', 'delivery_items']));
+  });
+
+  test('a delivery queued without lines still derives the header only', () => {
+    const effects = deriveEffects('delivery.create', { id: 'dlv-2' }, 'item-2', 1);
+    expect(effects.filter((e) => e.kind === 'row' && e.table === 'delivery_items')).toHaveLength(0);
+    expect(effects.some((e) => e.kind === 'row' && e.table === 'deliveries')).toBe(true);
+  });
+
+  test('delivery.update carries the re-link and swaps the challan lines', () => {
+    const effects = deriveEffects(
+      'delivery.update',
+      { id: 'dlv-1', invoice_id: 'inv-2', items: lines, delivery_date: '2026-11-01' },
+      'item-3',
+      1,
+    );
+
+    const patch = effects.find((e) => e.kind === 'patch' && e.table === 'deliveries') as any;
+    expect(typeof patch.patch).toBe('function');
+    expect(patch.patch({ customer_id: 'c1', invoice_id: 'inv-1' }).invoice_id).toBe('inv-2');
+
+    const replace = effects.find((e) => e.kind === 'replaceParent') as any;
+    expect(replace).toMatchObject({ table: 'delivery_items', parentColumn: 'delivery_id', parentId: 'dlv-1' });
+    expect(replace.rows).toHaveLength(2);
+  });
+
+  test('an older queued edit without invoice_id must not unlink the invoice', () => {
+    const effects = deriveEffects('delivery.update', { id: 'dlv-1', notes: 'x' }, 'item-4', 1);
+    const patch = effects.find((e) => e.kind === 'patch' && e.table === 'deliveries') as any;
+    const applied = patch.patch({ customer_id: 'c1', invoice_id: 'inv-1' });
+
+    expect(applied.invoice_id).toBeUndefined();
+    expect(effects.some((e) => e.kind === 'replaceParent')).toBe(false);
+  });
+
+  // The form sends `items` only when the link changes. A plain edit of an
+  // offline-created challan must keep the lines it was queued with.
+  test('a plain edit leaves a queued challan lines intact', () => {
+    const create = deriveEffects(
+      'delivery.create',
+      { id: 'dlv-9', invoice_id: 'inv-1', items: lines },
+      'item-5',
+      1,
+    ).filter((e) => e.kind === 'row' && e.table === 'delivery_items');
+
+    const edit = deriveEffects(
+      'delivery.update',
+      { id: 'dlv-9', invoice_id: 'inv-1', notes: 'same link' },
+      'item-6',
+      2,
+    );
+
+    expect(create).toHaveLength(2);
+    expect(edit.some((e) => e.kind === 'replaceParent')).toBe(false);
   });
 });

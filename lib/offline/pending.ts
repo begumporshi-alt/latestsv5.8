@@ -82,8 +82,8 @@ export const OP_TABLES: Record<string, string[]> = {
   'quotation.status': ['quotations'],
   'quotation.delete': ['quotations', 'quotation_items'],
   'quotation.convert': ['quotations'],
-  'delivery.create': ['deliveries'],
-  'delivery.update': ['deliveries'],
+  'delivery.create': ['deliveries', 'delivery_items'],
+  'delivery.update': ['deliveries', 'delivery_items'],
   'delivery.status': ['deliveries'],
   'warehouse.create': ['warehouses'],
   'warehouse.update': ['warehouses'],
@@ -1097,12 +1097,13 @@ export function deriveEffects(op: string, p: Record<string, any>, itemId: string
         out.push({ kind: 'patch', table: 'quotations', id: String(p.quotation_id), patch: { status: 'converted' } })
       }
       break
-    case 'delivery.create':
+    case 'delivery.create': {
+      const id = p.id || synthId('dlv')
       out.push({
         kind: 'row',
         table: 'deliveries',
         row: stamp({
-          id: p.id || synthId('dlv'),
+          id,
           delivery_number: p.temp_number || `DLV-OFF-${String(createdAt).slice(-6)}`,
           customer_id: p.customer_id ?? null,
           invoice_id: p.invoice_id ?? null,
@@ -1114,22 +1115,67 @@ export function deriveEffects(op: string, p: Record<string, any>, itemId: string
           status: 'pending',
         }),
       })
+      // The linked invoice's lines travel in the payload: without them an
+      // offline-created challan read back with no items at all.
+      const lines = Array.isArray(p.items) ? p.items : []
+      lines.forEach((it: any, i: number) => {
+        out.push({
+          kind: 'row',
+          table: 'delivery_items',
+          row: stamp({
+            id: synthId(`ditem${i}`),
+            delivery_id: id,
+            product_id: it.product_id ?? null,
+            quantity: num(it.quantity),
+            delivered_quantity: num(it.quantity),
+            unit_name: str(it.unit_name),
+          }),
+        })
+      })
       break
+    }
     case 'delivery.update':
       if (p.id) {
+        const id = String(p.id)
         out.push({
           kind: 'patch',
           table: 'deliveries',
-          id: String(p.id),
-          patch: {
+          id,
+          patch: (row: any) => ({
             delivery_date: p.delivery_date ?? null,
             delivery_address: str(p.delivery_address),
             delivery_city: str(p.delivery_city),
             vehicle_number: str(p.vehicle_number),
             notes: str(p.notes),
+            // Only when the payload carries it — an older queued edit that
+            // predates this field must not unlink the invoice.
+            ...('invoice_id' in p ? { invoice_id: str(p.invoice_id) } : {}),
+            ...('customer_id' in p ? { customer_id: str(p.customer_id) ?? row.customer_id } : {}),
             updated_at: now,
-          },
+          }),
         })
+        // A re-link replaces the challan's rows; the payload carries the new
+        // invoice's lines. A plain edit leaves them to edit_invoice. This
+        // swaps the QUEUED rows — rows already in the replica are replaced
+        // when the replay lands and the replicator pulls the server state.
+        if (Array.isArray(p.items)) {
+          out.push({
+            kind: 'replaceParent',
+            table: 'delivery_items',
+            parentColumn: 'delivery_id',
+            parentId: id,
+            rows: p.items.map((it: any, i: number) =>
+              stamp({
+                id: synthId(`relink${i}`),
+                delivery_id: id,
+                product_id: it.product_id ?? null,
+                quantity: num(it.quantity),
+                delivered_quantity: num(it.quantity),
+                unit_name: str(it.unit_name),
+              })
+            ),
+          })
+        }
       }
       break
     case 'delivery.status':
@@ -1391,6 +1437,7 @@ const PARENT_COLUMNS: Record<string, string> = {
   quotation_items: 'quotation_id',
   purchase_order_items: 'purchase_order_id',
   purchase_return_items: 'purchase_return_id',
+  delivery_items: 'delivery_id',
   journal_lines: 'journal_entry_id',
 }
 
