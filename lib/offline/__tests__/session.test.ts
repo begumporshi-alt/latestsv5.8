@@ -32,9 +32,12 @@ jest.mock('../../supabase-raw', () => ({
   supabaseRaw: { auth: { getSession: (...args: unknown[]) => getSession(...args) } },
 }));
 
-jest.mock('../../runtime-config', () => ({
-  getSupabaseConfig: () => ({ url: 'https://abcd.supabase.co', anonKey: 'test-key' }),
-}));
+// The storage key is `sb-<project-ref>-auth-token`, so the module needs to know
+// which project it is talking to. Set it through the environment rather than
+// mocking the config module: the resolver falls back to this same env value, so
+// the test exercises the real path instead of a stand-in.
+process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://abcd.supabase.co';
+process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'test-key';
 
 type SessionModule = typeof import('../session');
 
