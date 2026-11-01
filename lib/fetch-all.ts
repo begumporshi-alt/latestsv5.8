@@ -4,7 +4,15 @@
 // The query MUST have a deterministic ORDER BY (add an .order('id')
 // tiebreaker if the visible sort column isn't unique) or rows can shift
 // between pages.
-export async function fetchAll<T = any>(build: () => any, pageSize = 1000): Promise<T[]> {
+//
+// `onProgress` reports the running row count after each page. Optional, and
+// only worth passing for a download long enough to show progress on — the POS
+// cold-start catalogue fill is the case it exists for.
+export async function fetchAll<T = any>(
+  build: () => any,
+  pageSize = 1000,
+  onProgress?: (loaded: number) => void,
+): Promise<T[]> {
   const rows: T[] = [];
   let pg = 0;
   while (true) {
@@ -12,6 +20,13 @@ export async function fetchAll<T = any>(build: () => any, pageSize = 1000): Prom
     if (error) throw error;
     const page = (data || []) as T[];
     rows.push(...page);
+    if (onProgress) {
+      try {
+        onProgress(rows.length);
+      } catch {
+        // A progress reporter must never break the download it reports on.
+      }
+    }
     if (page.length < pageSize) break;
     pg++;
   }

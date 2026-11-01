@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, SlidersHorizontal, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Undo2, Layers, Printer, Keyboard, Tag, LayoutGrid, Warehouse } from 'lucide-react';
+import { Search, Trash2, ShoppingCart, CreditCard, Banknote, Smartphone, CircleCheck as CheckCircle2, X, Camera, UserPlus, Wallet, Maximize2, Minimize2, ArrowRight, ArrowLeft, Receipt, History, SlidersHorizontal, ImagePlus, Package, Check, Clock, DollarSign, ChevronUp, ChevronDown, RotateCcw, Undo2, Layers, Printer, Keyboard, Tag, LayoutGrid, Warehouse, Loader2, Download } from 'lucide-react';
 import type { ProductUnit } from '@/lib/types';
 import { isMultiUnitEnabled, getDefaultSaleUnit, convertToBaseUnit, allowDecimalFor, clampSaleQty, normalizeUnitLabel } from '@/lib/unit-utils';
 import { fetchLedgerStockFor, fetchOversellPolicy, computeShortfalls, shortfallDescription, type Shortfall } from '@/lib/oversell-gate';
@@ -34,8 +34,10 @@ import { readData } from '@/lib/offline/read-result';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { fetchAll } from '@/lib/fetch-all';
-import { REPLICA, replicaRows, buildPosSnapshotFromReplica, refreshReplicaTables, subscribeReplica } from '@/lib/offline/replica';
+import { REPLICA, replicaRows, buildPosSnapshotFromReplica, refreshReplicaTables, subscribeReplica, isReplicating } from '@/lib/offline/replica';
 import { awaitPendingWrites } from '@/lib/offline/write-refresh';
+import { mark } from '@/lib/perf/cold-start';
+import { withinBudget } from '@/lib/perf/within-budget';
 import { runReplicaQuery, applyPendingOverlay } from '@/lib/offline/replica-query';
 import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
@@ -182,6 +184,54 @@ const CUSTOMER_MATCH_LIMIT = 50;
 
 const POS_GRID_PAGE_SIZE = 60;
 
+/**
+ * The local replica has no products yet (first visit on this device, or the
+ * local database was cleared), so a full-catalogue snapshot cannot be built
+ * without a download.
+ *
+ * Thrown from the snapshot fetcher so `cachedQuery` records a miss instead of
+ * caching a partial result. The caller then paints a single server page — 60
+ * rows — while `warmProductSnapshot` fills the cache in the background.
+ * Downloading the whole catalogue on the first-load path (the previous
+ * behaviour) meant several serial multi-MB round trips before the first tile.
+ */
+class SnapshotUnavailable extends Error {
+  constructor() {
+    super('Local product replica is not populated yet');
+    this.name = 'SnapshotUnavailable';
+  }
+}
+
+/**
+ * What the gallery is doing, in the cashier's words.
+ *
+ * A bare skeleton is indistinguishable from a hang — which is exactly how a
+ * cold start was reported ("the products don't load"), even when the work was
+ * progressing normally. These phases are the real steps the grid takes, so the
+ * label is a description of the actual state machine, not a decoration.
+ */
+type GridPhase = 'local' | 'building' | 'server' | 'offline';
+
+const GRID_PHASE_COPY: Record<GridPhase, { label: string; detail: string }> = {
+  local: {
+    label: 'Reading saved catalogue',
+    detail: 'Checking the offline copy',
+  },
+  building: {
+    label: 'Building product list',
+    detail: 'From the offline database',
+  },
+  server: {
+    label: 'Loading from server',
+    detail: 'No saved catalogue yet',
+  },
+  offline: {
+    label: 'Reading offline copy',
+    detail: 'No connection — saved data',
+  },
+};
+
+
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
 
 // Payment application ("Collect From") — the mode types, the settlement shape
@@ -221,6 +271,16 @@ export default function POSPage() {
   }, []);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
+  /** Which step the gallery is on, or null when nothing is loading. */
+  const [gridPhase, setGridPhase] = useState<GridPhase | null>(null);
+  /** Wall-clock time the current load has been running, for the status strip.
+   *  A number that keeps moving is the cheapest honest proof that a slow load
+   *  is working rather than wedged. */
+  const [loadElapsedMs, setLoadElapsedMs] = useState(0);
+  const loadStartedAtRef = useRef(0);
+  /** Background full-catalogue download: rows pulled so far, and the expected
+   *  total when the count query answered. */
+  const [warmProgress, setWarmProgress] = useState<{ loaded: number; total: number | null } | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<string>('');
   const [walkInCustomerId, setWalkInCustomerId] = useState<string>(WALK_IN_CUSTOMER_ID);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -278,6 +338,14 @@ export default function POSPage() {
   const searchSeqRef = useRef(0);
   const productLoadRef = useRef(false);
   const productOffsetRef = useRef(0);
+  /**
+   * Set the moment the cashier does anything with the grid. The first-paint
+   * fallback serves a server page (Postgres ordering) which may later be
+   * replaced by the locally built snapshot (localeCompare ordering); for
+   * non-ASCII names the two disagree, so the swap is only allowed while the
+   * grid is still untouched.
+   */
+  const userTouchedGridRef = useRef(false);
   const [matchCount, setMatchCount] = useState<number | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMoreProducts, setHasMoreProducts] = useState(false);
@@ -422,6 +490,7 @@ export default function POSPage() {
   }, [globalCartItems]);
 
   useEffect(() => {
+    mark('pos:mount');
     loadProducts('');
     loadCustomers();
     // Reference data goes through the offline cache (small tables, long TTL):
@@ -444,6 +513,29 @@ export default function POSPage() {
         if (data?.setting_value?.default_image_url) setDefaultProductImage(data.setting_value.default_image_url);
       });
   }, []);
+
+  // Cold-start checkpoint: the first render of a non-empty grid. Measured on
+  // the frame after the state commit, so it reflects pixels rather than the
+  // setProducts call.
+  const firstGridPaintRef = useRef(false);
+  useEffect(() => {
+    if (firstGridPaintRef.current || products.length === 0) return;
+    firstGridPaintRef.current = true;
+    requestAnimationFrame(() => mark('pos:grid-painted'));
+  }, [products]);
+
+  // Drive the elapsed counter in the loading strip. 200 ms is fast enough to
+  // look live and slow enough that the re-render is free; the counter is what
+  // distinguishes "still working" from "wedged", which a spinner cannot.
+  useEffect(() => {
+    if (!loading) {
+      setLoadElapsedMs(0);
+      return;
+    }
+    const started = loadStartedAtRef.current || Date.now();
+    const id = setInterval(() => setLoadElapsedMs(Date.now() - started), 200);
+    return () => clearInterval(id);
+  }, [loading]);
 
   // Small helper: cachedQuery with the state-setter lifted out. Returns null
   // when offline with no cached copy — callers keep their previous state.
@@ -636,8 +728,31 @@ export default function POSPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cartProductKey]);
 
+  // This effect owns *changes* to the filter inputs; the mount effect above
+  // owns the initial load. On its first run it used to bump the sequence
+  // counter — which discarded the mount load's result while that load kept
+  // running — and then scheduled a second, identical load 250ms later. On a
+  // cold start that meant two full snapshot rebuilds and two multi-MB cache
+  // writes to paint one page of tiles. Skipping the initial run removes the
+  // duplicate without adding the 250ms debounce to first paint.
+  //
+  // The guard compares the previous filter key rather than a boolean
+  // "first run" flag: React's StrictMode invokes effects twice on mount in
+  // development, and a boolean would be consumed by the first invocation,
+  // letting the second one re-introduce the duplicate load.
+  const lastFilterKeyRef = useRef<string | null>(null);
+  const filterKey = `${search}\u0000${selectedBrand ?? ''}\u0000${selectedCategory ?? ''}`;
   useEffect(() => {
     const sequence = searchSeqRef;
+    const previousKey = lastFilterKeyRef.current;
+    if (previousKey === filterKey) return; // StrictMode's second mount pass
+    lastFilterKeyRef.current = filterKey;
+    // First pass: the mount effect already started this exact load. Returning
+    // without a cleanup is deliberate — a cleanup that bumped the sequence
+    // here would discard that in-flight load, which is the bug being fixed.
+    if (previousKey === null) return;
+    // Any real filter change means the cashier is working with the grid.
+    userTouchedGridRef.current = true;
     ++sequence.current;
     productLoadRef.current = false;
     setLoading(true);
@@ -650,7 +765,7 @@ export default function POSPage() {
       if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, selectedBrand, selectedCategory]);
+  }, [filterKey]);
 
   // TTL for the full-product offline snapshot (also used by the inventory
   // page). The grid always renders from this snapshot locally; when the TTL
@@ -662,32 +777,130 @@ export default function POSPage() {
   // How often the POS-consumed replica tables converge in the background.
   const POS_REPLICA_REFRESH_MS = 10 * 60_000;
 
+  /**
+   * How long the grid may wait on the LOCAL snapshot before painting from the
+   * server instead.
+   *
+   * The local read is normally 100–200 ms (a warm cache row) or ~120 ms (a
+   * rebuild from a populated replica). It is not, however, guaranteed to
+   * return at all: IndexedDB can be blocked by another tab's upgrade, a
+   * decrypt can wedge, and a browser profile can be in a state where the
+   * database never opens. Any of those left the grid on its loading skeleton
+   * forever, with no error and nothing to click — a failure the cashier
+   * cannot even describe. A budget turns that into a bounded fallback: the
+   * server page paints, and the local work finishes (and caches) behind it.
+   */
+  const LOCAL_SNAPSHOT_BUDGET_MS = 1_500;
+
+  /** Same reasoning for the fallback request itself — a stalled request must
+   *  surface as a retryable error, not an eternal skeleton. */
+  const SERVER_PAGE_BUDGET_MS = 15_000;
+
   // Build/refresh the full-catalog snapshot through the offline cache:
-  // fresh within the TTL → instant local read, no work; stale → rebuild
-  // from the replica stores (local) with a network fetchAll only when the
-  // replica is still empty (first-ever visit). Returns the snapshot or null.
-  async function refreshProductSnapshot(): Promise<ProductData[] | null> {
+  // fresh within the TTL → instant local read, no work; stale → the caller
+  // gets the stale snapshot immediately and the rebuild runs behind it.
+  //
+  // The rebuild is deliberately LOCAL-ONLY. It used to fall back to a network
+  // `fetchAll` of the entire catalogue (paged 1,000 rows per serial round
+  // trip, each carrying nested stock counters and units) whenever the replica
+  // was empty — which put several multi-MB downloads in front of the first
+  // tile. Now an empty replica throws SnapshotUnavailable: the caller paints
+  // one server page and warmProductSnapshot fills the cache in the background.
+  //
+  // Returns the snapshot, or null when this device has none yet.
+  //
+  // `onPhase` names the step in progress: 'reading' while the sealed cache row
+  // is fetched and decrypted, 'building' while it is reassembled from the
+  // offline replica. They have very different costs (~150 ms vs ~120 ms here,
+  // but the rebuild scales with catalogue size), and the status strip says
+  // which one the cashier is waiting on.
+  async function refreshProductSnapshot(
+    onRevalidated?: (list: ProductData[]) => void,
+    onPhase?: (phase: 'reading' | 'building') => void,
+  ): Promise<ProductData[] | null> {
     try {
-      const res = await cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, async () => {
-        // The snapshot is rebuilt from the LOCAL replica. If a write has just
-        // been committed to the server (a GRN raising stock, cost or sale
-        // price), the replica is still a debounce-and-a-pull behind; reading
-        // it now would cache pre-write values for the whole 10-minute TTL.
-        // Converge first — a no-op when nothing is pending.
-        await awaitPendingWrites();
-        const fromReplica = await buildPosSnapshotFromReplica();
-        if (fromReplica && fromReplica.length > 0) return fromReplica as ProductData[];
-        return fetchAll(() => supabase
-          .from('products')
-          .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
-            inventory_items(id, warehouse_id, quantity_on_hand),
-            units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
-          .eq('is_active', true)
-          .order('name').order('id'));
-      });
+      onPhase?.('reading');
+      const res = await cachedQuery<ProductData[]>(
+        CACHE_KEYS.products,
+        PRODUCT_SNAPSHOT_TTL,
+        async () => {
+          // The snapshot is rebuilt from the LOCAL replica. If a write has just
+          // been committed to the server (a GRN raising stock, cost or sale
+          // price), the replica is still a debounce-and-a-pull behind; reading
+          // it now would cache pre-write values for the whole 10-minute TTL.
+          // Converge first — a no-op when nothing is pending.
+          await awaitPendingWrites();
+          onPhase?.('building');
+          const fromReplica = await buildPosSnapshotFromReplica();
+          if (fromReplica && fromReplica.length > 0) return fromReplica as ProductData[];
+          throw new SnapshotUnavailable();
+        },
+        {
+          staleWhileRevalidate: true,
+          onRevalidated: (list) => onRevalidated?.(list as ProductData[]),
+        },
+      );
       return (res.data as ProductData[]) || null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Download the full catalogue once and cache it, then rebuild the grid from
+   * it. Runs only when this device has no snapshot at all, and only after the
+   * server page has already been painted — it is the cache-warming path, never
+   * a blocking one.
+   *
+   * Attempted at most once per mount, deliberately. The reload at the end
+   * re-enters loadProducts, which calls this again when no snapshot is found —
+   * and cachePut swallows its own failures, so a device that cannot write the
+   * cache would otherwise loop warm → reload → warm forever. One attempt, then
+   * the server page stands and the next open retries.
+   */
+  const warmAttemptedRef = useRef(false);
+  async function warmProductSnapshot(): Promise<void> {
+    if (warmAttemptedRef.current) return;
+    warmAttemptedRef.current = true;
+    try {
+      await awaitPendingWrites();
+      // Ask for the row count first so the strip can show "1,000 of 2,960"
+      // instead of an unlabelled bar. `head: true` returns no rows — it is a
+      // count-only request — and a failure here is harmless: progress then
+      // reports rows pulled with no total.
+      let total: number | null = null;
+      try {
+        const { count } = await supabase
+          .from('products')
+          .select('id', { count: 'exact', head: true })
+          .eq('is_active', true);
+        total = typeof count === 'number' ? count : null;
+      } catch {
+        // keep total null
+      }
+      setWarmProgress({ loaded: 0, total });
+      const rows = await fetchAll(() => supabase
+        .from('products')
+        .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
+          inventory_items(id, warehouse_id, quantity_on_hand),
+          units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
+        .eq('is_active', true)
+        .order('name').order('id'), 1000, (loaded) => {
+        setWarmProgress({ loaded, total });
+      });
+      if (!rows || rows.length === 0) return;
+      await cachePut(CACHE_KEYS.products, rows);
+      // Only swap the grid if the cashier has not started working with it.
+      // The two paths order differently — the snapshot sorts with
+      // localeCompare, the server page with Postgres collation — so a swap
+      // under an active user can reorder tiles between clicks.
+      if (!userTouchedGridRef.current && document.visibilityState === 'visible') {
+        void loadProducts(search, false, Math.max(productOffsetRef.current, POS_GRID_PAGE_SIZE));
+      }
+    } catch {
+      // Best-effort: the server page stays usable and the next open retries.
+    } finally {
+      setWarmProgress(null);
     }
   }
 
@@ -710,7 +923,13 @@ export default function POSPage() {
     if (!needle) return null;
     const lower = needle.toLowerCase();
 
-    const snapshot = await refreshProductSnapshot();
+    // Bounded for the same reason as the grid read: a wedged local database
+    // must not turn a scan into a spinner. On expiry the server lookup below
+    // still answers, which is the pre-existing fallback anyway.
+    const snapshot = (
+      await withinBudget(refreshProductSnapshot(), LOCAL_SNAPSHOT_BUDGET_MS, null, () =>
+        console.warn('[pos] scan snapshot exceeded its budget — using the server lookup'))
+    ).value;
     const local = (snapshot || []).find(p => {
       const row = p as ProductData;
       return String(row.sku || '').toLowerCase() === lower
@@ -782,11 +1001,19 @@ export default function POSPage() {
   // would keep seeing the old stock, cost, sale price or customer balance
   // until a manual reload. Rebuild both once the replica converges; the
   // debounce collapses the burst of per-table notifications one receipt emits.
+  //
+  // A full pass notifies once per table (55 of them) *while it is still
+  // moving*. Reacting to those rebuilt the grid a dozen times on a cold boot
+  // against a replica whose rows were being replaced underneath it. While a
+  // pass is in flight the notification is ignored; the pass's final
+  // notification (replicating already false, see replicaAll's finally block)
+  // schedules exactly one refresh.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const unsubscribe = subscribeReplica(() => {
       if (!networkMonitor.getState().online) return;
       if (document.visibilityState !== 'visible') return;
+      if (isReplicating()) return;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
@@ -820,11 +1047,17 @@ export default function POSPage() {
    */
   async function loadProducts(q: string, append = false, pageSize = POS_GRID_PAGE_SIZE) {
     if (append && (productLoadRef.current || loading || !hasMoreProducts)) return;
+    if (!append) mark('pos:load-start');
     productLoadRef.current = true;
     if (append) setLoadingMore(true);
     else {
       setLoading(true);
       setLoadingMore(false);
+      // The strip counts from the moment the load starts, so a slow start is
+      // visible as a rising number rather than an apparently frozen spinner.
+      loadStartedAtRef.current = Date.now();
+      setLoadElapsedMs(0);
+      setGridPhase('local');
     }
     const seq = ++searchSeqRef.current;
     const offset = append ? productOffsetRef.current : 0;
@@ -841,6 +1074,7 @@ export default function POSPage() {
       });
       setMatchCount(count);
       setHasMoreProducts(page.length >= POS_GRID_PAGE_SIZE && (count === null || offset + page.length < count));
+      if (!append) mark('pos:load-applied');
     }
 
     // Filter + rank + paginate the full-catalog snapshot locally — the same
@@ -872,26 +1106,52 @@ export default function POSPage() {
 
     try {
       if (!networkMonitor.getState().online) {
-        await loadCachedPage();
+        if (!append) setGridPhase('offline');
+        // Bounded: the offline branch is the one place the grid reads storage
+        // with no server fallback behind it, so a wedged read would leave the
+        // skeleton up indefinitely. On expiry the throw below reports it.
+        await withinBudget(loadCachedPage(), LOCAL_SNAPSHOT_BUDGET_MS, undefined, () =>
+          console.warn('[pos] offline page cache exceeded its budget'));
         return;
       }
 
       // Online: serve the grid from the locally cached full-catalog snapshot
       // (refreshed on its own TTL, never per keystroke). Identical results to
-      // a server query with none of the per-search downloads.
-      const snapshot = await refreshProductSnapshot();
+      // a server query with none of the per-search downloads. A stale
+      // snapshot is served immediately and rebuilt behind the caller; when the
+      // rebuild lands, the same page is re-applied in place (the sequence
+      // guard makes a superseded load a no-op).
+      const snapshotRead = await withinBudget(
+        refreshProductSnapshot(
+          append ? undefined : (fresh) => applySnapshotPage(fresh),
+          append ? undefined : (phase) => setGridPhase(phase === 'building' ? 'building' : 'local'),
+        ),
+        LOCAL_SNAPSHOT_BUDGET_MS,
+        null,
+        () => console.warn('[pos] local product snapshot exceeded its budget — painting from the server'),
+      );
+      const snapshot = snapshotRead.value;
       if (snapshot && snapshot.length > 0) {
         applySnapshotPage(snapshot);
         return;
       }
 
-      // No snapshot could be built (e.g. first-ever visit whose catalog fetch
-      // failed) — fall back to a server-side grid page so the shelf isn't empty.
+      // No local snapshot on this device — first visit, or local data cleared.
+      // Paint one server page now and download the full catalogue behind it.
+      // The whole-catalogue fetch must never sit on the first-paint path: it
+      // is several serial multi-MB round trips, while this page is 60 rows.
+      //
+      // Skipped when the budget expired: that means the local build is still
+      // running, so warming would download the whole catalogue in parallel
+      // with a rebuild that is already producing it. The build caches itself.
+      if (!append && !snapshotRead.timedOut) void warmProductSnapshot();
+      if (!append) setGridPhase('server');
+
       let query = supabase
         .from('products')
         .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months,
           inventory_items(id, warehouse_id, quantity_on_hand),
-          units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`, { count: 'exact' })
+          units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
         .eq('is_active', true)
         .eq('track_inventory', true)
         .order('name').order('id');
@@ -900,14 +1160,31 @@ export default function POSPage() {
       if (selectedBrand) query = query.eq('brand_id', selectedBrand);
       if (selectedCategory) query = query.eq('category_id', selectedCategory);
 
-      const { data, count, error } = await query.range(offset, offset + size - 1);
+      // No `count: 'exact'`. It forces a full count scan of the filtered
+      // products table on every request, and this path is a first-paint
+      // fallback where the footer can honestly say "Showing N" from the page
+      // itself. The snapshot path supplies exact counts once it is warm.
+      //
+      // Bounded: a request that never settles would otherwise leave the grid
+      // on its skeleton with no error to report. The timeout surfaces through
+      // the normal error path, so the cashier gets a retryable toast.
+      const pageRequest = query.range(offset, offset + size - 1) as unknown as Promise<{
+        data: ProductData[] | null;
+        error: unknown;
+      }>;
+      const { data, error } = (
+        await withinBudget(pageRequest, SERVER_PAGE_BUDGET_MS, {
+          data: null,
+          error: new Error(`Product request timed out after ${SERVER_PAGE_BUDGET_MS / 1000}s`),
+        }, () => console.warn('[pos] server product page exceeded its budget'))
+      ).value;
       if ((error && isNetworkError(error)) || (!error && !data)) {
         networkMonitor.markOffline();
         await loadCachedPage();
         return;
       }
       if (error) throw error;
-      applyPage(rankRows((data || []) as ProductData[], posRankColumns, tokens), count ?? null);
+      applyPage(rankRows((data || []) as ProductData[], posRankColumns, tokens), null);
     } catch (error) {
       if (seq !== searchSeqRef.current) return;
       if (!append) {
@@ -925,6 +1202,7 @@ export default function POSPage() {
         productLoadRef.current = false;
         setLoading(false);
         setLoadingMore(false);
+        setGridPhase(null);
       }
     }
   }
@@ -1223,6 +1501,10 @@ export default function POSPage() {
   }
 
   function handleProductClick(product: ProductData) {
+    // Touching a tile freezes the grid's contents: a background snapshot swap
+    // must not reorder the shelf between the cashier's click and their next
+    // one (see userTouchedGridRef).
+    userTouchedGridRef.current = true;
     if (isMultiUnitEnabled(product as any)) {
       setUnitSelectorQty('1');
       setUnitSelectorProduct(product);
@@ -3265,6 +3547,78 @@ export default function POSPage() {
 
         {/* Product grid — natural flow on mobile, overflow-y-auto on desktop */}
         <div aria-label="Product gallery" aria-busy={loading || loadingMore} className="grid grid-cols-2 md:grid-cols-3 gap-2.5 content-start pb-28 lg:pb-4 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+          {/* What the gallery is doing. A bare skeleton is indistinguishable
+              from a hang, and "the products don't load" was the actual bug
+              report — so the strip names the step, counts the seconds, and
+              keeps counting while work continues. Sticky inside the grid's own
+              scroll container so it does not scroll away on a long page. */}
+          {loading && (
+            <div
+              className="col-span-full sticky top-0 z-10 flex items-center gap-2.5 rounded-xl border border-border bg-white/95 px-3 py-2 shadow-sm backdrop-blur"
+            >
+              {/* The live region holds ONLY the phase label. The elapsed
+                  counter next to it ticks five times a second — announcing
+                  that would make a screen reader unusable, so it is
+                  aria-hidden and the label is what gets spoken, once. */}
+              <span className="sr-only" role="status" aria-live="polite">
+                {GRID_PHASE_COPY[gridPhase ?? 'local'].label}
+              </span>
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-600" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-medium leading-snug text-foreground">
+                  {GRID_PHASE_COPY[gridPhase ?? 'local'].label}…
+                </div>
+                <div className="truncate text-[11px] leading-snug text-muted-foreground">
+                  {GRID_PHASE_COPY[gridPhase ?? 'local'].detail}
+                </div>
+              </div>
+              {loadElapsedMs >= 300 && (
+                <span aria-hidden className="shrink-0 text-[11px] font-medium tabular-nums text-muted-foreground">
+                  {(loadElapsedMs / 1000).toFixed(1)}s
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Background full-catalogue download. It runs after the grid is
+              already usable, so this is information rather than a blocker —
+              and it explains why the next open is fast. */}
+          {!loading && warmProgress && (
+            <div
+              className="col-span-full sticky top-0 z-10 rounded-xl border border-blue-200 bg-blue-50/95 px-3 py-2 shadow-sm backdrop-blur"
+            >
+              {/* Announced once per page, not per animation frame. */}
+              <span className="sr-only" role="status" aria-live="polite">
+                Saving offline copy: {warmProgress.loaded}
+                {warmProgress.total ? ` of ${warmProgress.total}` : ''} products
+              </span>
+              <div className="flex items-center gap-2">
+                <Download className="h-3.5 w-3.5 shrink-0 text-blue-600" aria-hidden />
+                <span className="min-w-0 flex-1 truncate text-xs font-medium text-blue-900">
+                  Saving offline copy
+                </span>
+              </div>
+              {/* Counter on its own row with the bar: inline it competed with
+                  the label for width and both truncated in a narrow gallery. */}
+              <div className="mt-1.5 flex items-center gap-2">
+                <div className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-blue-200/70">
+                  <div
+                    className="h-full rounded-full bg-blue-600 transition-all duration-300"
+                    style={{
+                      width: warmProgress.total
+                        ? `${Math.min(100, Math.round((warmProgress.loaded / warmProgress.total) * 100))}%`
+                        : '35%',
+                    }}
+                  />
+                </div>
+                <span className="shrink-0 text-[11px] font-medium tabular-nums text-blue-700">
+                  {warmProgress.loaded.toLocaleString('en-BD')}
+                  {warmProgress.total ? ` / ${warmProgress.total.toLocaleString('en-BD')}` : ''}
+                </span>
+              </div>
+            </div>
+          )}
+
           {loading ? Array.from({ length: 12 }).map((_, i) => (
             <div key={i} className="bg-white rounded-xl border border-border p-2.5 animate-pulse"><div className="h-16 bg-muted rounded-lg mb-1.5" /><div className="h-3 bg-muted rounded mb-1" /><div className="h-3 bg-muted rounded w-2/3" /></div>
           )) : filteredProducts.length === 0 ? (
@@ -3301,10 +3655,18 @@ export default function POSPage() {
                     <span className="absolute top-2 left-2 text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium z-10">Multi-unit</span>
                   )}
                   <div className="w-full h-16 bg-muted rounded-lg overflow-hidden mb-1.5 relative">
+                    {/* A full page is 60 tiles, and product images are hand-pasted
+                        external URLs with no CDN transform — eagerly requesting all
+                        60 on a cold disk cache put 60 simultaneous requests in front
+                        of the tiles the cashier is actually looking at. The container
+                        is a fixed h-16 box, so lazy loading costs no layout shift;
+                        the browser still loads anything in view. */}
                     {p.image_url || defaultProductImage ? (
                       <img
                         src={p.image_url || defaultProductImage}
                         alt={p.name}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden'); }}
                       />
