@@ -9,6 +9,7 @@ import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
 import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator, Zap } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
+import { loadChallanItems } from '@/lib/challan-items';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
 import EditHistoryPanel from '@/components/EditHistoryPanel';
 import { useRouter } from 'next/navigation';
@@ -421,22 +422,14 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
       .maybeSingle();
     if (!del) { toast({ title: 'Error', description: 'Delivery not found', variant: 'destructive' }); return; }
 
-    const { data: invItems } = del.invoice_id
-      ? await supabase.from('invoice_items').select('quantity, unit_name, product:products(name, sku, unit)').eq('invoice_id', del.invoice_id)
-      : { data: null };
-
-    const { data: delItems } = await supabase
-      .from('delivery_items')
-      .select('quantity, delivered_quantity, unit_name, product:products(name, sku, unit)')
-      .eq('delivery_id', deliveryId);
-
-    const items = (delItems && delItems.length > 0 ? delItems : invItems || []).map((item: any) => ({
-      product_name: item.product?.name || '—',
-      product_sku: item.product?.sku,
-      quantity: Number(item.quantity),
-      delivered_quantity: Number(item.delivered_quantity ?? item.quantity),
-      unit_name: item.unit_name || item.product?.unit || null,
-    }));
+    // Lines come from the linked invoice (current state, so an invoice edit is
+    // visible immediately); delivery_items only supplies progress once the
+    // challan has actually been delivered. See lib/challan-items.ts.
+    const items = await loadChallanItems({
+      id: deliveryId,
+      invoice_id: (del as any).invoice_id,
+      status: (del as any).status,
+    });
 
     setViewingChallan({ delivery: del, items, invoiceNumber: del.invoice?.invoice_number });
   }

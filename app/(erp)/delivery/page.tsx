@@ -9,6 +9,7 @@ import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { Plus, Search, MapPin, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Package, Truck, X, CreditCard as Edit, Printer, FileText, Filter, ChevronDown } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
+import { loadChallanItems } from '@/lib/challan-items';
 import type { Delivery, DeliveryStatus, Customer } from '@/lib/types';
 import Pagination from '@/components/ui/AppPagination';
 import { printNode } from '@/lib/print';
@@ -98,37 +99,24 @@ export default function DeliveryPage() {
     setChallanLoading(true);
     setChallanItems([]);
 
-    if (delivery.invoice_id) {
-      const { data: invItems } = await supabase
-        .from('invoice_items')
-        .select('quantity, unit_name, product:products(name, sku, unit)')
-        .eq('invoice_id', delivery.invoice_id);
+    // The list this row came from is cached for 60s, so an invoice edit can
+    // leave the header (invoice no., edited stamp) behind. Re-read the row for
+    // the print, then take the linked invoice's CURRENT lines — a challan
+    // re-printed after an edit must show the edited invoice.
+    const { data: fresh } = await supabase
+      .from('deliveries')
+      .select('*, customer:customers(name, phone, address), invoice:invoices(invoice_number)')
+      .eq('id', delivery.id)
+      .maybeSingle();
+    const row = (fresh as DeliveryWithCustomer | null) ?? delivery;
+    if (fresh) setChallanDelivery(row);
 
-      if (invItems && invItems.length > 0) {
-        setChallanItems(invItems.map((item: any) => ({
-          product_name: item.product?.name || '—',
-          product_sku: item.product?.sku,
-          quantity: Number(item.quantity),
-          delivered_quantity: Number(item.quantity),
-          unit_name: item.unit_name || item.product?.unit || null,
-        })));
-      }
-    } else {
-      const { data: delItems } = await supabase
-        .from('delivery_items')
-        .select('quantity, delivered_quantity, unit_name, product:products(name, sku, unit)')
-        .eq('delivery_id', delivery.id);
-
-      if (delItems && delItems.length > 0) {
-        setChallanItems(delItems.map((item: any) => ({
-          product_name: item.product?.name || '—',
-          product_sku: item.product?.sku,
-          quantity: Number(item.quantity),
-          delivered_quantity: Number(item.delivered_quantity ?? item.quantity),
-          unit_name: item.unit_name || item.product?.unit || null,
-        })));
-      }
-    }
+    const items = await loadChallanItems({
+      id: row.id,
+      invoice_id: row.invoice_id,
+      status: row.status,
+    });
+    setChallanItems(items);
     setChallanLoading(false);
   }
 

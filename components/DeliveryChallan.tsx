@@ -1,14 +1,9 @@
 'use client';
 
 import { formatDate } from '@/lib/format';
+import type { ChallanItem } from '@/lib/challan-items';
 
-export interface ChallanItem {
-  product_name: string;
-  product_sku?: string;
-  quantity: number;
-  delivered_quantity?: number;
-  unit_name?: string;
-}
+export type { ChallanItem } from '@/lib/challan-items';
 
 export interface DeliveryChallanProps {
   challanNumber: string;
