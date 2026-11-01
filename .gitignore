@@ -82,6 +82,7 @@ scripts/fifo_*.js
 .freebuff/
 .tmp-mk-session.cjs
 .video_agent/
+.workbuddy-ai/
 .zcode/
 
 # python bytecode from db/ tooling
