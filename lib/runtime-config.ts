@@ -37,7 +37,16 @@ function buildProjectRef(): string {
   return host.split('.')[0] || 'runtime';
 }
 
-const CACHE_KEY = `sisolution.runtime-config.${buildProjectRef()}`;
+/**
+ * Cache key the resolved config is written under.
+ *
+ * Exported because the project ref is part of the key: any tooling that seeds
+ * or clears this cache must use this value rather than a literal, or it will
+ * write to a key nothing reads. (The unit tests learned that the hard way —
+ * they kept asserting the pre-scoping key and silently rotted.)
+ */
+export const RUNTIME_CONFIG_CACHE_KEY = `sisolution.runtime-config.${buildProjectRef()}`;
+const CACHE_KEY = RUNTIME_CONFIG_CACHE_KEY;
 // Pre-cutover builds wrote to the unscoped key; drop it so a stale config
 // cannot linger in storage after this version is deployed.
 const LEGACY_CACHE_KEY = 'sisolution.runtime-config';
@@ -65,9 +74,13 @@ export function getSupabaseConfig(): SupabaseConfig {
       return injected;
     }
     try {
+      // Drop any pre-scoping entry BEFORE the early return below. On the
+      // (common) cache-hit path an early return would otherwise skip this
+      // cleanup, leaving the previous project's config in storage forever —
+      // exactly the lingering state this scoping exists to prevent.
+      window.localStorage.removeItem(LEGACY_CACHE_KEY);
       const cached = sanitize(JSON.parse(window.localStorage.getItem(CACHE_KEY) ?? 'null'));
       if (cached) return cached;
-      window.localStorage.removeItem(LEGACY_CACHE_KEY);
     } catch { /* corrupt cache — fall through */ }
   }
   // Server side (and any client fallback): runtime env, which on the server

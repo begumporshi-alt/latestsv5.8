@@ -13,6 +13,7 @@ import { OfflineProvider } from '@/lib/offline/provider';
 import OfflineBanner from '@/components/offline/OfflineBanner';
 import OfflineDataNotice from '@/components/offline/OfflineDataNotice';
 import { getLastUser, rememberUser } from '@/lib/offline/session';
+import { mark } from '@/lib/perf/cold-start';
 import { setCurrencyFormat, type CurrencyFormat } from '@/lib/format';
 import { Menu, PanelLeftClose, PanelLeft, CloudOff } from 'lucide-react';
 
@@ -85,6 +86,25 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
     let cancelled = false;
 
     (async () => {
+      // Cold-start checkpoint: everything the POS needs (mount, catalogue
+      // load, first tile) is gated behind this resolution.
+      mark('auth:gate-start');
+
+      // The gate stays blocking on purpose.
+      //
+      // An earlier version rendered the shell optimistically whenever a user
+      // was remembered on this device, to skip this wait. It was removed: the
+      // wait is 5-400 ms in the normal case (a local read, or one token
+      // refresh), so the saving was invisible — and in the one case where it
+      // was visible, a session that never resolves, rendering the app meant
+      // showing the previous user's cached catalogue and then bouncing them to
+      // /login seconds later. Slow and wrong beat fast and wrong.
+      //
+      // What actually made the first POS open slow was elsewhere and is fixed:
+      // the cache read no longer waits on this token refresh (lib/offline/
+      // session.ts resolveUserId), and the snapshot rebuild no longer blocks
+      // the grid (lib/offline/cache.ts staleWhileRevalidate).
+
       // auth-js can stall for tens of seconds when the access token is
       // expired and the network is unreachable (lock + refresh attempts).
       // Cap the wait — an offline device must open the app promptly.
@@ -93,6 +113,7 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
       const session = first?.data?.session ?? null;
       if (session) {
         void rememberUser(session.user);
+        mark('auth:gate-end');
         setLoading(false);
         return;
       }
@@ -105,6 +126,7 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
         if (!online) {
           setOfflineUser({ email: last.email });
+          mark('auth:gate-end');
           setLoading(false);
           return;
         }
@@ -112,10 +134,12 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
         const late = await withTimeout(supabase.auth.getSession(), 6000);
         if (!cancelled && late?.data?.session) {
           void rememberUser(late.data.session.user);
+          mark('auth:gate-end');
           setLoading(false);
           return;
         }
       }
+      mark('auth:gate-end');
       if (!cancelled) router.replace('/login');
     })();
 

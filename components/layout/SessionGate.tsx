@@ -2,6 +2,8 @@
 
 import { useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
+import { clearLocalData } from '@/lib/offline/db';
+import { clearLastUser } from '@/lib/offline/session';
 
 // Signs a deactivated user out within a poll interval (and on refocus).
 // Admin API bans them at the auth layer too, so this mainly shortens the
@@ -27,6 +29,16 @@ export default function SessionGate() {
       if (data.is_active === false) {
         try { localStorage.removeItem(`erpProfile:${uid}`); } catch { /* private mode */ }
         try { sessionStorage.setItem('deactivatedNotice', '1'); } catch { /* private mode */ }
+        // Erase the local copy before ending the session.
+        //
+        // The header's manual logout already does this; this path did not, so a
+        // deactivated account left its sealed cache, its replica and — the part
+        // that matters — its non-extractable AES key sitting in IndexedDB. The
+        // key is what actually protects the data at rest, and "signed out but
+        // still decryptable" is not signed out. Best-effort: a storage failure
+        // must not block the sign-out itself.
+        try { await clearLocalData(); } catch { /* storage unavailable */ }
+        try { await clearLastUser(); } catch { /* storage unavailable */ }
         // The (erp) layout's SIGNED_OUT handler performs the redirect.
         await supabase.auth.signOut();
       }
