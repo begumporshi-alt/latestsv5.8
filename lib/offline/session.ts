@@ -67,11 +67,46 @@ export async function clearLastUser(): Promise<void> {
 }
 
 /**
- * The user id for local data access: the live session when one exists,
- * otherwise the last known user. Reads and the outbox are namespaced with it;
- * it is not proof of a valid server session.
+ * The user id for local data access: the identity the auth library currently
+ * has on disk, or the last known user. Reads and the outbox are namespaced
+ * with it; it is not proof of a valid server session.
+ *
+ * Why this does not simply await getSession():
+ *
+ * getSession() is local *until* the access token expires, at which point it
+ * performs a network refresh. Awaiting it here put that refresh in front of
+ * every local read — a cold POS open waited on a token round trip before it
+ * could look at its own encrypted cache, which is the entire point of having
+ * the cache. On a laptop opened the next morning the token is always expired,
+ * so the "fast" path was never taken.
+ *
+ * The stored session in localStorage is the exact record auth-js itself will
+ * use, and reading it is synchronous. When it names a user we answer
+ * immediately and let the session resolve behind us: the background call still
+ * refreshes the token and updates the remembered user for the paths that need
+ * a real session (server reads, the outbox drain).
+ *
+ * With no stored session — first visit, or signed out (which removes the
+ * record and wipes the local database) — there is no identity to use, and
+ * auth-js is the only source, so we wait for it.
  */
 export async function resolveUserId(): Promise<string | null> {
+  const stored = readStoredSessionUser()
+  if (stored?.id) {
+    // Refresh in the background — never awaited. Failures are irrelevant
+    // here: local reads do not need a live token, and a genuinely dead
+    // session surfaces on the next server call.
+    void supabaseRaw.auth
+      .getSession()
+      .then(({ data }) => {
+        const user = data.session?.user
+        if (user?.id) void rememberUser({ id: user.id, email: user.email })
+      })
+      .catch(() => {})
+    void rememberUser({ id: stored.id, email: stored.email })
+    return stored.id
+  }
+
   try {
     const { data } = await supabaseRaw.auth.getSession()
     const user = data.session?.user

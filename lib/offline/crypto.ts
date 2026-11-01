@@ -38,9 +38,28 @@ export function randomBytes(n: number): Uint8Array {
   return c.getRandomValues(new Uint8Array(n))
 }
 
+/**
+ * Bytes → base64.
+ *
+ * Chunked deliberately. The obvious per-byte form
+ *
+ *   let s = ''; for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
+ *
+ * costs ~66 ms/MB because each iteration grows the intermediate string. It
+ * was 192 ms of the 220 ms spent sealing the 3.6 MB POS catalogue snapshot —
+ * 70% of the whole blocking rebuild on a cold start. `String.fromCharCode`
+ * applied to 32 KB windows is ~12 ms/MB (measured), the same output.
+ *
+ * Base64 stays the storage format: the backup envelope (lib/offline/backup.ts)
+ * serialises these blobs to JSON, so a raw-bytes representation would be a
+ * format change, not a micro-optimisation.
+ */
 export function toB64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000
   let s = ''
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[])
+  }
   return btoa(s)
 }
 

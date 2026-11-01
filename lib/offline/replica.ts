@@ -39,6 +39,7 @@ import { getUserKey, seal, unseal } from './crypto'
 import { networkMonitor } from './network'
 import { isNetworkError } from './cache'
 import { resolveUserId } from './session'
+import { mark } from '../perf/cold-start'
 
 /**
  * Periodic full-refresh interval. Kept at one hour because it is the
@@ -384,7 +385,9 @@ export async function replicateAll(force = false): Promise<void> {
   replicating = true
   notifyReplicaChanged()
   try {
+    mark('replica:fullpass-start')
     await runFullPass()
+    mark('replica:fullpass-end')
     await drainQueue()
   } finally {
     replicating = false
@@ -476,10 +479,12 @@ export async function replicaRows<T>(spec: ReplicaTableSpec): Promise<T[]> {
  * is empty but the replicator has already filled the local tables.
  */
 export async function buildPosSnapshotFromReplica(): Promise<any[] | null> {
+  mark('snapshot:build-start')
   const products = await replicaRows<any>(REPLICA['Products'])
   if (products.length === 0) return null
   const invItems = await replicaRows<any>(REPLICA['Stock counters'])
   const units = await replicaRows<any>(REPLICA['Product units'])
+  mark('snapshot:decrypt-end')
 
   const invByProduct = new Map<string, any[]>()
   for (const inv of invItems) {
@@ -492,13 +497,15 @@ export async function buildPosSnapshotFromReplica(): Promise<any[] | null> {
     unitsByProduct.get(u.product_id)!.push(u)
   }
 
-  return products
+  const snapshot = products
     .filter(p => p.is_active)
     .map(p => ({
       ...p,
       inventory_items: invByProduct.get(p.id) || [],
       units: unitsByProduct.get(p.id) || [],
     }))
+  mark('snapshot:build-end')
+  return snapshot
 }
 
 /** Per-table status for the Sync Center. */
@@ -532,6 +539,54 @@ export async function replicaStatus(): Promise<ReplicaStatus> {
 let started = false
 let timer: ReturnType<typeof setInterval> | null = null
 
+/**
+ * How long after the first paint the boot-time pass is allowed to start.
+ * Purely a settle window — see afterFirstPaint below.
+ */
+const REPLICA_FIRST_PASS_SETTLE_MS = 1_500
+
+/**
+ * Run `fn` once the first frame has painted, plus a short settle window.
+ *
+ * The boot-time pass walks every replica table (~19 MB on a populated
+ * database) and writes them in a stream of IndexedDB transactions. Firing it
+ * at mount put that download and those write locks directly in front of the
+ * POS catalogue read that paints the grid — the largest avoidable overlap on
+ * a cold start. The pass is a background convergence task, not something a
+ * user is waiting on, so a one-off delay costs nothing in freshness; the
+ * hourly timer and the visibility/reconnect triggers are untouched.
+ *
+ * Two rAFs guarantee at least one frame has been painted (a single rAF
+ * callback can still run before the first paint in some engines); the idle
+ * callback then yields to whatever the page is already doing.
+ */
+function afterFirstPaint(fn: () => void): void {
+  if (typeof window === 'undefined') {
+    fn()
+    return
+  }
+  const idle = () => {
+    const ric = (window as unknown as {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void
+    }).requestIdleCallback
+    if (typeof ric === 'function') ric(fn, { timeout: 5_000 })
+    else fn()
+  }
+  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(idle, REPLICA_FIRST_PASS_SETTLE_MS)))
+}
+
+/**
+ * The boot pass has two independent triggers (a stale last-sync stamp and the
+ * network monitor's immediate first notification); both route here so the
+ * delay applies once, not twice.
+ */
+let firstPassScheduled = false
+function scheduleFirstPass(): void {
+  if (firstPassScheduled) return
+  firstPassScheduled = true
+  afterFirstPaint(() => { void replicateAll() })
+}
+
 /** Mount once from the OfflineProvider: keeps the local database fresh. */
 export async function startReplicator(): Promise<void> {
   if (started || typeof window === 'undefined') return
@@ -539,15 +594,26 @@ export async function startReplicator(): Promise<void> {
 
   const last = await getMeta<number>('replica:last_full_sync')
   const stale = !last || Date.now() - last > REPLICA_INTERVAL_MS
-  if (stale) void replicateAll()
+  if (stale) scheduleFirstPass()
 
   // A full refresh re-downloads every table (~19 MB today). Each tick that
   // fires while the tab is hidden is pure waste — the replica only matters
   // when someone is looking at the app — so background/hidden tabs skip the
   // timer and reconnect ticks, and a refresh runs the moment the tab becomes
   // visible again (the 1-minute guard collapses burst triggers).
+  //
+  // subscribe() invokes the listener immediately with the current state, so
+  // the first notification is the boot trigger and must take the deferred
+  // path; every later transition (a real reconnect) runs at once.
+  let firstOnlineNotice = true
   networkMonitor.subscribe((s) => {
-    if (s.online && !document.hidden) void replicateAll()
+    if (!s.online || document.hidden) return
+    if (firstOnlineNotice) {
+      firstOnlineNotice = false
+      scheduleFirstPass()
+      return
+    }
+    void replicateAll()
   })
   timer = setInterval(() => {
     if (networkMonitor.getState().online && !document.hidden) void replicateAll()
