@@ -447,23 +447,17 @@ function compareOrder(av: unknown, bv: unknown, asc: boolean): number {
 const ROW_CACHE_TTL = 30_000
 const rowCache = new Map<string, { at: number; rows: any[] | null }>()
 
-async function loadRows(table: string): Promise<any[] | null> {
-  const spec: ReplicaTableSpec | undefined = (REPLICA_BY_TABLE as Record<string, ReplicaTableSpec | undefined>)[table]
-  if (!spec) return null
-  const hit = rowCache.get(table)
-  if (hit && Date.now() - hit.at < ROW_CACHE_TTL) return hit.rows
-  // A table that has never been replicated must read as "unsupported", not
-  // as an empty result — otherwise cold devices would show empty pages.
-  const count = await getMeta<number>(`replica:count:${spec.name}`)
-  if (count === undefined) {
-    rowCache.set(table, { at: Date.now(), rows: null })
-    return null
-  }
-  const rows = await replicaRows<any>(spec)
-  // Pending-rows overlay: queued outbox work appears immediately —
-  // provisional rows for creates, patches for edits of existing (real or
-  // pending) rows, removals for queued deletes. Replica rows win over stale
-  // pending twins on id collisions.
+/**
+ * Layer the queued-outbox overlay over already-read replica rows: removals for
+ * queued deletes, patches for queued edits, provisional rows for queued
+ * creates. Replica rows win over stale pending twins on id collisions.
+ *
+ * Exported because a page that reads a replica store directly (the POS
+ * customer picker does, through `replicaRows`) needs the same projection the
+ * query engine applies — otherwise a name, phone or credit-limit edit queued
+ * offline stays invisible until the sync drains.
+ */
+export async function applyPendingOverlay(table: string, rows: any[]): Promise<any[]> {
   let merged = rows
   const overlay = await pendingOverlayFor(table)
   if (overlay.deletes.size > 0) {
@@ -491,6 +485,26 @@ async function loadRows(table: string): Promise<any[] | null> {
     }
     merged = [...realRows, ...overlay.rows.filter((pr: any) => !ids.has(String(pr.id)))]
   }
+  return merged
+}
+
+async function loadRows(table: string): Promise<any[] | null> {
+  const spec: ReplicaTableSpec | undefined = (REPLICA_BY_TABLE as Record<string, ReplicaTableSpec | undefined>)[table]
+  if (!spec) return null
+  const hit = rowCache.get(table)
+  if (hit && Date.now() - hit.at < ROW_CACHE_TTL) return hit.rows
+  // A table that has never been replicated must read as "unsupported", not
+  // as an empty result — otherwise cold devices would show empty pages.
+  const count = await getMeta<number>(`replica:count:${spec.name}`)
+  if (count === undefined) {
+    rowCache.set(table, { at: Date.now(), rows: null })
+    return null
+  }
+  const rows = await replicaRows<any>(spec)
+  // Pending-rows overlay: queued outbox work appears immediately — provisional
+  // rows for creates, patches for edits of existing (real or pending) rows,
+  // removals for queued deletes.
+  const merged = await applyPendingOverlay(table, rows)
   rowCache.set(table, { at: Date.now(), rows: merged })
   return merged
 }

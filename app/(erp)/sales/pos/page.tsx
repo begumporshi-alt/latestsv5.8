@@ -34,8 +34,9 @@ import { readData } from '@/lib/offline/read-result';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { fetchAll } from '@/lib/fetch-all';
-import { REPLICA, replicaRows, buildPosSnapshotFromReplica, refreshReplicaTables } from '@/lib/offline/replica';
-import { runReplicaQuery } from '@/lib/offline/replica-query';
+import { REPLICA, replicaRows, buildPosSnapshotFromReplica, refreshReplicaTables, subscribeReplica } from '@/lib/offline/replica';
+import { awaitPendingWrites } from '@/lib/offline/write-refresh';
+import { runReplicaQuery, applyPendingOverlay } from '@/lib/offline/replica-query';
 import type { LedgerStock } from '@/lib/oversell-gate';
 import PrintTemplate from '@/components/PrintTemplate';
 import { printNode } from '@/lib/print';
@@ -158,6 +159,27 @@ function posRankColumns(p: ProductData): string[] {
   return [p.name, p.sku || '', p.barcode || ''];
 }
 
+/**
+ * Every identifier a cashier can read off a customer record. `mobile` is a
+ * DISTINCT column from `phone` and is sometimes the only number on file —
+ * leaving it out made those customers unreachable by phone search.
+ * `company_name` is what a B2B counter types; `email`/`tax_id` round out the
+ * record (see the search-feature-robustness skill, failure mode 1).
+ */
+const CUSTOMER_SEARCH_COLUMNS = ['name', 'code', 'phone', 'mobile', 'company_name', 'email', 'tax_id'];
+
+/** Relevance key for customer results — the columns the dropdown displays. */
+function customerRankColumns(c: any): string[] {
+  return [c.name || '', c.code || '', c.phone || '', c.mobile || '', c.company_name || ''];
+}
+
+/**
+ * The dropdown renders one button per match with no virtualisation, and an
+ * empty query matches every active customer (244 in this tenant, unbounded as
+ * the book grows). Cap the render — the cashier types to narrow.
+ */
+const CUSTOMER_MATCH_LIMIT = 50;
+
 const POS_GRID_PAGE_SIZE = 60;
 
 const WALK_IN_CUSTOMER_ID = '00000000-0000-0000-0000-000000000001';
@@ -238,6 +260,10 @@ export default function POSPage() {
   // Previous-due collection alongside the current sale (Option A)
   const [dueCollectInput, setDueCollectInput] = useState('');
   const [customerOutstanding, setCustomerOutstanding] = useState<PosOutstandingRow[]>([]);
+  // Bumped whenever the replica converges, so the customer-scoped reads below
+  // (open invoices, advance wallets) re-run instead of showing the balance the
+  // customer had when the cashier selected him. Both are single indexed reads.
+  const [customerContextVersion, setCustomerContextVersion] = useState(0);
   const previousDueTotal = customerOutstanding.reduce((s, r) => s + (Number(r.balance_due) || 0), 0);
   const dueCollectAmount = Math.max(0, Math.min(parseFloat(dueCollectInput) || 0, previousDueTotal));
   // Payment application chooser + the customer's advance wallets (money we
@@ -465,7 +491,7 @@ export default function POSPage() {
         void cachePut(`store-credits:${selectedCustomer}`, total);
         if (total === 0) setApplyStoreCredit(false);
       });
-  }, [selectedCustomer, walkInCustomerId]);
+  }, [selectedCustomer, walkInCustomerId, customerContextVersion]);
 
   // Load previous outstanding invoices (oldest first) when the customer
   // changes — drives the optional "collect previous due" input at checkout.
@@ -536,7 +562,7 @@ export default function POSPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedCustomer, walkInCustomerId]);
+  }, [selectedCustomer, walkInCustomerId, customerContextVersion]);
 
   // Load the customer's advance wallets (oldest first) — the money the shop
   // already holds for him, which the "advance balance first" mode spends.
@@ -578,7 +604,9 @@ export default function POSPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedCustomer, walkInCustomerId]);
+    // Re-runs on customerContextVersion so a wallet drained on another terminal
+    // stops being offered here.
+  }, [selectedCustomer, walkInCustomerId, customerContextVersion]);
 
   // Any cart change invalidates a prior "Sell anyway" confirmation.
   useEffect(() => { shortfallConfirmedRef.current = false; creditConfirmedRef.current = false; setOversellBlocked(false); }, [cart]);
@@ -641,6 +669,12 @@ export default function POSPage() {
   async function refreshProductSnapshot(): Promise<ProductData[] | null> {
     try {
       const res = await cachedQuery<ProductData[]>(CACHE_KEYS.products, PRODUCT_SNAPSHOT_TTL, async () => {
+        // The snapshot is rebuilt from the LOCAL replica. If a write has just
+        // been committed to the server (a GRN raising stock, cost or sale
+        // price), the replica is still a debounce-and-a-pull behind; reading
+        // it now would cache pre-write values for the whole 10-minute TTL.
+        // Converge first — a no-op when nothing is pending.
+        await awaitPendingWrites();
         const fromReplica = await buildPosSnapshotFromReplica();
         if (fromReplica && fromReplica.length > 0) return fromReplica as ProductData[];
         return fetchAll(() => supabase
@@ -657,20 +691,134 @@ export default function POSPage() {
     }
   }
 
+  /**
+   * Resolve a scanned or typed code to a product.
+   *
+   * Two defects this replaces: the scan path queried `.eq('sku', code)` only —
+   * while the modal's own copy says "Product SKU or barcode" — so scanning a
+   * real barcode reported "not found"; and it went straight to the network, so
+   * a scan failed offline.
+   *
+   * The full-catalog snapshot is local and complete, so try it first (exact
+   * match on SKU *or* barcode, case-insensitive). Only a product the replica
+   * has not pulled yet needs the server, and that query quotes its values
+   * because a barcode is device-supplied text that can contain PostgREST
+   * filter grammar (see lib/search.ts).
+   */
+  async function findProductByCode(code: string): Promise<ProductData | null> {
+    const needle = String(code || '').trim();
+    if (!needle) return null;
+    const lower = needle.toLowerCase();
+
+    const snapshot = await refreshProductSnapshot();
+    const local = (snapshot || []).find(p => {
+      const row = p as ProductData;
+      return String(row.sku || '').toLowerCase() === lower
+        || String(row.barcode || '').toLowerCase() === lower;
+    });
+    if (local) return local as ProductData;
+
+    const safe = needle.replace(/["\\]/g, '');
+    if (!safe) return null;
+    const { data } = await supabase
+      .from('products')
+      .select(`id, name, sku, barcode, sale_price, cost_price, image_url, unit, base_unit, allow_decimal, enable_multi_unit, track_inventory, warranty_months, brand_id, category_id,
+        inventory_items(id, warehouse_id, quantity_on_hand),
+        units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
+      .eq('is_active', true)
+      .or(`sku.eq."${safe}",barcode.eq."${safe}"`)
+      .maybeSingle();
+    // The projection is narrower than `ProductUnit` (no created_at/updated_at)
+    // — the cart only reads pricing and conversion fields, so bridge the type.
+    return (data as unknown as ProductData) || null;
+  }
+
+  /**
+   * Enter in the product box adds, it does not just filter.
+   *
+   * A keyboard-wedge barcode scanner is a keyboard: it types the code and
+   * presses Enter into whatever has focus. With only an onChange, a scan into
+   * the focused search box filtered the grid and the cashier still had to
+   * click the tile — the scan "worked" but put nothing in the cart.
+   *
+   * Deliberately conservative. An exact SKU/barcode hit always wins, and it
+   * does not read the debounced grid, so a fast scan can never add a stale
+   * tile from the previous query. A single visible match is accepted only once
+   * the load has settled.
+   */
+  async function addScannedOrSingleMatch() {
+    const term = search.trim();
+    if (!term || processing) return;
+    const exact = await findProductByCode(term);
+    if (exact) {
+      handleProductClick(exact);
+      setSearch('');
+      return;
+    }
+    if (!loading && products.length === 1) {
+      handleProductClick(products[0]);
+      setSearch('');
+    }
+  }
+
   // Keep the replica tables the POS serves its catalog/stock/customers from
   // converged while the page is open. Delta pulls only download rows changed
   // since each table's cursor, so this costs a handful of zero-row requests
-  // when nothing changed — never a catalog re-download.
+  // when nothing changed — never a catalog re-download. Advance wallets are
+  // included because the offline checkout spends them: without this they would
+  // only converge on the hourly full pass.
   useEffect(() => {
     const refreshPosTables = () => {
       if (document.visibilityState !== 'visible') return;
-      void refreshReplicaTables(['Products', 'Stock counters', 'Product units', 'Customers']).catch(() => {});
+      void refreshReplicaTables(['Products', 'Stock counters', 'Product units', 'Customers', 'Customer advances']).catch(() => {});
     };
     const timer = setInterval(refreshPosTables, POS_REPLICA_REFRESH_MS);
     return () => clearInterval(timer);
   }, []);
 
-  async function loadProducts(q: string, append = false) {
+  // An open gallery and an open customer dropdown both render from React
+  // state, so dropping a cache (a write on this device, or another device's
+  // change arriving over Realtime) never reaches either one — the cashier
+  // would keep seeing the old stock, cost, sale price or customer balance
+  // until a manual reload. Rebuild both once the replica converges; the
+  // debounce collapses the burst of per-table notifications one receipt emits.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeReplica(() => {
+      if (!networkMonitor.getState().online) return;
+      if (document.visibilityState !== 'visible') return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        // Depth-aware: keep whatever the cashier has already paged through.
+        void loadProducts(search, false, Math.max(productOffsetRef.current, POS_GRID_PAGE_SIZE));
+        // The customer list feeds the picker's name/code/phone AND the "Due:"
+        // badge, which comes from customers.outstanding_balance — recomputed
+        // by the DB on every invoice and receivable payment.
+        void loadCustomers();
+        // Re-read this customer's open invoices and advance wallets — another
+        // terminal may have collected a due or drained an advance while he sat
+        // selected here.
+        setCustomerContextVersion(v => v + 1);
+      }, 1_500);
+    });
+    return () => {
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  /**
+   * Load (or append) a page of the gallery.
+   *
+   * `pageSize` applies only to a non-append load, and only ever widens it: a
+   * background refresh (replica change, the 10-minute pull) passes the number
+   * of rows already on screen so the grid is rebuilt in place instead of
+   * snapping back to the first page under a cashier who has paged through the
+   * catalogue.
+   */
+  async function loadProducts(q: string, append = false, pageSize = POS_GRID_PAGE_SIZE) {
     if (append && (productLoadRef.current || loading || !hasMoreProducts)) return;
     productLoadRef.current = true;
     if (append) setLoadingMore(true);
@@ -680,6 +828,7 @@ export default function POSPage() {
     }
     const seq = ++searchSeqRef.current;
     const offset = append ? productOffsetRef.current : 0;
+    const size = append ? POS_GRID_PAGE_SIZE : Math.max(pageSize, POS_GRID_PAGE_SIZE);
     const tokens = tokenizeSearch(q);
 
     function applyPage(page: ProductData[], count: number | null) {
@@ -691,7 +840,7 @@ export default function POSPage() {
         return [...prev, ...page.filter(p => !ids.has(p.id))];
       });
       setMatchCount(count);
-      setHasMoreProducts(page.length === POS_GRID_PAGE_SIZE && (count === null || offset + page.length < count));
+      setHasMoreProducts(page.length >= POS_GRID_PAGE_SIZE && (count === null || offset + page.length < count));
     }
 
     // Filter + rank + paginate the full-catalog snapshot locally — the same
@@ -703,7 +852,7 @@ export default function POSPage() {
       filtered = filtered.filter(p => (p as any).track_inventory !== false);
       filtered.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
       const ranked = rankRows(filtered, posRankColumns, tokens);
-      applyPage(ranked.slice(offset, offset + POS_GRID_PAGE_SIZE), filtered.length);
+      applyPage(ranked.slice(offset, offset + size), filtered.length);
     }
 
     async function loadCachedPage() {
@@ -751,7 +900,7 @@ export default function POSPage() {
       if (selectedBrand) query = query.eq('brand_id', selectedBrand);
       if (selectedCategory) query = query.eq('category_id', selectedCategory);
 
-      const { data, count, error } = await query.range(offset, offset + POS_GRID_PAGE_SIZE - 1);
+      const { data, count, error } = await query.range(offset, offset + size - 1);
       if ((error && isNetworkError(error)) || (!error && !data)) {
         networkMonitor.markOffline();
         await loadCachedPage();
@@ -843,7 +992,11 @@ export default function POSPage() {
   async function loadCustomers() {
     try {
       const res = await cachedQuery<any[]>(CACHE_KEYS.customers, 60_000, async () => {
-        const local = await replicaRows<any>(REPLICA['Customers']);
+        // Layer the queued-outbox overlay over the replica: a name, phone,
+        // code, credit-limit or active-flag edit queued offline lives only in
+        // the outbox until the sync drains, and a raw replica read would keep
+        // serving the pre-edit row to the picker and the credit gate.
+        const local = await applyPendingOverlay('customers', await replicaRows<any>(REPLICA['Customers']));
         const active = local
           .filter((c: any) => c.is_active)
           .sort((a: any, b: any) =>
@@ -859,9 +1012,14 @@ export default function POSPage() {
       }
     } catch {
       // Last resort: the local database replica.
-      const replicaCustomers = await replicaRows<any>(REPLICA['Customers']);
+      const replicaCustomers = await applyPendingOverlay('customers', await replicaRows<any>(REPLICA['Customers']));
       if (replicaCustomers.length > 0) {
-        setCustomers(replicaCustomers.filter((c: any) => c.is_active));
+        // Same ordering as the primary path — the dropdown caps its render, so
+        // an unsorted pool would show an arbitrary 50.
+        setCustomers(replicaCustomers
+          .filter((c: any) => c.is_active)
+          .sort((a: any, b: any) =>
+            String(a.name || '').localeCompare(String(b.name || '')) || String(a.id).localeCompare(String(b.id))));
         const walkIn = replicaCustomers.find((c: any) => (c.name || '').toLowerCase().includes('walk'));
         if (walkIn) {
           setWalkInCustomerId(walkIn.id);
@@ -1781,6 +1939,15 @@ export default function POSPage() {
       // The sale drew stock server-side — patch the local snapshot instead of
       // re-downloading the whole catalog.
       await applySaleToSnapshot(cart);
+      // The DB also recomputed this customer's outstanding_balance (the
+      // invoice, plus any receivable payment collected alongside it). Converge
+      // the local copy FIRST, then drop the customer aggregate and rebuild it:
+      // dropping before the pull lands would rebuild it from the pre-sale
+      // replica, and the 60 s TTL would freeze that figure again.
+      void awaitPendingWrites().then(() => {
+        void cacheDelete(CACHE_KEYS.customers);
+        void loadCustomers();
+      });
       loadProducts(search);
     } catch (error: any) {
       console.error('POS error:', error);
@@ -2476,17 +2643,60 @@ export default function POSPage() {
   }, [customerDropdownOpen]);
 
   const customerTokens = tokenizeSearch(customerSearch);
+  // The walk-in record is pinned as its own row at the top of the list, so it
+  // must not also appear in the match pool — it used to render twice (once
+  // hardcoded, once from the alphabetical list).
+  const walkInCustomer = useMemo(
+    () => customers.find(c => c.id === walkInCustomerId) || null,
+    [customers, walkInCustomerId],
+  );
+  const customerPool = useMemo(
+    () => customers.filter(c => c.id !== walkInCustomerId),
+    [customers, walkInCustomerId],
+  );
   const customerMatches = useMemo(
     () => customerTokens.length === 0
-      ? customers
+      ? customerPool.slice(0, CUSTOMER_MATCH_LIMIT)
+      // Rank the FULL match set before capping — slicing first would hide the
+      // best match behind alphabetically-earlier rows.
       : rankRows(
-          customers.filter(c => matchesTokens(c, ['name', 'code', 'phone'], customerTokens)),
-          c => [c.name, c.code || '', c.phone || ''],
+          customerPool.filter(c => matchesTokens(c, CUSTOMER_SEARCH_COLUMNS, customerTokens)),
+          customerRankColumns,
           customerTokens,
+        ).slice(0, CUSTOMER_MATCH_LIMIT),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [customerPool, customerSearch],
+  );
+
+  // Brand / category pickers use the same tokenised predicate as every other
+  // search in the page, so "foods fresh" finds "Fresh Foods Ltd" — the old
+  // single-substring `.includes()` only matched the words in the typed order.
+  // Ranking keeps a prefix hit ("Fre…") above a mid-word one ("…foods").
+  const brandTokens = tokenizeSearch(brandSearch);
+  const brandMatches = useMemo(
+    () => brandTokens.length === 0
+      ? brands
+      : rankRows(
+          brands.filter(b => matchesTokens(b, ['name'], brandTokens)),
+          b => [b.name],
+          brandTokens,
         ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [customers, customerSearch],
+    [brands, brandSearch],
   );
+  const categoryTokens = tokenizeSearch(categorySearch);
+  const categoryMatches = useMemo(
+    () => categoryTokens.length === 0
+      ? categories
+      : rankRows(
+          categories.filter(c => matchesTokens(c, ['name'], categoryTokens)),
+          c => [c.name],
+          categoryTokens,
+        ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [categories, categorySearch],
+  );
+
   useEffect(() => { setCustomerActiveIndex(customerMatches.length > 0 ? 0 : -1); }, [customerSearch]);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (customerActiveIndex < 0 || !customerDropdownOpen) return;
@@ -2499,6 +2709,21 @@ export default function POSPage() {
     setCustomerSearch('');
     setCustomerActiveIndex(-1);
   }
+
+  // A customer deactivated (the CRM's "delete" is a soft delete) on another
+  // device must not stay selected by id alone. `customers` is filtered to
+  // active rows, so the trigger already falls back to the walk-in LABEL — but
+  // `selectedCustomer` still holds the old id, and isRegisteredCustomer plus
+  // the invoice header keep using it. The till would read "Walk-in Customer"
+  // while the sale was billed to a deactivated account. Drop the selection.
+  useEffect(() => {
+    if (!selectedCustomer || selectedCustomer === walkInCustomerId) return;
+    // Nothing loaded yet (first paint, or every read failed) is not evidence
+    // that the customer disappeared — only a non-empty list is.
+    if (customers.length === 0) return;
+    if (customers.some(c => c.id === selectedCustomer)) return;
+    setSelectedCustomer(walkInCustomerId);
+  }, [customers, selectedCustomer, walkInCustomerId]);
 
   function handleCustomerKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === 'Escape' && customerDropdownOpen) {
@@ -2767,6 +2992,11 @@ export default function POSPage() {
               ref={searchInputRef}
               value={search}
               onChange={e => setSearch(e.target.value)}
+              onKeyDown={e => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                void addScannedOrSingleMatch();
+              }}
               placeholder="Search products by name, SKU or barcode..."
               className="w-full pl-10 pr-10 py-2.5 border border-border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 bg-white"
             />
@@ -2836,16 +3066,19 @@ export default function POSPage() {
                   >
                     All Brands
                   </button>
-                  {(brandSearch.trim() ? brands.filter(b => b.name.toLowerCase().includes(brandSearch.trim().toLowerCase())) : brands).map(b => (
+                  {brandMatches.map(b => (
                     <button
                       key={b.id}
                       type="button"
                       onClick={() => { setSelectedBrand(b.id); setBrandDropdownOpen(false); setBrandSearch(''); }}
                       className={`w-full flex items-center px-3 py-2 text-sm hover:bg-blue-50 transition text-left ${selectedBrand === b.id ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
                     >
-                      {b.name}
+                      {brandTokens.length > 0 ? <HighlightLabel text={b.name} query={brandSearch} /> : b.name}
                     </button>
                   ))}
+                  {brandSearch.trim() && brandMatches.length === 0 && (
+                    <div className="px-3 py-3 text-center text-xs text-muted-foreground">No brands found</div>
+                  )}
                 </div>
               </div>
             )}
@@ -2899,16 +3132,19 @@ export default function POSPage() {
                   >
                     All Categories
                   </button>
-                  {(categorySearch.trim() ? categories.filter(c => c.name.toLowerCase().includes(categorySearch.trim().toLowerCase())) : categories).map(c => (
+                  {categoryMatches.map(c => (
                     <button
                       key={c.id}
                       type="button"
                       onClick={() => { setSelectedCategory(c.id); setCategoryDropdownOpen(false); setCategorySearch(''); }}
                       className={`w-full flex items-center px-3 py-2 text-sm hover:bg-blue-50 transition text-left ${selectedCategory === c.id ? 'bg-blue-50 text-blue-600' : 'text-foreground'}`}
                     >
-                      {c.name}
+                      {categoryTokens.length > 0 ? <HighlightLabel text={c.name} query={categorySearch} /> : c.name}
                     </button>
                   ))}
+                  {categorySearch.trim() && categoryMatches.length === 0 && (
+                    <div className="px-3 py-3 text-center text-xs text-muted-foreground">No categories found</div>
+                  )}
                 </div>
               </div>
             )}
@@ -2970,8 +3206,12 @@ export default function POSPage() {
                       onClick={() => handleCustomerSelect(walkInCustomerId)}
                       className={`w-full flex flex-col px-3 py-2 transition text-left ${customerActiveIndex === -1 || selectedCustomer === walkInCustomerId ? 'bg-blue-50 text-blue-600' : 'text-foreground hover:bg-blue-50'}`}
                     >
-                      <span className="text-sm font-medium">Walk-in Customer</span>
-                      <span className="text-[10px] text-muted-foreground">CUST-272756</span>
+                      {/* Pinned "no customer" option. Its name and code come
+                          from the resolved walk-in record — a literal
+                          `CUST-272756` here was one tenant's data baked into
+                          the source and went stale for everyone else. */}
+                      <span className="text-sm font-medium">{walkInCustomer?.name || 'Walk-in Customer'}</span>
+                      <span className="text-[10px] text-muted-foreground">{walkInCustomer?.code || '—'}</span>
                     </button>
                     {customerMatches.map((c, i) => (
                       <button
@@ -2986,6 +3226,9 @@ export default function POSPage() {
                         <span className="text-sm font-medium leading-tight break-words">
                           {customerTokens.length > 0 ? <HighlightLabel text={c.name} query={customerSearch} /> : c.name}
                         </span>
+                        {c.company_name && (
+                          <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{c.company_name}</span>
+                        )}
                         <div className="flex items-center gap-2 mt-0.5">
                           {Number(c.outstanding_balance) > 0 && (
                             <span className="text-[10px] font-medium text-amber-600">
@@ -2993,12 +3236,21 @@ export default function POSPage() {
                             </span>
                           )}
                           <span className="text-[10px] text-muted-foreground">{c.code}</span>
-                          {c.phone && <span className="text-[10px] text-muted-foreground">· {c.phone}</span>}
+                          {/* `mobile` is searched now, so it has to be visible —
+                              otherwise a mobile-number hit looks unexplained. */}
+                          {(c.phone || c.mobile) && (
+                            <span className="text-[10px] text-muted-foreground">· {c.phone || c.mobile}</span>
+                          )}
                         </div>
                       </button>
                     ))}
                     {customerSearch.trim() && customerMatches.length === 0 && (
                       <div className="px-3 py-4 text-center text-xs text-muted-foreground">No customers found</div>
+                    )}
+                    {!customerSearch.trim() && customerPool.length > CUSTOMER_MATCH_LIMIT && (
+                      <div className="border-t border-border/40 px-3 py-2 text-center text-[11px] text-muted-foreground">
+                        Showing {CUSTOMER_MATCH_LIMIT} of {customerPool.length} — type to narrow
+                      </div>
                     )}
                   </div>
                 </div>
@@ -3689,6 +3941,7 @@ export default function POSPage() {
             <ul className="space-y-2">
               {[
                 ['/', 'Focus product search'],
+                ['Enter', 'Add exact SKU/barcode match'],
                 ['Shift+N', 'New sale (clear cart)'],
                 ['Shift+P', 'Checkout (Pay)'],
                 ['Ctrl+Enter', 'Checkout (Pay)'],
@@ -3816,19 +4069,13 @@ export default function POSPage() {
       {showScanner && (
         <BarcodeScannerModal
           onDetected={async (code) => {
-            const { data } = await supabase
-              .from('products')
-              .select(`id, name, sku, sale_price, cost_price, image_url, unit, base_unit, enable_multi_unit,
-                inventory_items(id, warehouse_id, quantity_on_hand),
-                units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order)`)
-              .eq('sku', code)
-              .maybeSingle();
             setShowScanner(false);
-            if (data) {
-              handleProductClick(data as ProductData);
-              toast({ title: 'Product found', description: (data as ProductData).name });
+            const product = await findProductByCode(code);
+            if (product) {
+              handleProductClick(product);
+              toast({ title: 'Product found', description: product.name });
             } else {
-              toast({ title: 'Not found', description: `No product with SKU ${code}`, variant: 'destructive' });
+              toast({ title: 'Not found', description: `No product with SKU or barcode ${code}`, variant: 'destructive' });
             }
           }}
           onClose={() => setShowScanner(false)}

@@ -48,6 +48,11 @@ const WATCHED_TABLES = [
   'payments',
   'customers',
   'suppliers',
+  // Advance wallets. The POS spends these in "advance balance first" mode and
+  // reads them from the replica when offline; without this a wallet drained on
+  // another terminal stays "full" locally until the hourly full pass, and the
+  // cashier offers money the shop no longer holds.
+  'customer_advances',
 ] as const
 
 /**

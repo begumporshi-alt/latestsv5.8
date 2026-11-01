@@ -102,6 +102,17 @@ describe('write-refresh routing', () => {
     expect(replica.refreshReplicaTables).not.toHaveBeenCalled()
   })
 
+  // Creating a product with opening stock (the inventory form, the PO form, and
+  // every row of a CSV import) calls these. Unmapped they cost a full 48-table
+  // pass per create; they only touch the batch row and the warehouse counter.
+  it('maps the opening-stock RPCs instead of forcing a full pass', async () => {
+    noteServerWrite('rpc', 'create_opening_batch')
+    await awaitPendingWrites()
+
+    expect(replica.replicateAll).not.toHaveBeenCalled()
+    expect(replica.refreshReplicaTables).toHaveBeenCalledWith(['Stock counters', 'Inventory batches'])
+  })
+
   it('routes .from() writes by table name', async () => {
     noteServerWrite('from', 'purchase_order_items')
     await awaitPendingWrites()

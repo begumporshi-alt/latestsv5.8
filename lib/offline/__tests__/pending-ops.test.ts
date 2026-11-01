@@ -70,6 +70,26 @@ describe('pending overlay op maps (lib/offline/pending)', () => {
     }
   });
 
+  // The DB recomputes customers.outstanding_balance / total_purchases from
+  // invoices + receivable debits + receivable payments (recompute_customer_balances,
+  // fired by invoice_customer_totals_trigger and payment_customer_totals_trigger),
+  // so every op that writes one of those also moves the customer's balance.
+  // Without this drop the customer list — and the POS picker's "Due:" badge —
+  // keeps serving the pre-op figure.
+  test('every op that moves a customer balance drops the canonical customers list', () => {
+    for (const op of [
+      'invoice.create',
+      'payment.create',
+      'invoice.status',
+      'invoice.cancel',
+      'sales_return.create',
+      'advance.apply',
+      'advance.refund',
+    ]) {
+      expect(OP_CACHE_KEYS[op]).toContain('customers:all');
+    }
+  });
+
   test('customer ops drop the CRM aggregate and the canonical customers list', () => {
     for (const op of ['customer.create', 'customer.update']) {
       expect(OP_CACHE_KEYS[op]).toEqual(

@@ -125,6 +125,21 @@ export default function InventoryPage() {
     }
   }
 
+  /**
+   * Drop the POS-facing snapshots after a catalog mutation that does NOT go
+   * through ProductModal (deactivate, restore, CSV import). ProductModal drops
+   * them itself, and the offline branches get the same drop from the outbox's
+   * OP_CACHE_KEYS — but these direct online writes had nothing, so the till
+   * kept serving its pre-change copy for the full 10-minute snapshot TTL: a
+   * just-deactivated product stayed sellable and a restored one stayed
+   * invisible until the TTL ran out. The replica pull that follows is what the
+   * POS rebuilds the snapshot from.
+   */
+  function dropPosSnapshots() {
+    void cacheDelete(CACHE_KEYS.products);
+    void cacheDelete(CACHE_KEYS.gateStock);
+  }
+
   async function fetchInventoryData(): Promise<InventoryPageData> {
     // Stock, sold totals and FIFO valuation used to be computed client-side
     // from every inventory_items / invoice_items / inventory_batches row —
@@ -380,6 +395,7 @@ export default function InventoryPage() {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: 'Product deleted successfully' });
+      dropPosSnapshots();
       loadData(true);
     }
     setDeletingProduct(null);
@@ -408,6 +424,7 @@ export default function InventoryPage() {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Restored', description: `${product.name} is active again` });
+      dropPosSnapshots();
       loadData(true);
     }
   }
@@ -763,7 +780,7 @@ export default function InventoryPage() {
           warehouses={warehouses}
           existingSkus={products.map(p => p.sku)}
           onClose={() => setShowImportModal(false)}
-          onImported={() => loadData(true)}
+          onImported={() => { dropPosSnapshots(); loadData(true); }}
         />
       )}
     </div>

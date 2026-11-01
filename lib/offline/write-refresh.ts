@@ -46,6 +46,12 @@ const RPC_TABLES: Record<string, string[]> = {
   generate_purchase_payment_number: [],
   generate_credit_number: [],
 
+  // Opening stock and stock reductions: the batch row plus the warehouse
+  // counter. Left unmapped, every product created with opening stock — and
+  // every row of a CSV import — forced a full 48-table replica pass.
+  create_opening_batch: ['Stock counters', 'Inventory batches'],
+  create_stock_reduction: ['Stock counters', 'Inventory batches'],
+
   // Atomic goods receipt: GRN header, stock counters, movements, FIFO layers,
   // PO line received quantities, PO status, GL, reminders, product cost/sale
   // prices, and account balances.

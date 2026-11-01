@@ -137,14 +137,20 @@ export function dedupeByNaturalKey<T extends Record<string, any>>(table: string,
  * purchases, deliveries, suppliers…) only need the q:from drops above.
  */
 export const OP_CACHE_KEYS: Record<string, string[]> = {
-  'invoice.create': ['sales:page-data:', 'invoices:recent', 'dashboard:page-data'],
-  'payment.create': ['sales:page-data:', 'invoices:recent', 'dashboard:page-data'],
-  'invoice.status': ['sales:page-data:', 'dashboard:page-data'],
-  'invoice.cancel': ['sales:page-data:', 'dashboard:page-data'],
-  'sales_return.create': ['sales:page-data:', 'dashboard:page-data'],
-  'advance.receive': ['sales:page-data:', 'dashboard:page-data'],
-  'advance.apply': ['sales:page-data:', 'dashboard:page-data'],
-  'advance.refund': ['sales:page-data:', 'dashboard:page-data'],
+  // Every op below can move a customer's `outstanding_balance` or
+  // `total_purchases`: the DB recomputes both from invoices + receivable
+  // debits + receivable payments (recompute_customer_balances, fired by
+  // invoice_customer_totals_trigger and payment_customer_totals_trigger).
+  // Leaving `customers:all` out kept the customer list — and the POS
+  // dropdown's "Due:" badge — showing the pre-sale figure indefinitely.
+  'invoice.create': ['sales:page-data:', 'invoices:recent', 'dashboard:page-data', 'customers:all', 'crm:page-data'],
+  'payment.create': ['sales:page-data:', 'invoices:recent', 'dashboard:page-data', 'customers:all', 'crm:page-data'],
+  'invoice.status': ['sales:page-data:', 'dashboard:page-data', 'customers:all', 'crm:page-data'],
+  'invoice.cancel': ['sales:page-data:', 'dashboard:page-data', 'customers:all', 'crm:page-data'],
+  'sales_return.create': ['sales:page-data:', 'dashboard:page-data', 'customers:all', 'crm:page-data'],
+  'advance.receive': ['sales:page-data:', 'dashboard:page-data', 'customers:all'],
+  'advance.apply': ['sales:page-data:', 'dashboard:page-data', 'customers:all', 'crm:page-data'],
+  'advance.refund': ['sales:page-data:', 'dashboard:page-data', 'customers:all', 'crm:page-data'],
   'store_credit.issue': ['sales:page-data:', 'dashboard:page-data'],
   'store_credit.expire': ['sales:page-data:', 'dashboard:page-data'],
   'store_credit.cash_out': ['sales:page-data:', 'dashboard:page-data'],

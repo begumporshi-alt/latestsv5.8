@@ -195,6 +195,8 @@ tokenised search helpers`):
 | Search site | Notes | Status |
 |---|---|---|
 | POS product grid | name + SKU + barcode, tokenised, race-guarded, offline parity | **Fixed** `6ae008e`, migrated to `lib/search.ts` |
+| POS customer picker (inline in `app/(erp)/sales/pos/page.tsx`) | was name/code/phone only — a `mobile`-only customer was unfindable, and the walk-in row rendered twice; now name/code/phone/mobile/company_name/email/tax_id, capped at 50 | **Fixed** |
+| POS barcode scanner (`components/BarcodeScannerModal.tsx` → POS) | the modal said "SKU or barcode" but the lookup matched `sku` only and went straight to the network; now resolves against the local snapshot on sku **or** barcode, then a quoted-`.or()` server fallback | **Fixed** |
 | Quotation product gallery | client-side over the full catalog; matches name/SKU/barcode, but single-substring (no tokenising) | Tokenising advisable |
 | `components/ui/ProductSearchInput.tsx` | migrated: barcode added, sanitised tokens, race guard | **Fixed** |
 | `components/ui/CustomerSearchInput.tsx` | migrated: sanitised tokens, race guard | **Fixed** |
