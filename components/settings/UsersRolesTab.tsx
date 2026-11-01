@@ -358,7 +358,7 @@ export default function UsersRolesTab({ canManage }: { canManage: boolean }) {
           </div>
         )}
         <p className="text-xs text-muted-foreground mt-4">
-          Roles control what each person can see and do. Changing someone's role updates their sidebar,
+          Roles control what each person can see and do. Changing someone&apos;s role updates their sidebar,
           page access and database permissions the next time they open the app. Deactivating a user signs
           them out within a minute and blocks sign-in immediately.
         </p>
@@ -400,7 +400,7 @@ export default function UsersRolesTab({ canManage }: { canManage: boolean }) {
           <p className="text-xs text-muted-foreground mt-2">
             This is the live access control — the sidebar, page guards and database write rules all follow
             it. Shaded rows are open to every role. Only Super Admin can manage users here; individual
-            exceptions can be set from a user row's customize action and override this table.
+            exceptions can be set from a user row&apos;s customize action and override this table.
           </p>
         </div>
       </div>
@@ -566,7 +566,7 @@ export default function UsersRolesTab({ canManage }: { canManage: boolean }) {
             </div>
             <div className="overflow-y-auto p-6 pt-4">
               <p className="text-xs text-muted-foreground mb-3">
-                Allow or deny modules for this person specifically. "Role" follows the default for {ROLE_LABELS[accessFor.role] || accessFor.role}.
+                Allow or deny modules for this person specifically. &quot;Role&quot; follows the default for {ROLE_LABELS[accessFor.role] || accessFor.role}.
               </p>
                 <div className="border border-border rounded-xl overflow-hidden">
                   <table className="w-full text-sm">

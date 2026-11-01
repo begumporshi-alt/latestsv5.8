@@ -246,7 +246,7 @@ export default function PaymentMethodsPage() {
             {usageCount !== null && usageCount > 0 && (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800">
                 <strong>{usageCount} payment{usageCount === 1 ? '' : 's'} used this method.</strong> Deleting it
-                doesn't change those records, but any future payment recorded with this method name will post to
+                doesn&apos;t change those records, but any future payment recorded with this method name will post to
                 Cash in Hand (1001) by fallback. Prefer deactivating instead.
               </div>
             )}

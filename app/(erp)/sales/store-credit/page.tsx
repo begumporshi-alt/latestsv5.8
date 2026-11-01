@@ -614,7 +614,7 @@ function CashRefundModal({ credit, onClose, onSaved }: { credit: StoreCredit; on
             </div>
           </div>
           {selectedAccount && (
-            <p className="text-[11px] text-muted-foreground">Current balance of {selectedAccount.code} {selectedAccount.name}: {formatCurrency(Number(selectedAccount.balance))}. The refund is posted as Dr 2200 Customer Refund Payable / Cr {selectedAccount.code}, settling the store's liability to the customer.</p>
+            <p className="text-[11px] text-muted-foreground">Current balance of {selectedAccount.code} {selectedAccount.name}: {formatCurrency(Number(selectedAccount.balance))}. The refund is posted as Dr 2200 Customer Refund Payable / Cr {selectedAccount.code}, settling the store&apos;s liability to the customer.</p>
           )}
           <div><label className="block text-xs font-medium mb-1">Notes</label><input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Reason, e.g. customer requested cash back..." className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" /></div>
           <div className="flex gap-3 pt-2">

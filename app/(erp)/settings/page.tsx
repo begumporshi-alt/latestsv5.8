@@ -676,7 +676,7 @@ export default function SettingsPage() {
                   <div>
                     <p className="text-sm font-medium text-foreground">Allow partial adds past available stock</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      When a requested quantity exceeds batch availability, the POS offers "Add Available X" so the
+                      When a requested quantity exceeds batch availability, the POS offers &quot;Add Available X&quot; so the
                       cashier can take what exists. Turn off to require the full quantity instead.
                     </p>
                   </div>

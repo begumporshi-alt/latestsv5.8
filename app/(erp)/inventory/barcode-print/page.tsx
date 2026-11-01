@@ -928,7 +928,7 @@ function ProductLabelSizeModal({ product, onClose, onSaved }: {
           </div>
 
           <p className="text-xs text-muted-foreground">
-            These settings are used whenever this product's barcode/QR label is printed — from this page and from the product's barcode in inventory — instead of the page settings. Long product names wrap to 2 lines at the set size, shrinking only to 7px if needed.
+            These settings are used whenever this product&apos;s barcode/QR label is printed — from this page and from the product&apos;s barcode in inventory — instead of the page settings. Long product names wrap to 2 lines at the set size, shrinking only to 7px if needed.
           </p>
         </div>
         <div className="flex items-center justify-end gap-3 px-5 py-4 border-t border-border">
