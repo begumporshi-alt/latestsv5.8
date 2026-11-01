@@ -15,6 +15,7 @@ import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheGet, cachePut, cacheDelete } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { readData } from '@/lib/offline/read-result';
+import { buildManualOutstandingMap } from '@/lib/manual-receivable';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { REPLICA, replicaRows } from '@/lib/offline/replica';
 
@@ -147,16 +148,27 @@ export default function CRMPage() {
   }
 
   async function fetchCrmData() {
-    const [custData, invoiceData, returnsData] = await Promise.all([
-      readData(await supabase.from('customers').select('*').order('name'), [] as any[]),
-      readData(
-        await supabase.from('invoices')
-          .select('customer_id, total_amount, balance_due, status, invoice_date')
-          .neq('status', 'cancelled'),
-        [] as any[],
-      ),
-      readData(await supabase.from('sales_returns').select('customer_id, total_refund_amount, created_at'), [] as any[]),
+    const [custRes, invoiceRes, returnsRes, receivableRes, receivablePayRes] = await Promise.all([
+      supabase.from('customers').select('*').order('name'),
+      supabase.from('invoices')
+        .select('customer_id, total_amount, balance_due, status, invoice_date')
+        .neq('status', 'cancelled'),
+      supabase.from('sales_returns').select('customer_id, total_refund_amount, created_at'),
+      // Manual receivables, measured rather than inferred. These two are read
+      // without readData() on purpose: they are an enrichment, and a transient
+      // failure must not blank the whole customer list.
+      supabase.from('journal_entries')
+        .select('id, customer_id, total_debit')
+        .eq('reference_type', 'receivable')
+        .eq('is_posted', true),
+      supabase.from('payments')
+        .select('reference_id, amount, bad_debt_amount')
+        .eq('reference_type', 'receivable'),
     ]);
+
+    const custData = readData(custRes, [] as any[]);
+    const invoiceData = readData(invoiceRes, [] as any[]);
+    const returnsData = readData(returnsRes, [] as any[]);
 
     // Build invoice outstanding map (unpaid balance from invoices)
     const invoiceOutstandingMap: Record<string, number> = {};
@@ -178,10 +190,21 @@ export default function CRMPage() {
       returnsMap[r.customer_id].total += Number(r.total_refund_amount) || 0;
     });
 
+    // Manual receivables measured from the ledger: posted 'receivable' journal
+    // entries less the payments booked against them, with bad-debt write-offs
+    // counted as settlement. If either read failed, fall back to the previous
+    // subtraction so the manual tab degrades instead of vanishing.
+    const haveManual = !receivableRes.error && !receivablePayRes.error;
+    const manualOutstandingMap = haveManual
+      ? buildManualOutstandingMap(receivableRes.data || [], receivablePayRes.data || [])
+      : {};
+
     const enriched: CustomerWithOutstanding[] = (custData || []).map((c: Customer) => {
       const invOut = invoiceOutstandingMap[c.id] || 0;
       const totalOut = Number(c.outstanding_balance) || 0;
-      const manualOut = Math.max(0, totalOut - invOut);
+      const manualOut = haveManual
+        ? manualOutstandingMap[c.id] || 0
+        : Math.max(0, totalOut - invOut);
       return {
         ...c,
         invoice_outstanding: invOut,
@@ -196,7 +219,9 @@ export default function CRMPage() {
     const totalOut = (custData || []).reduce((s: number, c: Customer) => s + Number(c.outstanding_balance), 0);
     const totalRef = Object.values(returnsMap).reduce((s, v) => s + v.total, 0);
     const totalInvOut = Object.values(invoiceOutstandingMap).reduce((s, v) => s + v, 0);
-    const totalManualOut = Math.max(0, totalOut - totalInvOut);
+    const totalManualOut = haveManual
+      ? Object.values(manualOutstandingMap).reduce((s, v) => s + v, 0)
+      : Math.max(0, totalOut - totalInvOut);
 
     return {
       enriched,
