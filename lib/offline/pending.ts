@@ -1155,9 +1155,12 @@ export function deriveEffects(op: string, p: Record<string, any>, itemId: string
           }),
         })
         // A re-link replaces the challan's rows; the payload carries the new
-        // invoice's lines. A plain edit leaves them to edit_invoice. This
-        // swaps the QUEUED rows — rows already in the replica are replaced
-        // when the replay lands and the replicator pulls the server state.
+        // invoice's lines. A plain edit leaves them to edit_invoice.
+        //
+        // replaceParent only swaps QUEUED rows, so the payload also names the
+        // rows the re-link supersedes: the overlay's `deletes` set hides them
+        // from the replica by id (replica-query.ts), and without that an
+        // offline re-link showed the old and new line sets side by side.
         if (Array.isArray(p.items)) {
           out.push({
             kind: 'replaceParent',
@@ -1174,6 +1177,11 @@ export function deriveEffects(op: string, p: Record<string, any>, itemId: string
                 unit_name: str(it.unit_name),
               })
             ),
+          })
+        }
+        if (Array.isArray(p.removed_item_ids)) {
+          p.removed_item_ids.forEach((rowId: any) => {
+            if (rowId) out.push({ kind: 'delete', table: 'delivery_items', id: String(rowId) })
           })
         }
       }

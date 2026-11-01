@@ -213,4 +213,33 @@ describe('offline delivery challans (lib/offline/pending)', () => {
     expect(create).toHaveLength(2);
     expect(edit.some((e) => e.kind === 'replaceParent')).toBe(false);
   });
+
+  // replaceParent only swaps queued rows. Rows already in the replica are
+  // hidden through the overlay's deletes set, so the re-link payload names them.
+  test('a re-link deletes the superseded rows by id', () => {
+    const effects = deriveEffects(
+      'delivery.update',
+      { id: 'dlv-1', invoice_id: 'inv-2', items: lines, removed_item_ids: ['di-1', 'di-2'] },
+      'item-7',
+      1,
+    );
+
+    const deletes = effects.filter((e) => e.kind === 'delete') as any[];
+    expect(deletes).toEqual([
+      { kind: 'delete', table: 'delivery_items', id: 'di-1' },
+      { kind: 'delete', table: 'delivery_items', id: 'di-2' },
+    ]);
+  });
+
+  test('a re-link without captured ids still swaps the queued rows', () => {
+    const effects = deriveEffects(
+      'delivery.update',
+      { id: 'dlv-1', invoice_id: 'inv-2', items: lines },
+      'item-8',
+      1,
+    );
+
+    expect(effects.filter((e) => e.kind === 'delete')).toHaveLength(0);
+    expect(effects.some((e) => e.kind === 'replaceParent')).toBe(true);
+  });
 });

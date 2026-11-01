@@ -483,6 +483,13 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
         const copyLines = form.invoice_id && (!isEdit || linkChanged)
           ? await fetchInvoiceLinesForDelivery(form.invoice_id)
           : [];
+        // On a re-link the superseded rows are named explicitly: the overlay can
+        // only hide replica rows by id, and without that an offline re-link
+        // showed the old and new line sets side by side.
+        const replacedItemIds = linkChanged
+          ? ((await supabase.from('delivery_items').select('id').eq('delivery_id', delivery!.id))
+              .data as { id: string }[] | null ?? []).map((r) => r.id)
+          : [];
         if (isEdit) {
           await enqueueOp('delivery.update', {
             idempotency_key: crypto.randomUUID(),
@@ -493,7 +500,7 @@ function DeliveryModal({ customers, invoices, delivery, onClose, onSaved }: {
             // rows", so sending it on a plain edit would blank them.
             invoice_id: form.invoice_id || null,
             customer_id: form.customer_id || null,
-            ...(linkChanged ? { items: copyLines } : {}),
+            ...(linkChanged ? { items: copyLines, removed_item_ids: replacedItemIds } : {}),
             delivery_date: form.delivery_date || null,
             delivery_address: form.delivery_address || null,
             delivery_city: form.delivery_city || null,
