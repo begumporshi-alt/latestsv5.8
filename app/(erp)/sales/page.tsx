@@ -25,6 +25,7 @@ import {
 } from '@/lib/batch-allocation';
 import { WarehouseSelectModal } from '@/components/warehouse-select-modal';
 import { loadVatSettings, computeVat, type VatSettings } from '@/lib/vat';
+import { getInvoiceSettlement, type InvoiceSettlement } from '@/lib/invoice-settlement';
 import { OversellConfirmDialog } from '@/components/oversell-confirm-dialog';
 import { CreditConfirmDialog } from '@/components/credit-confirm-dialog';
 import { checkCreditLimit, newReceivableFor, type CreditCheck } from '@/lib/credit-gate';
@@ -847,6 +848,9 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
                 const cfg = isInvoiceOverdue(inv)
                   ? { label: 'Overdue', color: 'text-red-600', bg: 'bg-red-100' }
                   : (statusConfig[inv.status as InvoiceStatus] || statusConfig.draft);
+                // A written-off invoice is settled, not collected. The badge says
+                // "Paid" (correct — nothing is outstanding); this flag says how.
+                const settlement = getInvoiceSettlement(inv);
                 const hasReturns = inv.sales_returns && inv.sales_returns.length > 0;
                 const totalReturnedQty = hasReturns
                   ? inv.sales_returns!.flatMap(r => r.items?.map(i => i.quantity_returned) || []).reduce((a, b) => a + b, 0)
@@ -902,6 +906,14 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1 items-center">
                         <span className={`badge-status ${cfg.bg} ${cfg.color} whitespace-nowrap`}>{cfg.label}</span>
+                        {settlement.isWrittenOff && (
+                          <span
+                            className="badge-status bg-orange-100 text-orange-700 whitespace-nowrap"
+                            title={settlement.title}
+                          >
+                            {settlement.label}
+                          </span>
+                        )}
                         {inv.payments && inv.payments.length > 0 && (
                           <span className="badge-status bg-slate-100 text-slate-700 flex items-center gap-0.5">
                             <CreditCard className="w-2.5 h-2.5" />
@@ -1019,6 +1031,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           docDate={viewingInvoice.invoice_date}
           dueDate={viewingInvoice.due_date || undefined}
           status={viewingInvoice.status}
+          badDebtAmount={Number(viewingInvoice.bad_debt_amount || 0)}
           company={{
             name: companySettings?.name || 'Your Company',
             address: companySettings?.address,
@@ -4146,7 +4159,7 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
                       )}
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <StatusBadge status={inv.status} overdue={isInvoiceOverdue(inv)} />
+                      <StatusBadge status={inv.status} overdue={isInvoiceOverdue(inv)} settlement={getInvoiceSettlement(inv)} />
                     </td>
                   </tr>
                 );
@@ -4172,7 +4185,7 @@ function OutstandingBreakdownModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function StatusBadge({ status, overdue }: { status: InvoiceStatus; overdue?: boolean }) {
+function StatusBadge({ status, overdue, settlement }: { status: InvoiceStatus; overdue?: boolean; settlement?: InvoiceSettlement }) {
   const config: Record<InvoiceStatus, { label: string; className: string }> = {
     draft: { label: 'Draft', className: 'bg-gray-100 text-gray-600' },
     sent: { label: 'On Credit', className: 'bg-blue-50 text-blue-600' },
@@ -4188,5 +4201,17 @@ function StatusBadge({ status, overdue }: { status: InvoiceStatus; overdue?: boo
   const c = overdue && (status === 'sent' || status === 'partially_paid')
     ? config.overdue
     : (config[status] || config.draft);
-  return <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${c.className}`}>{c.label}</span>;
+  return (
+    <span className="inline-flex flex-wrap items-center justify-center gap-1">
+      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${c.className}`}>{c.label}</span>
+      {settlement?.isWrittenOff && (
+        <span
+          className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700"
+          title={settlement.title}
+        >
+          {settlement.label}
+        </span>
+      )}
+    </span>
+  );
 }

@@ -14,6 +14,7 @@ import CollectPaymentModal from '@/components/CollectPaymentModal';
 import CustomerStatementModal from '@/components/CustomerStatementModal';
 import { fetchAll } from '@/lib/fetch-all';
 import { isInvoiceOverdue } from '@/lib/format';
+import { getInvoiceSettlement } from '@/lib/invoice-settlement';
 
 interface SalesReturn {
   id: string;
@@ -589,27 +590,37 @@ export default function CustomerDetailPage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {invoices.map(inv => (
-                          <tr key={inv.id} className="hover:bg-muted/30">
-                            <td className="px-3 py-2 text-sm">
-                              <Link href={`/sales?view=${inv.id}`} className="font-semibold text-blue-600 hover:underline">{inv.invoice_number}</Link>
-                            </td>
-                            <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(inv.invoice_date)}</td>
-                            <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(inv.total_amount)}</td>
-                            <td className="px-3 py-2 text-sm text-right text-green-600">{formatCurrency(inv.amount_paid)}</td>
-                            <td className="px-3 py-2 text-sm text-right text-red-600 font-bold">{formatCurrency(inv.balance_due ?? inv.total_amount - inv.amount_paid)}</td>
-                            <td className="px-3 py-2">
-                              <span className={`badge-status ${inv.status === 'paid' ? 'bg-green-100 text-green-700' : isInvoiceOverdue(inv) ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-                                {isInvoiceOverdue(inv) ? 'overdue' : inv.status.replace('_', ' ')}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <Link href={`/sales?view=${inv.id}`} className="w-7 h-7 inline-flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600">
-                                <Eye className="w-3.5 h-3.5" />
-                              </Link>
-                            </td>
-                          </tr>
-                        ))}
+                        {invoices.map(inv => {
+                          const settlement = getInvoiceSettlement(inv);
+                          return (
+                            <tr key={inv.id} className="hover:bg-muted/30">
+                              <td className="px-3 py-2 text-sm">
+                                <Link href={`/sales?view=${inv.id}`} className="font-semibold text-blue-600 hover:underline">{inv.invoice_number}</Link>
+                              </td>
+                              <td className="px-3 py-2 text-sm text-muted-foreground">{formatDate(inv.invoice_date)}</td>
+                              <td className="px-3 py-2 text-sm text-right font-semibold">{formatCurrency(inv.total_amount)}</td>
+                              <td className="px-3 py-2 text-sm text-right text-green-600">{formatCurrency(inv.amount_paid)}</td>
+                              <td className="px-3 py-2 text-sm text-right text-red-600 font-bold">{formatCurrency(inv.balance_due ?? inv.total_amount - inv.amount_paid)}</td>
+                              <td className="px-3 py-2">
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <span className={`badge-status ${inv.status === 'paid' ? 'bg-green-100 text-green-700' : isInvoiceOverdue(inv) ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                                    {isInvoiceOverdue(inv) ? 'overdue' : inv.status.replace('_', ' ')}
+                                  </span>
+                                  {settlement.isWrittenOff && (
+                                    <span className="badge-status bg-orange-100 text-orange-700" title={settlement.title}>
+                                      {settlement.label}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <Link href={`/sales?view=${inv.id}`} className="w-7 h-7 inline-flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600">
+                                  <Eye className="w-3.5 h-3.5" />
+                                </Link>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}

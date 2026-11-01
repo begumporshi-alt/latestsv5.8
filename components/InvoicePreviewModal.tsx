@@ -5,6 +5,7 @@ import { X, History, DollarSign, Printer, ChevronDown, Pencil, Ban, CreditCard, 
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate, isInvoiceOverdue } from '@/lib/format';
+import { getInvoiceSettlement } from '@/lib/invoice-settlement';
 import { openWhatsApp, openEmail, sharePdfFile, downloadFile } from '@/lib/share';
 import { buildDocumentPdf } from '@/lib/pdf-document';
 import { printNode } from '@/lib/print';
@@ -87,6 +88,12 @@ export interface InvoicePreviewModalProps {
   totalAmount: number;
   amountPaid?: number;
   balanceDue?: number;
+  /**
+   * Portion of this invoice written off as bad debt. Displayed as a toolbar
+   * badge only — the status string handed to PrintTemplate is left untouched,
+   * so the printed document keeps its original status styling.
+   */
+  badDebtAmount?: number;
   notes?: string;
   reference?: string;
   payments?: {
@@ -152,6 +159,7 @@ export default function InvoicePreviewModal({
   totalAmount,
   amountPaid = 0,
   balanceDue = 0,
+  badDebtAmount = 0,
   notes,
   reference,
   payments,
@@ -298,6 +306,15 @@ export default function InvoicePreviewModal({
     ? { label: 'Overdue', color: 'text-red-600', bg: 'bg-red-100' }
     : (statusConfig[status] || statusConfig.draft);
 
+  // "Paid" is accurate for a written-off invoice — nothing is outstanding — but
+  // it hides that part of the amount was forgiven rather than collected.
+  const settlement = getInvoiceSettlement({
+    status,
+    total_amount: totalAmount,
+    amount_paid: amountPaid,
+    bad_debt_amount: badDebtAmount,
+  });
+
   const balance = Number(balanceDue ?? (Number(totalAmount) - Number(amountPaid)));
   // POS passes dueCollected explicitly; standalone previews reconstruct it from
   // payments linked via collected_with_invoice_id.
@@ -427,6 +444,14 @@ export default function InvoicePreviewModal({
             {offlineTempNumber && (
               <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-300 font-medium" title="The temporary reference printed on the offline receipt before this invoice synced">
                 Offline ref: {offlineTempNumber}
+              </span>
+            )}
+            {settlement.isWrittenOff && (
+              <span
+                className="text-xs px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 border border-orange-300 font-medium"
+                title={settlement.title}
+              >
+                {settlement.label} {formatCurrency(settlement.writtenOff)}
               </span>
             )}
             <div className="flex items-center gap-1 bg-muted/40 rounded-lg p-0.5">
