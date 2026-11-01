@@ -12,9 +12,10 @@
  *                                  the copy existed, e.g. offline)
  *   edit, same link, rows exist -> leave alone; edit_invoice owns this table
  *                                  and the print path reads the invoice anyway
+ *
+ * The client is imported lazily inside the reader, so the rule can be imported
+ * (and tested) without constructing a Supabase client.
  */
-import { supabase } from './supabase';
-
 export type DeliveryItemSyncAction = 'insert' | 'replace' | 'skip';
 
 export function planDeliveryItemSync(opts: {
@@ -48,6 +49,7 @@ export interface DeliveryLineCopy {
  */
 export async function fetchInvoiceLinesForDelivery(invoiceId: string): Promise<DeliveryLineCopy[]> {
   if (!invoiceId) return [];
+  const { supabase } = await import('./supabase');
   const { data } = await supabase
     .from('invoice_items')
     .select('product_id, quantity, unit_name')

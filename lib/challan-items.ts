@@ -13,8 +13,10 @@
  * invoice_items (fresh), while the sales screen preferred delivery_items and
  * printed the pre-edit quantities — 0 for lines the edit added, the old
  * quantity for lines the edit raised.
+ *
+ * The client is imported lazily inside the loader, so the pure merge rule can
+ * be imported (and tested) without constructing a Supabase client.
  */
-import { supabase } from './supabase';
 
 export interface ChallanItem {
   product_name: string;
@@ -88,6 +90,9 @@ export interface ChallanSourceDelivery {
  * falls back to the delivery's own rows when the invoice has none.
  */
 export async function loadChallanItems(delivery: ChallanSourceDelivery): Promise<ChallanItem[]> {
+  // Lazy: the client is only built when a challan is actually opened.
+  const { supabase } = await import('./supabase');
+
   const invoiceQuery = delivery.invoice_id
     ? supabase
         .from('invoice_items')
