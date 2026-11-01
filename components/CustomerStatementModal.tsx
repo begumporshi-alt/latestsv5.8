@@ -20,6 +20,8 @@ interface PeriodRow {
   reference_number: string | null;
   bill: number;
   paid: number;
+  /** Amount written off as bad debt on this row (0 on every other row). */
+  written_off?: number;
   balance: number;
   revised?: boolean;
 }
@@ -29,6 +31,7 @@ interface PeriodStatement {
   closing_balance: number;
   total_bills: number;
   total_paid: number;
+  total_written_off: number;
   store_credit_balance: number;
   advance_balance: number;
   zero_net_excluded: number;
@@ -178,6 +181,10 @@ export default function CustomerStatementModal({ customer, onClose }: CustomerSt
   const ledgerBalance = ledgerRows?.length ? Number(ledgerRows[ledgerRows.length - 1].balance) : 0;
   const closing = mode === 'period' ? Number(periodData?.closing_balance ?? 0) : ledgerBalance;
   const hasMemo = (Number(periodData?.store_credit_balance) > 0) || (Number(periodData?.advance_balance) > 0);
+  // Bad-debt write-offs get their own column, but only when the period actually
+  // contains one — an ordinary statement keeps its original five-column layout.
+  const totalWrittenOff = Number(periodData?.total_written_off ?? 0);
+  const hasWriteOff = totalWrittenOff !== 0 || periodRows.some(r => Number(r.written_off ?? 0) !== 0);
   const shownInvoices = openInvoices.slice(0, 20);
   const moreInvoices = openInvoices.length - shownInvoices.length;
 
@@ -333,6 +340,12 @@ export default function CustomerStatementModal({ customer, onClose }: CustomerSt
                         <div className="flex justify-between"><span>Previous balance</span><span className="font-mono">{formatCurrency(periodData?.opening_balance ?? 0)}</span></div>
                         <div className="flex justify-between"><span>+ Bills &amp; additions this period</span><span className="font-mono">{formatCurrency(periodData?.total_bills ?? 0)}</span></div>
                         <div className="flex justify-between"><span>− Payments, returns &amp; credits</span><span className="font-mono">{formatCurrency(periodData?.total_paid ?? 0)}</span></div>
+                        {hasWriteOff && (
+                          <div className="flex justify-between">
+                            <span>{totalWrittenOff >= 0 ? '− Bad debt written off' : '+ Bad debt write-off reversed'}</span>
+                            <span className="font-mono">{formatCurrency(Math.abs(totalWrittenOff))}</span>
+                          </div>
+                        )}
                         <div className="flex justify-between font-bold border-t border-black mt-1 pt-1"><span>= Balance due</span><span className="font-mono">{formatCurrency(periodData?.closing_balance ?? 0)}</span></div>
                       </div>
                       {hasMemo && (
@@ -356,12 +369,13 @@ export default function CustomerStatementModal({ customer, onClose }: CustomerSt
                           <th className="border border-black px-1.5 py-1.5 bg-gray-100 text-left">Details</th>
                           <th className="border border-black px-1.5 py-1.5 bg-gray-100 text-right w-[86px]">Bill ৳</th>
                           <th className="border border-black px-1.5 py-1.5 bg-gray-100 text-right w-[92px]">Paid ৳</th>
+                          {hasWriteOff && <th className="border border-black px-1.5 py-1.5 bg-gray-100 text-right w-[92px]">Written off ৳</th>}
                           <th className="border border-black px-1.5 py-1.5 bg-gray-100 text-right w-[104px]">Balance ৳</th>
                         </tr>
                       </thead>
                       <tbody>
                         {periodRows.length === 0 ? (
-                          <tr><td className="border border-black px-1.5 py-3 text-center" colSpan={5}>No activity in this period</td></tr>
+                          <tr><td className="border border-black px-1.5 py-3 text-center" colSpan={hasWriteOff ? 6 : 5}>No activity in this period</td></tr>
                         ) : periodRows.map((r, i) => (
                           <tr key={i}>
                             <td className="border border-black px-1.5 py-1.5 align-top">{formatDate(r.date)}</td>
@@ -379,6 +393,15 @@ export default function CustomerStatementModal({ customer, onClose }: CustomerSt
                             </td>
                             <td className="border border-black px-1.5 py-1.5 text-right font-mono align-top">{Number(r.bill) > 0 ? formatCurrency(r.bill) : ''}</td>
                             <td className="border border-black px-1.5 py-1.5 text-right font-mono align-top">{Number(r.paid) > 0 ? formatCurrency(r.paid) : ''}</td>
+                            {hasWriteOff && (
+                              <td className="border border-black px-1.5 py-1.5 text-right font-mono align-top">
+                                {Number(r.written_off ?? 0) === 0
+                                  ? ''
+                                  : Number(r.written_off) < 0
+                                    ? `(${formatCurrency(-Number(r.written_off))})`
+                                    : formatCurrency(Number(r.written_off))}
+                              </td>
+                            )}
                             <td className="border border-black px-1.5 py-1.5 text-right font-mono align-top">
                               {Number(r.balance) < 0 ? `Adv ${formatCurrency(-Number(r.balance))}` : formatCurrency(r.balance)}
                             </td>
@@ -436,6 +459,7 @@ export default function CustomerStatementModal({ customer, onClose }: CustomerSt
                       {' '}This statement covers {periodLabel} ({periodRows.length} document{periodRows.length === 1 ? '' : 's'}
                       {Number(periodData?.zero_net_excluded) > 0 ? `; ${periodData!.zero_net_excluded} cancelled or fully-reversed documents not shown` : ''}).
                       {Number(periodData?.revised_count) > 0 ? ' Invoices marked (revised) are shown at their latest corrected amount.' : ''}
+                      {hasWriteOff ? ' Amounts shown as written off are not payments received — they are listed separately.' : ''}
                       {company.phone ? ` Questions? Call ${company.phone}.` : ''} Thank you for your business.
                     </p>
                   </>
