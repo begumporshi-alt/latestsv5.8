@@ -1232,8 +1232,10 @@ export default function POSPage() {
   }
 
   // keepAtZero: keyboard qty nudges may land on 0 without dropping the line —
-  // removing a line is an explicit gesture (Esc/Delete/X), and openCheckout
-  // prunes zero lines so they can never be charged.
+  // removing a line is an explicit gesture (Esc or the line's X button), and
+  // openCheckout prunes zero lines so they can never be charged. The qty input
+  // (typing or the native spinner) behaves the same way — see
+  // updateCartQuantity.
   function updateQty(id: string, unitId: string | undefined, delta: number, keepAtZero = false) {
     setCart(prev => prev.map(i => {
       if (i.id !== id || i.selected_unit?.id !== unitId) return i;
@@ -1282,10 +1284,6 @@ export default function POSPage() {
       ...(hasBatchButton ? [{ kind: 'batch' as const }] : []),
       { kind: 'qty' as const },
     ];
-  }
-
-  function removeFromCart(id: string, unitId?: string) {
-    setCart(prev => prev.filter(i => !(i.id === id && (unitId ? i.selected_unit?.id === unitId : true))));
   }
 
   // Undo is a state of the cart, not a transient message: the offer lives in the
@@ -1339,6 +1337,10 @@ export default function POSPage() {
     ));
   }
 
+  // Qty typed into the line's input, including the native spinner's down arrow.
+  // A 0 does NOT drop the line: the keyboard nudge (←) and this input must end
+  // in the same state, and removal stays an explicit gesture (Esc / X). The
+  // line just rests at 0 and openCheckout prunes it from the charge payload.
   function updateCartQuantity(id: string, unitId: string | undefined, newQty: number) {
     if (isNaN(newQty) || newQty < 0) return;
     setCart(prev => prev.map(i => {
@@ -1354,7 +1356,7 @@ export default function POSPage() {
         return { ...i, quantity: clampSaleQty(maxQty, allowDecimal), base_quantity: maxBase, allocOverride: null };
       }
       return { ...i, quantity: typedQty, base_quantity: baseQty, allocOverride: null };
-    }).filter(i => i.quantity > 0));
+    }));
   }
 
   // ---- Manual batch allocation (spec §9) --------------------------------
@@ -2455,7 +2457,9 @@ export default function POSPage() {
   }, [cartAutoGrow]);
   // Keyboard shortcuts (cheat-sheet on "?"): "/" focus search, Shift+N new
   // sale, Shift+P / Ctrl+Enter checkout, Shift+L footer toggle, Esc steps
-  // back — and on a selected cart line, Esc removes it. Cart lines: ↑/↓ move
+  // back — and on a selected cart line, Esc removes it (Esc is the only key
+  // that removes a line: Delete/Backspace stay free for editing text inside
+  // the qty, price and discount inputs on macOS). Cart lines: ↑/↓ move
   // the line cursor, Shift+←/→ cycle the line's controls, Enter selects one,
   // ←/→ nudge its qty (may rest at 0 without dropping the line). Checkout
   // modal: arrows choose Collect From / Term / Method, Enter = Next then
@@ -2550,7 +2554,7 @@ export default function POSPage() {
       }
       // Cart navigation: ↑/↓ move the line cursor, plain ←/→ nudge its
       // quantity (may rest at 0 without dropping the line), Enter selects the
-      // field under the cursor, Delete/Esc remove the line. Shift+←/→ is
+      // field under the cursor, Esc removes the line. Shift+←/→ is
       // handled above the isEditable guard; everything here waits until after
       // it so typed text and native caret moves are never eaten.
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -2584,14 +2588,6 @@ export default function POSPage() {
           if (field.kind === 'wh' || field.kind === 'batch') el.click();
           else el.focus();
         }
-        return;
-      }
-      if (e.key === 'Delete') {
-        if (activeCartLine === null || !cart[activeCartLine]) return;
-        e.preventDefault();
-        const line = cart[activeCartLine];
-        setActiveCartField(null);
-        removeFromCart(line.id, line.selected_unit?.id || undefined);
         return;
       }
       if (e.key === '?') { e.preventDefault(); setShowShortcuts(true); return; }
@@ -3674,7 +3670,8 @@ export default function POSPage() {
                     value={item.quantity}
                     onChange={e => updateCartQuantity(item.id, item.selected_unit?.id, parseFloat(e.target.value) || 0)}
                     onClick={e => e.stopPropagation()}
-                    className={`w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white ${fieldSel('qty') ? 'ring-2 ring-blue-500/70' : ''}`}
+                    title={item.quantity > 0 ? undefined : 'Quantity 0 — this line stays in the cart but is not charged'}
+                    className={`w-14 min-[400px]:w-16 sm:w-20 min-w-0 text-sm font-bold border border-border rounded px-1.5 py-1 text-right tabular-nums focus:outline-none focus:border-blue-400 bg-white ${fieldSel('qty') ? 'ring-2 ring-blue-500/70' : item.quantity > 0 ? '' : 'ring-2 ring-amber-400'} ${item.quantity > 0 ? '' : 'text-amber-700'}`}
                   />
                 </div>
               </div>
@@ -3949,7 +3946,7 @@ export default function POSPage() {
                 ['Shift+← / →', 'Move within line options'],
                 ['Enter', 'Select option'],
                 ['← / →', 'Adjust line qty'],
-                ['Delete / Esc', 'Remove selected line'],
+                ['Esc', 'Remove selected line'],
                 ['Arrows (checkout)', 'Choose payment option'],
                 ['Enter (checkout)', 'Next → then Charge'],
                 ['Shift+L', 'Open sale details'],
