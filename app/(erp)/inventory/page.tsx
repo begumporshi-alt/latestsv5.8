@@ -669,7 +669,9 @@ export default function InventoryPage() {
                           <p className="text-xs text-muted-foreground">
                             {(p as any).track_inventory === false
                               ? <span className="text-amber-600 font-medium">⚡ Non-stock (quick sell)</span>
-                              : p.enable_multi_unit ? <span className="text-blue-600">Multi-unit</span> : p.unit}
+                              : p.enable_multi_unit
+                                ? <span className="text-blue-600" title="Stock is counted in the base unit">{p.base_unit || p.unit}<span className="text-[10px] text-muted-foreground font-medium"> · multi-unit</span></span>
+                                : p.unit}
                           </p>
                         </div>
                       </div>
@@ -778,6 +780,7 @@ export default function InventoryPage() {
           categories={categories}
           brands={brands}
           warehouses={warehouses}
+          unitTypes={unitTypes}
           existingSkus={products.map(p => p.sku)}
           onClose={() => setShowImportModal(false)}
           onImported={() => { dropPosSnapshots(); loadData(true); }}
@@ -930,10 +933,11 @@ function WriteOffModal({ targets, valueFor, onClose, onDone }: {
   );
 }
 
-function ImportModal({ categories, brands, warehouses, existingSkus, onClose, onImported }: {
+function ImportModal({ categories, brands, warehouses, unitTypes, existingSkus, onClose, onImported }: {
   categories: Category[];
   brands: Brand[];
   warehouses: WarehouseType[];
+  unitTypes: { id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[];
   existingSkus: string[];
   onClose: () => void;
   onImported: () => void;
@@ -948,10 +952,22 @@ function ImportModal({ categories, brands, warehouses, existingSkus, onClose, on
   const [dragOver, setDragOver] = useState(false);
 
   const demoTemplate = `Name,SKU,Category,Brand,Unit,Cost Price,Sale Price,Min Stock Level,Current Stock,Color,Size,Multi-Unit Name,Multi-Unit Conversion,Multi-Unit Sale Price
-Widget A,WID-001,Electronics,TechCorp,pieces,100,150,10,50,Red,Small,,,
-Widget A,WID-002,Electronics,TechCorp,pieces,100,150,10,30,Blue,Small,,,
-Cable Pack,CAB-010,Electrical,PowerCo,box,500,750,5,20,,,,Box,100,50000
-Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
+Widget A,WID-001,Electronics,TechCorp,pcs,100,150,10,50,Red,Small,,,
+Widget A,WID-002,Electronics,TechCorp,pcs,100,150,10,30,Blue,Small,,,
+Cable Pack,CAB-010,Electrical,PowerCo,pcs,500,750,5,20,,,,box,100,50000
+Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,800`;
+
+  // Imports are the other way a spelling variant sneaks back in. Match the CSV
+  // value to the catalog — name first, then short code ('sqft', 'kg', 'mtr') —
+  // and store the catalog's own spelling.
+  function canonicalUnit(raw?: string) {
+    const name = String(raw || '').trim() || 'pcs';
+    const lower = name.toLowerCase();
+    const byName = unitTypes.find(u => u.unit_name.toLowerCase() === lower);
+    if (byName) return byName.unit_name;
+    const byShort = unitTypes.find(u => (u.unit_short || '').toLowerCase() === lower);
+    return byShort ? byShort.unit_name : name;
+  }
 
   function downloadTemplate() {
     const blob = new Blob([demoTemplate], { type: 'text/csv;charset=utf-8;' });
@@ -1071,11 +1087,12 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
       const brand = brandName ? brands.find(b => b.name.toLowerCase() === String(brandName).toLowerCase()) : null;
 
       // Parse multi-unit data
-      const multiUnitName = firstRow['Multi-Unit Name'] || firstRow['multi_unit_name'] || '';
+      const baseUnitName = canonicalUnit(firstRow['Unit'] || firstRow['unit']);
+      const multiUnitName = canonicalUnit(firstRow['Multi-Unit Name'] || firstRow['multi_unit_name']);
       const multiUnitConversion = Number(firstRow['Multi-Unit Conversion'] || firstRow['multi_unit_conversion'] || 1);
       const multiUnitSalePrice = Number(firstRow['Multi-Unit Sale Price'] || firstRow['multi_unit_sale_price'] || 0);
 
-      const enableMultiUnit = !!multiUnitName && multiUnitConversion > 1;
+      const enableMultiUnit = !!multiUnitName && multiUnitName !== baseUnitName && multiUnitConversion > 1;
       const enableColors = groupRows.some(r => r['Color'] || r['color']);
       const enableSizes = groupRows.some(r => r['Size'] || r['size']);
 
@@ -1101,7 +1118,7 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
         // Update product details (but preserve variant settings)
         await supabase.from('products').update({
           name,
-          unit: String(firstRow['Unit'] || firstRow['unit'] || 'pcs'),
+          unit: baseUnitName,
           cost_price: Number(firstRow['Cost Price'] || firstRow['cost_price'] || 0),
           sale_price: Number(firstRow['Sale Price'] || firstRow['sale_price'] || 0),
           min_stock_level: Number(firstRow['Min Stock Level'] || firstRow['min_stock_level'] || 0),
@@ -1116,8 +1133,8 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
           tenant_id: '00000000-0000-0000-0000-000000000001',
           name,
           sku,
-          unit: String(firstRow['Unit'] || firstRow['unit'] || 'pcs'),
-          base_unit: String(firstRow['Unit'] || firstRow['unit'] || 'pcs'),
+          unit: baseUnitName,
+          base_unit: baseUnitName,
           cost_price: Number(firstRow['Cost Price'] || firstRow['cost_price'] || 0),
           sale_price: Number(firstRow['Sale Price'] || firstRow['sale_price'] || 0),
           min_stock_level: Number(firstRow['Min Stock Level'] || firstRow['min_stock_level'] || 0),
@@ -1196,7 +1213,7 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,sqft,25,45,100,500,,,Carton,20,800`;
         // Base unit
         await supabase.from('product_units').insert({
           product_id: productId,
-          unit_name: String(firstRow['Unit'] || firstRow['unit'] || 'pcs'),
+          unit_name: baseUnitName,
           conversion_factor: 1,
           is_base_unit: true,
           is_sale_unit: false,
@@ -1729,13 +1746,43 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
 
   async function handleAdd() {
     if (!newName.trim()) return;
-    if (tab === 'units' && !newShort.trim()) return;
+    if (tab === 'units' && !newShort.trim()) {
+      toast({ title: 'Short code required', description: 'Give the unit a short code, e.g. box or ctn.', variant: 'destructive' });
+      return;
+    }
     setSaving(true);
 
     if (tab === 'units') {
-      const { error } = await supabase.from('unit_types').insert({ unit_name: newName.trim().toLowerCase(), unit_short: newShort.trim().toLowerCase(), is_active: true, allow_decimal: newAllowDecimal });
-      if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      else { toast({ title: 'Unit added' }); setNewName(''); setNewShort(''); setNewAllowDecimal(false); onSaved(); }
+      // Case-insensitive match: the catalog must never grow a second row that
+      // differs only by capitalisation ('Meter' next to 'meter'). The DB has a
+      // unique index on lower(unit_name) as the backstop.
+      const name = newName.trim();
+      const short = newShort.trim();
+      const { data: dup } = await supabase
+        .from('unit_types')
+        .select('id, is_active')
+        .ilike('unit_name', name)
+        .limit(1);
+      const existing = dup?.[0];
+
+      if (existing?.is_active) {
+        toast({ title: 'Unit already exists', description: `“${name}” is already in the list.`, variant: 'destructive' });
+        setSaving(false);
+        return;
+      }
+
+      if (existing) {
+        // A removed unit keeps its row — restore it instead of colliding.
+        const { error } = await supabase.from('unit_types')
+          .update({ unit_name: name, unit_short: short, allow_decimal: newAllowDecimal, is_active: true })
+          .eq('id', existing.id);
+        if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+        else { toast({ title: 'Unit restored', description: `“${name}” is active again.` }); setNewName(''); setNewShort(''); setNewAllowDecimal(false); onSaved(); }
+      } else {
+        const { error } = await supabase.from('unit_types').insert({ unit_name: name, unit_short: short, is_active: true, allow_decimal: newAllowDecimal });
+        if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
+        else { toast({ title: 'Unit added' }); setNewName(''); setNewShort(''); setNewAllowDecimal(false); onSaved(); }
+      }
     } else {
       const table = tab === 'categories' ? 'categories' : 'brands';
       const insertData: any = { name: newName.trim(), is_active: true, slug: newName.trim().toLowerCase().replace(/\s+/g, '-') };
@@ -1750,9 +1797,49 @@ function ManageCatalogModal({ categories, brands, unitTypes, onClose, onSaved }:
   async function handleSaveEdit(id: string, isUnit = false) {
     setSaving(true);
     if (isUnit) {
-      const { error } = await supabase.from('unit_types').update({ unit_name: editingName.trim().toLowerCase(), unit_short: editingShort.trim().toLowerCase(), allow_decimal: editingAllowDecimal }).eq('id', id);
-      if (error) toast({ title: 'Error', description: error.message, variant: 'destructive' });
-      else { toast({ title: 'Unit updated' }); cancelEdit(); onSaved(); }
+      const current = unitTypes.find(u => u.id === id);
+      const oldName = current?.unit_name || '';
+      const name = editingName.trim();
+      const short = editingShort.trim();
+
+      if (!name || !short) {
+        toast({ title: 'Name and short code required', variant: 'destructive' });
+        setSaving(false);
+        return;
+      }
+
+      if (name.toLowerCase() !== oldName.toLowerCase()) {
+        const { data: dup } = await supabase
+          .from('unit_types')
+          .select('id')
+          .ilike('unit_name', name)
+          .neq('id', id)
+          .limit(1);
+        if (dup && dup.length > 0) {
+          toast({ title: 'Unit already exists', description: `“${name}” is already in the list.`, variant: 'destructive' });
+          setSaving(false);
+          return;
+        }
+      }
+
+      const { error } = await supabase.from('unit_types')
+        .update({ unit_name: name, unit_short: short, allow_decimal: editingAllowDecimal })
+        .eq('id', id);
+      if (error) { toast({ title: 'Error', description: error.message, variant: 'destructive' }); setSaving(false); return; }
+
+      // Renaming a unit in the catalog renames it on the products that use it.
+      // product_units goes first so trg_sync_product_unit carries the new base
+      // unit up to products.unit / base_unit for multi-unit products.
+      if (oldName && name !== oldName) {
+        await supabase.from('product_units').update({ unit_name: name }).eq('unit_name', oldName);
+        await supabase.from('products').update({ unit: name }).eq('unit', oldName);
+        await supabase.from('products').update({ base_unit: name }).eq('base_unit', oldName);
+        toast({ title: 'Unit renamed', description: `Products using “${oldName}” now use “${name}”.` });
+      } else {
+        toast({ title: 'Unit updated' });
+      }
+      cancelEdit();
+      onSaved();
     } else {
       const table = tab === 'categories' ? 'categories' : 'brands';
       const { error } = await supabase.from(table).update({ name: editingName.trim(), slug: editingName.trim().toLowerCase().replace(/\s+/g, '-') }).eq('id', id);

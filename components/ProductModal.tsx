@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from '@/hooks/use-toast';
-import { Package, Plus, Trash2, X, Warehouse, Palette, Ruler, ChevronDown, ChevronUp, Info, Barcode, TriangleAlert } from 'lucide-react';
+import { Package, Plus, Trash2, X, Warehouse, Palette, Ruler, ChevronDown, ChevronUp, Info, Barcode, TriangleAlert, Lock } from 'lucide-react';
 import type { Product, Category, Brand, Warehouse as WarehouseType, ProductColor, ProductSize, ProductUnit } from '@/lib/types';
 import { LABEL_SIZES, type LabelSize } from '@/lib/label-sizes';
 import SearchableSelect from '@/components/ui/SearchableSelect';
@@ -75,12 +75,47 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   );
   const [colors, setColors] = useState<ProductColor[]>([]);
   const [sizes, setSizes] = useState<ProductSize[]>([]);
+  // Only the ADDITIONAL units live here. The base unit is owned by the
+  // product-level fields (unit / cost_price / sale_price) — keeping a second
+  // editable copy of it in this list is what let the two drift apart.
   const [units, setUnits] = useState<ProductUnit[]>([]);
+  // Guards the units rewrite on edit: if the fetch failed we must not delete
+  // rows we never saw.
+  const [unitsLoaded, setUnitsLoaded] = useState(false);
+  // True when the product already had product_units rows (incl. a lone base
+  // row) — needed so turning multi-unit off actually clears them.
+  const [hadUnits, setHadUnits] = useState(false);
   const [showUnits, setShowUnits] = useState(true);
   const [showColors, setShowColors] = useState(true);
   const [showSizes, setShowSizes] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  // The product-level Unit field IS the base unit. Everything multi-unit
+  // related derives from it, so there is exactly one source of truth.
+  const baseUnitName = (form.unit || '').trim() || 'pcs';
+  const baseUnitShort = unitTypes.find(u => u.unit_name.toLowerCase() === baseUnitName.toLowerCase())?.unit_short || baseUnitName;
+  const hasAdditionalSaleUnit = units.some(u => u.is_sale_unit && u.unit_name.trim());
+  const namedUnitCount = units.filter(u => u.unit_name.trim()).length;
+  const money = (v: any) => `৳${(Number(v) || 0).toFixed(2)}`;
+  // A product row can carry a legacy spelling the unit_types table no longer
+  // lists ('pieces', 'PCS'). Inject it so the picker shows the real value
+  // instead of falling back to the placeholder.
+  const baseUnitOptions = (() => {
+    const opts = unitTypes.length > 0
+      ? unitTypes.map(u => ({ value: u.unit_name, label: u.unit_name + (u.unit_short && u.unit_short !== u.unit_name ? ` (${u.unit_short})` : '') }))
+      : ['pcs', 'box', 'pack', 'Carton', 'coil', 'Roll', 'Set', 'Tin', 'bag', 'Meter', 'Kilogram', 'grams', 'Liter', 'foot', 'yard', 'Square Feet'].map(u => ({ value: u, label: u }));
+    if (form.unit && !opts.some(o => o.value.toLowerCase() === form.unit.toLowerCase())) {
+      opts.unshift({ value: form.unit, label: form.unit });
+    }
+    return opts;
+  })();
+
+  function toggleMultiUnit(next: boolean) {
+    setForm(f => ({ ...f, enable_multi_unit: next }));
+    if (next) setShowUnits(true);
+    setError('');
+  }
 
   useEffect(() => {
     if (product?.id) {
@@ -97,7 +132,17 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
     ]);
     setColors((colorRes.data || []) as ProductColor[]);
     setSizes((sizeRes.data || []) as ProductSize[]);
-    setUnits((unitRes.data || []) as ProductUnit[]);
+    const loadedUnits = (unitRes.data || []) as ProductUnit[];
+    const baseRow = loadedUnits.find(u => u.is_base_unit);
+    // The declared base row is the source of truth for the base unit name.
+    // products.unit is supposed to mirror it, but rows written before the
+    // normalising trigger existed can disagree — trust the units table.
+    if (baseRow?.unit_name) {
+      setForm(f => ({ ...f, unit: baseRow.unit_name }));
+    }
+    setUnits(loadedUnits.filter(u => !u.is_base_unit));
+    setHadUnits(loadedUnits.length > 0);
+    setUnitsLoaded(!unitRes.error);
 
     // Load current stock by warehouse
     const stockMap: Record<string, string> = {};
@@ -138,18 +183,19 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   }
 
   function addUnit() {
-    const hasBaseUnit = units.some(u => u.is_base_unit);
+    // Every added row is an ADDITIONAL unit — the base unit is the Unit field
+    // above the table, so a row can never claim to be the base and diverge.
     setUnits([...units, {
       id: `temp-${Date.now()}`,
       product_id: product?.id || '',
       unit_name: '',
       unit_short: '',
       conversion_factor: 1,
-      is_base_unit: !hasBaseUnit,
-      is_sale_unit: units.length === 0,
+      is_base_unit: false,
+      is_sale_unit: false,
       price: 0,
       cost_price: 0,
-      sort_order: units.length,
+      sort_order: units.length + 1,
       is_active: true,
       created_at: new Date().toISOString(),
     }]);
@@ -176,9 +222,6 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   function updateUnit(index: number, field: keyof ProductUnit, value: any) {
     const updated = [...units];
     (updated[index] as any)[field] = value;
-    if (field === 'is_base_unit' && value === true) {
-      updated.forEach((u, i) => { if (i !== index) u.is_base_unit = false; });
-    }
     if (field === 'is_sale_unit' && value === true) {
       updated.forEach((u, i) => { if (i !== index) u.is_sale_unit = false; });
     }
@@ -229,27 +272,68 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
   async function doSave(e: React.FormEvent) {
     e.preventDefault();
 
+    const baseName = (form.unit || '').trim();
+    const additionalUnits = form.enable_multi_unit ? units.filter(u => u.unit_name.trim()) : [];
+
+    if (!baseName) {
+      setError('Select the base unit — stock is counted in it.');
+      return;
+    }
+
     if (form.enable_multi_unit) {
-      if (units.length === 0) {
-        setError('Please add at least one unit when multi-unit is enabled');
-        return;
-      }
-      if (!units.some(u => u.is_base_unit)) {
-        setError('Please mark one unit as the base unit');
-        return;
+      const seen = new Set([baseName.toLowerCase()]);
+      for (const u of additionalUnits) {
+        const name = u.unit_name.trim();
+        if (seen.has(name.toLowerCase())) {
+          setError(`"${name}" is used twice — every unit needs a unique name.`);
+          return;
+        }
+        seen.add(name.toLowerCase());
+        if (!(Number(u.conversion_factor) > 1)) {
+          setError(`Conversion for "${name}" must be greater than 1 — it says how many ${baseName} one ${name} contains.`);
+          return;
+        }
       }
     }
 
     setSaving(true);
     setError('');
 
-    const baseUnit = form.enable_multi_unit ? units.find(u => u.is_base_unit)?.unit_name || form.unit : form.unit;
+    // One canonical base row, generated from the Unit / Cost / Sale fields.
+    // products.unit and products.base_unit both point at it, so the product
+    // row and its units can never disagree.
+    const unitRows = form.enable_multi_unit ? [
+      {
+        unit_name: baseName,
+        unit_short: baseUnitShort,
+        conversion_factor: 1,
+        is_base_unit: true,
+        is_sale_unit: !additionalUnits.some(u => u.is_sale_unit),
+        price: Number(form.sale_price) || 0,
+        cost_price: Number(form.cost_price) || 0,
+        barcode: null as string | null,
+        sort_order: 0,
+        is_active: true,
+      },
+      ...additionalUnits.map((u, i) => ({
+        unit_name: u.unit_name.trim(),
+        unit_short: (u.unit_short || '').trim() || null,
+        conversion_factor: Number(u.conversion_factor) || 1,
+        is_base_unit: false,
+        is_sale_unit: u.is_sale_unit === true,
+        price: Number(u.price) || 0,
+        cost_price: Number(u.cost_price) || 0,
+        barcode: u.barcode || null,
+        sort_order: i + 1,
+        is_active: u.is_active !== false,
+      })),
+    ] : [];
 
     const data: any = {
       name: form.name,
       sku: form.sku,
-      unit: form.unit,
-      base_unit: baseUnit,
+      unit: baseName,
+      base_unit: baseName,
       enable_multi_unit: form.enable_multi_unit,
       enable_colors: form.enable_colors,
       enable_sizes: form.enable_sizes,
@@ -269,13 +353,24 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
 
     let productId = product?.id;
 
+    // Replace the unit rows wholesale. Errors are surfaced, never swallowed —
+    // a product saved without its units is exactly the drift this fixes.
+    async function writeUnits(pid: string) {
+      if (unitRows.length === 0 && !hadUnits) return;
+      const { error: delErr } = await supabase.from('product_units').delete().eq('product_id', pid);
+      if (delErr) throw delErr;
+      for (const unit of unitRows) {
+        const { error: insErr } = await supabase.from('product_units').insert({ product_id: pid, ...unit });
+        if (insErr) throw insErr;
+      }
+    }
+
     // Offline: queue the same payload the online path writes. The server-side
     // sync handler applies it atomically and recomputes stock diffs against
     // live data, so a stale offline baseline can never corrupt an adjustment.
     if (!networkMonitor.getState().online) {
       const validColors = colors.filter(c => c.name.trim());
       const validSizes = sizes.filter(s => s.name.trim());
-      const validUnits = units.filter(u => u.unit_name.trim());
       const stock = Object.entries(stockByWarehouse)
         .map(([warehouseId, qty]) => ({
           warehouse_id: warehouseId,
@@ -286,7 +381,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
         .filter(s => (isEdit ? true : s.quantity > 0));
 
       const newProductId = isEdit ? product!.id : crypto.randomUUID();
-      const payload: any = { data, colors: validColors, sizes: validSizes, units: validUnits, stock };
+      const payload: any = { data, colors: validColors, sizes: validSizes, units: unitRows, stock };
       if (isEdit) {
         payload.id = product!.id;
         // A row created offline by this device has no competing server
@@ -320,6 +415,14 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
     }
 
     try {
+      // Edit: rewrite the unit rows BEFORE the product row. The DB normaliser
+      // (trg_normalize_product_unit) copies the declared base unit onto
+      // products.unit on every products write, so writing the product first
+      // would stamp the PREVIOUS base unit back over the new one.
+      if (isEdit && unitsLoaded && (form.enable_multi_unit || hadUnits)) {
+        await writeUnits(product!.id);
+      }
+
       if (isEdit) {
         const { error } = await supabase.from('products').update({ ...data, updated_at: new Date().toISOString() }).eq('id', product!.id);
         if (error) throw error;
@@ -327,6 +430,10 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
         const { data: newProduct, error } = await supabase.from('products').insert(data).select('id').single();
         if (error) throw error;
         productId = newProduct.id;
+        // Create: the row must exist first for the FK, and on insert the
+        // normaliser finds no units yet — so products.unit is already the
+        // base unit we sent. The rows land immediately after.
+        await writeUnits(newProduct.id);
       }
 
       if (productId) {
@@ -355,26 +462,6 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
               dimensions: size.dimensions || null,
               is_default: size.is_default,
               sort_order: size.sort_order,
-            });
-          }
-        }
-
-        if (form.enable_multi_unit && units.length > 0) {
-          await supabase.from('product_units').delete().eq('product_id', productId);
-          const validUnits = units.filter(u => u.unit_name.trim());
-          for (const unit of validUnits) {
-            await supabase.from('product_units').insert({
-              product_id: productId,
-              unit_name: unit.unit_name,
-              unit_short: unit.unit_short || null,
-              conversion_factor: unit.conversion_factor,
-              is_base_unit: unit.is_base_unit,
-              is_sale_unit: unit.is_sale_unit,
-              price: unit.price,
-              cost_price: unit.cost_price,
-              barcode: unit.barcode || null,
-              sort_order: unit.sort_order,
-              is_active: unit.is_active,
             });
           }
         }
@@ -498,7 +585,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
         onCreated({
           id: productId,
           ...data,
-          units: form.enable_multi_unit ? units.filter(u => u.unit_name.trim()) : [],
+          units: unitRows,
         });
       }
 
@@ -611,7 +698,7 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
 
           <div className="flex flex-wrap gap-4 p-3 bg-muted/30 rounded-lg">
             <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={form.enable_multi_unit} onChange={e => setForm({ ...form, enable_multi_unit: e.target.checked })} className="rounded" />
+              <input type="checkbox" checked={form.enable_multi_unit} onChange={e => toggleMultiUnit(e.target.checked)} className="rounded" />
               <span className="text-sm flex items-center gap-1"><Package className="w-3.5 h-3.5" /> Multi-Unit Pricing</span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
@@ -624,63 +711,57 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
             </label>
           </div>
 
-          {!form.enable_multi_unit && (
-            <div className="grid grid-cols-4 gap-4">
-              <div>
-                <label className="block text-xs font-medium mb-1">Unit</label>
-                <SearchableSelect
-                  value={form.unit}
-                  onChange={v => setForm({ ...form, unit: v })}
-                  placeholder="Select unit"
-                  options={unitTypes.length > 0
-                    ? unitTypes.map(u => ({ value: u.unit_name, label: u.unit_name + (u.unit_short && u.unit_short !== u.unit_name ? ` (${u.unit_short})` : '') }))
-                    : ['pcs','sqft','bag','tin','set','box','kg','ltr','meter','coil','roll','carton'].map(u => ({ value: u, label: u }))
-                  }
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Cost Price *</label>
-                <UnitInput prefix="৳" required min="0" step="0.01" value={form.cost_price} onChange={e => setForm({ ...form, cost_price: e.target.value })} className="rounded-lg" />
-                <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Auto-updates only when a purchase price is higher than this; cheaper purchases keep the current cost.</p>
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Sale Price *</label>
-                <UnitInput prefix="৳" required min="0" step="0.01" value={form.sale_price} onChange={e => setForm({ ...form, sale_price: e.target.value })} className="rounded-lg" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Warranty (months)</label>
-                <input type="number" min="0" value={form.warranty_months} onChange={e => setForm({ ...form, warranty_months: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-                <p className="text-[10px] text-muted-foreground mt-1">Optional warranty period for this product</p>
-              </div>
+          {!form.enable_multi_unit && namedUnitCount > 0 && (
+            <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <TriangleAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>Saving with multi-unit off removes the {namedUnitCount} additional unit{namedUnitCount === 1 ? '' : 's'} you configured.</span>
             </div>
           )}
+
+          {/* Unit + prices are always visible. With multi-unit on this row IS the
+              base unit — the table below only holds the larger units, so the
+              first unit you pick can never disagree with the base unit. */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">{form.enable_multi_unit ? 'Base Unit *' : 'Unit'}</label>
+              <SearchableSelect
+                value={form.unit}
+                onChange={v => setForm({ ...form, unit: v })}
+                placeholder="Select unit"
+                options={baseUnitOptions}
+              />
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">
+                {form.enable_multi_unit ? `Stock and prices are counted in ${baseUnitName}` : 'Stock is counted in this unit'}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Cost Price *</label>
+              <UnitInput prefix="৳" required min="0" step="0.01" value={form.cost_price} onChange={e => setForm({ ...form, cost_price: e.target.value })} className="rounded-lg" />
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Per {baseUnitName} · auto-raises only on dearer purchases</p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Sale Price *</label>
+              <UnitInput prefix="৳" required min="0" step="0.01" value={form.sale_price} onChange={e => setForm({ ...form, sale_price: e.target.value })} className="rounded-lg" />
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Per {baseUnitName}</p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Warranty (months)</label>
+              <input type="number" min="0" value={form.warranty_months} onChange={e => setForm({ ...form, warranty_months: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+              <p className="text-[10px] text-muted-foreground mt-1 leading-tight">Optional</p>
+            </div>
+          </div>
 
           {form.enable_multi_unit && (
             <div className="border border-border rounded-lg overflow-hidden">
               <button type="button" onClick={() => setShowUnits(!showUnits)} className="w-full flex items-center justify-between px-4 py-3 bg-blue-50 text-blue-700 hover:bg-blue-100 transition">
-                <span className="font-medium text-sm flex items-center gap-2"><Package className="w-4 h-4" /> Units & Pricing ({units.length})</span>
+                <span className="font-medium text-sm flex items-center gap-2"><Package className="w-4 h-4" /> Additional Units ({namedUnitCount})</span>
                 {showUnits ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
               </button>
               {showUnits && (
                 <div className="p-4 space-y-3 bg-white">
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">
-                    <p className="text-xs text-blue-800 flex items-start gap-2">
-                      <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                      <span>
-                        <strong>How Multi-Unit Works:</strong> The <strong>Base Unit</strong> is your smallest tracked unit (conversion = 1). Each other unit&apos;s <strong>Conv.</strong> value says how many base units it contains.
-                        <br /><strong>Example for tiles:</strong>
-                      </span>
-                    </p>
-                    <div className="mt-2 grid grid-cols-6 gap-1 text-[11px] font-medium text-blue-700 px-6">
-                      <span>Unit</span><span>Short</span><span>Conv.</span><span>Sale ৳</span><span>Cost ৳</span><span>Flag</span>
-                    </div>
-                    <div className="mt-0.5 grid grid-cols-6 gap-1 text-[11px] text-blue-800 bg-blue-100 rounded px-6 py-1">
-                      <span>Piece</span><span>pcs</span><span>1</span><span>45.00</span><span>32.00</span><span className="text-green-700 font-bold">Base</span>
-                    </div>
-                    <div className="mt-0.5 grid grid-cols-6 gap-1 text-[11px] text-blue-800 bg-blue-100 rounded px-6 py-1">
-                      <span>Box</span><span>box</span><span>50</span><span>2000.00</span><span>1500.00</span><span className="text-blue-700 font-bold">Sale</span>
-                    </div>
-                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Stock is tracked in <strong className="text-foreground">{baseUnitName}</strong>. Add the larger units you buy or sell in, and how many {baseUnitName} each one contains.
+                  </p>
 
                   <div className="grid grid-cols-12 gap-1.5 px-2 py-1.5 bg-muted/50 rounded text-xs font-semibold text-muted-foreground">
                     <div className="col-span-3">Unit Name</div>
@@ -688,63 +769,96 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
                     <div className="col-span-1 text-right">Conv.</div>
                     <div className="col-span-2 text-right">Sale ৳</div>
                     <div className="col-span-2 text-right">Cost ৳</div>
-                    <div className="col-span-1 text-center">Base</div>
-                    <div className="col-span-1 text-center">Sale</div>
-                  </div>
-                  <div className="mt-3">
-                    <label className="block text-xs font-medium mb-1">Warranty (months)</label>
-                    <input type="number" min="0" value={form.warranty_months} onChange={e => setForm({ ...form, warranty_months: e.target.value })} className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
-                    <p className="text-[10px] text-muted-foreground mt-1">Optional warranty period for this product</p>
+                    <div className="col-span-2 text-center">Sale / Del</div>
                   </div>
 
-                  {units.map((unit, index) => (
-                    <div key={unit.id} className="grid grid-cols-12 gap-1.5 p-2 bg-muted/30 rounded-lg items-center">
-                      <div className="col-span-3">
-                        <input
-                          list={`unit-list-${index}`}
-                          placeholder="Type or pick unit..."
-                          value={unit.unit_name}
-                          onChange={e => {
-                            const val = e.target.value;
-                            const match = unitTypes.find(u => u.unit_name.toLowerCase() === val.toLowerCase());
-                            updateUnit(index, 'unit_name', val);
-                            if (match && !unit.unit_short) updateUnit(index, 'unit_short', match.unit_short);
-                          }}
-                          className="w-full border border-border rounded px-2 py-1 text-sm"
-                        />
-                        <datalist id={`unit-list-${index}`}>
-                          {unitTypes.map(u => <option key={u.id} value={u.unit_name}>{u.unit_short}</option>)}
-                        </datalist>
-                      </div>
-                      <div className="col-span-2">
-                        <input
-                          placeholder="e.g. box"
-                          value={unit.unit_short || ''}
-                          onChange={e => updateUnit(index, 'unit_short', e.target.value)}
-                          className="w-full border border-border rounded px-2 py-1 text-sm"
-                        />
-                      </div>
-                      <div className="col-span-1">
-                        <input type="number" min="1" placeholder="1" value={unit.conversion_factor} onChange={e => updateUnit(index, 'conversion_factor', parseFloat(e.target.value) || 1)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
-                      </div>
-                      <div className="col-span-2">
-                        <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.price} onChange={e => updateUnit(index, 'price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
-                      </div>
-                      <div className="col-span-2">
-                        <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.cost_price} onChange={e => updateUnit(index, 'cost_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
-                      </div>
-                      <div className="col-span-1 flex justify-center">
-                        <button type="button" onClick={() => updateUnit(index, 'is_base_unit', !unit.is_base_unit)} className={`w-full px-1 py-1 rounded text-[10px] font-medium transition ${unit.is_base_unit ? 'bg-green-500 text-white' : 'bg-muted text-muted-foreground hover:bg-green-100 hover:text-green-700'}`} title="Base unit — stock tracked in this unit">B</button>
-                      </div>
-                      <div className="col-span-1 flex justify-center items-center gap-1">
-                        <button type="button" onClick={() => updateUnit(index, 'is_sale_unit', !unit.is_sale_unit)} className={`w-6 px-1 py-1 rounded text-[10px] font-medium transition ${unit.is_sale_unit ? 'bg-blue-500 text-white' : 'bg-muted text-muted-foreground hover:bg-blue-100 hover:text-blue-700'}`} title="Default unit in sales/POS">S</button>
-                        <button type="button" onClick={() => removeUnit(index)} className="text-red-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button>
-                      </div>
+                  {/* The base unit is read-only here — it is the Unit field above. */}
+                  <div className="grid grid-cols-12 gap-1.5 p-2 rounded-lg bg-green-50 border border-green-200 items-center">
+                    <div className="col-span-3 flex items-center gap-1.5 text-sm font-medium text-green-900 min-w-0">
+                      <Lock className="w-3 h-3 shrink-0" /> <span className="truncate">{baseUnitName}</span>
                     </div>
-                  ))}
+                    <div className="col-span-2 text-xs text-green-800 truncate">{baseUnitShort}</div>
+                    <div className="col-span-1 text-right text-sm tabular-nums text-green-900">1</div>
+                    <div className="col-span-2 text-right text-sm tabular-nums text-green-900">{money(form.sale_price)}</div>
+                    <div className="col-span-2 text-right text-sm tabular-nums text-green-900">{money(form.cost_price)}</div>
+                    <div className="col-span-2 text-center text-[10px] font-semibold text-green-700">
+                      {hasAdditionalSaleUnit ? 'BASE' : 'BASE · SALE'}
+                    </div>
+                  </div>
+
+                  {units.map((unit, index) => {
+                    const conv = Number(unit.conversion_factor) || 0;
+                    const price = Number(unit.price) || 0;
+                    const name = unit.unit_name.trim();
+                    const convInvalid = !!name && conv <= 1;
+                    return (
+                      <div key={unit.id} className="p-2 bg-muted/30 rounded-lg space-y-1">
+                        <div className="grid grid-cols-12 gap-1.5 items-center">
+                          <div className="col-span-3">
+                            <input
+                              list={`unit-list-${index}`}
+                              placeholder="e.g. box"
+                              value={unit.unit_name}
+                              onChange={e => {
+                                const val = e.target.value;
+                                const match = unitTypes.find(u => u.unit_name.toLowerCase() === val.toLowerCase());
+                                updateUnit(index, 'unit_name', val);
+                                if (match && !unit.unit_short) updateUnit(index, 'unit_short', match.unit_short);
+                              }}
+                              className="w-full border border-border rounded px-2 py-1 text-sm"
+                            />
+                            <datalist id={`unit-list-${index}`}>
+                              {unitTypes.map(u => <option key={u.id} value={u.unit_name}>{u.unit_short}</option>)}
+                            </datalist>
+                          </div>
+                          <div className="col-span-2">
+                            <input
+                              placeholder="box"
+                              value={unit.unit_short || ''}
+                              onChange={e => updateUnit(index, 'unit_short', e.target.value)}
+                              className="w-full border border-border rounded px-2 py-1 text-sm"
+                            />
+                          </div>
+                          <div className="col-span-1">
+                            <input
+                              type="number"
+                              min="2"
+                              step="1"
+                              placeholder="1"
+                              value={unit.conversion_factor || ''}
+                              onChange={e => updateUnit(index, 'conversion_factor', parseFloat(e.target.value) || 0)}
+                              className={`w-full border rounded px-2 py-1 text-sm text-right tabular-nums ${convInvalid ? 'border-red-400 bg-red-50' : 'border-border'}`}
+                            />
+                          </div>
+                          <div className="col-span-2">
+                            <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.price} onChange={e => updateUnit(index, 'price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
+                          </div>
+                          <div className="col-span-2">
+                            <input type="number" min="0" step="0.01" placeholder="0.00" value={unit.cost_price} onChange={e => updateUnit(index, 'cost_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums" />
+                          </div>
+                          <div className="col-span-2 flex justify-center items-center gap-1">
+                            <button type="button" onClick={() => updateUnit(index, 'is_sale_unit', !unit.is_sale_unit)} className={`w-6 px-1 py-1 rounded text-[10px] font-medium transition ${unit.is_sale_unit ? 'bg-blue-500 text-white' : 'bg-muted text-muted-foreground hover:bg-blue-100 hover:text-blue-700'}`} title="Default unit in sales/POS">S</button>
+                            <button type="button" onClick={() => removeUnit(index)} className="text-red-400 hover:text-red-600" title="Remove unit"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </div>
+                        {name && conv > 1 && (
+                          <p className="text-[10px] text-muted-foreground pl-1">
+                            1 {name} = {conv} {baseUnitName}
+                            {price > 0 ? ` · ৳${(price / conv).toFixed(2)} per ${baseUnitName}` : ''}
+                          </p>
+                        )}
+                        {convInvalid && <p className="text-[10px] text-red-500 pl-1">Conversion must be greater than 1</p>}
+                      </div>
+                    );
+                  })}
                   <button type="button" onClick={addUnit} className="w-full py-2 border-2 border-dashed border-blue-300 rounded-lg text-blue-600 hover:bg-blue-50 transition text-sm font-medium">
                     <Plus className="w-4 h-4 inline mr-1" /> Add Unit
                   </button>
+                  <p className="text-[10px] text-muted-foreground">
+                    {hasAdditionalSaleUnit
+                      ? 'The flagged unit is the default sales unit in POS.'
+                      : `No extra unit is flagged, so ${baseUnitName} stays the default sales unit.`}
+                  </p>
                 </div>
               )}
             </div>
