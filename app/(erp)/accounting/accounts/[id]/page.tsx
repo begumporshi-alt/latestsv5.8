@@ -3,16 +3,24 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
-import { formatCurrency, formatDate } from '@/lib/format';
+import { formatCurrency, formatDate, getCurrencyFormat, localDateISO } from '@/lib/format';
 import { toast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
 import { UnitInput } from '@/components/ui/unit-input';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ArrowLeft, TrendingUp, TrendingDown, ArrowUpRight, ArrowDownLeft, Calendar, Filter, ExternalLink, ChevronLeft, ChevronRight, Wallet, ChartBar as BarChart3, Users, Building2, FileText, Receipt, Activity, BookOpen, Layers, ArrowRightLeft, CircleDot, Plus, X, AlertTriangle } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import type { Account } from '@/lib/types';
+import { cn } from '@/lib/utils';
+import {
+  buildAdjustmentPlan,
+  type AdjustmentDirection,
+  type AdjustmentMode,
+} from '@/lib/balance-adjustment';
 
 const typeColors: Record<string, string> = {
   asset: 'text-blue-600 bg-blue-50',
@@ -971,97 +979,178 @@ export default function AccountDetailPage({ params }: { params: { id: string } }
   );
 }
 
-
 // BALANCE ADJUSTMENT PANEL
+//
+// Direction is expressed as increase / decrease, never as a signed amount.
+// A sign is a silent second way to get the entry backwards, and a backwards
+// entry still balances — so nothing catches it until reconciliation. The panel
+// therefore shows the resulting balance and the exact journal lines that will
+// be posted, before anything is committed.
 function BalanceAdjustmentPanel({ account, onAdjusted }: { account: Account; onAdjusted: () => void }) {
+  const router = useRouter();
+  const currentBalance = Number(account.balance) || 0;
+  const currencySymbol = getCurrencyFormat().symbol;
+
   const [isOpen, setIsOpen] = useState(false);
-  const [form, setForm] = useState({
-    amount: '',
-    date: new Date().toISOString().split('T')[0],
-    description: '',
-    offsetAccountId: '',
-  });
+  const [direction, setDirection] = useState<AdjustmentDirection>('increase');
+  const [mode, setMode] = useState<AdjustmentMode>('by');
+  const [amountInput, setAmountInput] = useState('');
+  const [entryDate, setEntryDate] = useState(localDateISO);
+  const [description, setDescription] = useState('');
+  const [offsetAccountId, setOffsetAccountId] = useState('');
   const [offsetAccounts, setOffsetAccounts] = useState<Account[]>([]);
+  const [offsetPickerOpen, setOffsetPickerOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    // Load equity accounts for offset (typically Opening Balance Equity 3900, or Retained Earnings)
+    // Equity accounts only: an adjustment is balanced against equity, never
+    // against another operating account.
     supabase.from('accounts')
       .select('*')
       .eq('account_type', 'equity')
       .eq('is_active', true)
       .order('code')
-      .then(({ data }) => setOffsetAccounts((data || []) as Account[]));
+      .then(({ data }) => {
+        const list = (data || []) as Account[];
+        setOffsetAccounts(list);
+        // Opening Balance Equity is the correct offset for almost every
+        // adjustment, so it is pre-selected rather than demanded. The field
+        // stays changeable — it just no longer blocks the common path.
+        const preferred = list.find(a => a.code === '3900') ?? list[0];
+        if (preferred) setOffsetAccountId(prev => prev || preferred.id);
+      });
   }, []);
+
+  // An empty field is not "zero": in target mode that would preview a
+  // write-down to nil. Treat an empty or half-typed field as "no change".
+  const parsedAmount = parseFloat(amountInput);
+  const hasAmount = amountInput.trim() !== '' && Number.isFinite(parsedAmount);
+  const amount = hasAmount ? parsedAmount : mode === 'to' ? currentBalance : 0;
+
+  // The preview and the submit handler both read this plan, so what the user
+  // is shown and what gets posted cannot drift apart.
+  const plan = useMemo(
+    () =>
+      buildAdjustmentPlan({
+        accountType: account.account_type,
+        currentBalance,
+        mode,
+        direction,
+        amount,
+      }),
+    [account.account_type, currentBalance, mode, direction, amount]
+  );
+
+  const offsetAccount = offsetAccounts.find(a => a.id === offsetAccountId);
+
+  const amountError = (() => {
+    if (!amountInput.trim()) return '';
+    if (mode === 'by' && amount <= 0) return 'Amount must be greater than zero';
+    return '';
+  })();
+
+  const canSubmit = !saving && plan.delta !== 0 && !amountError && !!offsetAccountId && !!entryDate;
+
+  const postLabel =
+    plan.delta === 0
+      ? mode === 'to'
+        ? 'No change'
+        : 'Enter an amount'
+      : `Post ${plan.delta > 0 ? '+' : '−'}${formatCurrency(plan.magnitude)} ${plan.direction ?? ''}`.trim();
+
+  const deltaLabel =
+    plan.delta === 0 ? formatCurrency(0) : `${plan.delta > 0 ? '+' : '−'}${formatCurrency(plan.magnitude)}`;
+
+  const deltaTone =
+    plan.delta > 0 ? 'text-emerald-600' : plan.delta < 0 ? 'text-red-600' : 'text-muted-foreground';
+
+  // In 'to' mode the target balance decides the direction, so the toggle
+  // mirrors the derived value instead of pretending to be in control.
+  const shownDirection = mode === 'to' ? plan.direction : direction;
+
+  function resetForm() {
+    setAmountInput('');
+    setDescription('');
+    setMode('by');
+    setDirection('increase');
+    setError('');
+    setOffsetPickerOpen(false);
+    setDetailsOpen(false);
+  }
+
+  function closePanel() {
+    setIsOpen(false);
+    resetForm();
+  }
+
+  function switchMode(next: AdjustmentMode) {
+    if (next === mode) return;
+    setMode(next);
+    // 'Set exact balance' starts at the current balance, so the user edits a
+    // destination rather than reinterpreting a number that meant a movement.
+    setAmountInput(next === 'to' ? currentBalance.toFixed(2) : '');
+  }
+
+  function handleAmountChange(raw: string) {
+    // The old signed field taught people to type "-" for a decrease. Honour
+    // that habit by flipping the toggle instead of silently dropping the sign.
+    if (mode === 'by' && raw.trim().startsWith('-')) setDirection('decrease');
+    let cleaned = raw.replace(/[^0-9.-]/g, '').replace(/(?!^)-/g, '');
+    if (mode === 'by') cleaned = cleaned.replace(/-/g, '');
+    setAmountInput(cleaned);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.offsetAccountId) {
-      setError('Please select an offset account');
-      return;
-    }
-
-    const amount = parseFloat(form.amount);
-    if (isNaN(amount) || amount === 0) {
-      setError('Please enter a valid amount');
-      return;
-    }
+    if (!canSubmit) return;
 
     setError('');
     setSaving(true);
     try {
-      const isDebitNormal = account.account_type === 'asset' || account.account_type === 'expense';
-
-      // For positive adjustment: debit asset/expense accounts, credit liability/equity/revenue accounts
-      // For negative adjustment: flip the sides
-      const isPositiveAdjustment = amount > 0;
-      const absAmount = Math.abs(amount);
-
-      let targetDebit = 0, targetCredit = 0, offsetDebit = 0, offsetCredit = 0;
-
-      if (isDebitNormal) {
-        if (isPositiveAdjustment) {
-          targetDebit = absAmount;
-          offsetCredit = absAmount;
-        } else {
-          targetCredit = absAmount;
-          offsetDebit = absAmount;
-        }
-      } else {
-        if (isPositiveAdjustment) {
-          targetCredit = absAmount;
-          offsetDebit = absAmount;
-        } else {
-          targetDebit = absAmount;
-          offsetCredit = absAmount;
-        }
-      }
-
-      const { error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
-        p_entry_date: form.date,
-        p_description: form.description || `Balance adjustment for ${account.name}`,
+      const note = description.trim();
+      const { data, error: rpcError } = await supabase.rpc('post_manual_journal_entry', {
+        p_entry_date: entryDate,
+        p_description: note || `Balance adjustment for ${account.name}`,
         p_reference_type: 'balance_adjustment',
         p_lines: [
           {
             account_id: account.id,
-            debit: targetDebit,
-            credit: targetCredit,
-            description: form.description || `Balance adjustment`,
+            debit: plan.targetDebit,
+            credit: plan.targetCredit,
+            description: note || 'Balance adjustment',
           },
           {
-            account_id: form.offsetAccountId,
-            debit: offsetDebit,
-            credit: offsetCredit,
-            description: form.description || `Balance adjustment - ${account.name}`,
+            account_id: offsetAccountId,
+            debit: plan.offsetDebit,
+            credit: plan.offsetCredit,
+            description: note || `Balance adjustment - ${account.name}`,
           },
         ],
       });
       if (rpcError) throw rpcError;
 
-      toast({ title: 'Balance adjusted', description: `Adjustment of ${formatCurrency(absAmount)} posted successfully` });
+      // The RPC returns the created entry, so the toast can name it and link
+      // straight to it. ?highlight is the journal page's existing deep link.
+      const created = data as { id?: string; entry_number?: string } | null;
+      const entryNumber = created?.entry_number;
+      const entryId = created?.id;
+      toast({
+        title: `${plan.direction === 'increase' ? 'Increase' : 'Decrease'} posted`,
+        description:
+          `${formatCurrency(plan.magnitude)} applied to ${account.name}` + (entryNumber ? ` · ${entryNumber}` : ''),
+        action: entryId ? (
+          <ToastAction
+            altText="View journal entry"
+            onClick={() => router.push(`/accounting/journal?highlight=${entryId}`)}
+          >
+            View
+          </ToastAction>
+        ) : undefined,
+      });
       setIsOpen(false);
-      setForm({ amount: '', date: new Date().toISOString().split('T')[0], description: '', offsetAccountId: '' });
+      resetForm();
       onAdjusted();
     } catch (err: any) {
       setError(err.message || 'Failed to post adjustment');
@@ -1081,114 +1170,335 @@ function BalanceAdjustmentPanel({ account, onAdjusted }: { account: Account; onA
             <Plus className="w-5 h-5 text-amber-600" />
           </div>
           <div className="text-left">
-            <p className="text-sm font-semibold text-foreground">Post Balance Adjustment</p>
-            <p className="text-xs text-muted-foreground">Correct the account balance via journal entry</p>
+            <p className="text-sm font-semibold text-foreground">Adjust balance</p>
+            <p className="text-xs text-muted-foreground">Post a correcting journal entry</p>
           </div>
         </div>
-        <div className="text-xs text-amber-600 font-medium">Click to adjust</div>
+        <div className="text-xs text-amber-600 font-medium">Adjust</div>
       </button>
     );
   }
 
   return (
     <div className="bg-white rounded-xl border border-border p-6 shadow-sm">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="w-5 h-5 text-amber-600" />
-          <h3 className="text-base font-bold text-foreground">Balance Adjustment</h3>
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <h3 className="text-base font-bold text-foreground">Balance adjustment</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {account.code} · {account.name}
+          </p>
         </div>
-        <button onClick={() => setIsOpen(false)} className="text-muted-foreground hover:text-foreground">
+        <button
+          type="button"
+          onClick={closePanel}
+          aria-label="Close balance adjustment"
+          className="text-muted-foreground hover:text-foreground"
+        >
           <X className="w-5 h-5" />
         </button>
       </div>
 
-      <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-700">
-        <p className="font-medium mb-1">⚠️ Use with caution</p>
-        <p className="text-xs">
-          This will post a journal entry to adjust the current balance. Use only for corrections, reconciliations, or
-          setting opening balances. The offset will be posted to an equity account (typically Opening Balance Equity).
-        </p>
-      </div>
-
-      {error && <div className="mb-4 p-3 bg-red-50 text-red-600 rounded-lg text-sm">{error}</div>}
-
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-medium mb-1">Adjustment Amount *</label>
-            <UnitInput
-              prefix="৳"
-              step="0.01"
-              required
-              value={form.amount}
-              onChange={e => setForm({ ...form, amount: e.target.value })}
-              className="rounded-lg"
-              placeholder="Enter amount (+ or -)"
-            />
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Positive = increase, Negative = decrease
-            </p>
-          </div>
-          <div>
-            <label className="block text-xs font-medium mb-1">Date *</label>
-            <input
-              type="date"
-              required
-              value={form.date}
-              onChange={e => setForm({ ...form, date: e.target.value })}
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-xs font-medium mb-1">Offset Account *</label>
-          <select
-            required
-            value={form.offsetAccountId}
-            onChange={e => setForm({ ...form, offsetAccountId: e.target.value })}
-            className="w-full border border-border rounded-lg px-3 py-2 text-sm"
-          >
-            <option value="">Select equity account...</option>
-            {offsetAccounts.map(acc => (
-              <option key={acc.id} value={acc.id}>
-                {acc.code} - {acc.name}
-              </option>
-            ))}
-          </select>
-          <p className="text-[11px] text-muted-foreground mt-1">
-            The offsetting side of the entry. Usually &ldquo;Opening Balance Equity&rdquo; (3900).
+      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 mt-0.5 shrink-0" />
+          <p className="text-xs text-amber-800 leading-relaxed">
+            Posts a journal entry. Use for corrections, reconciliations or opening balances.{' '}
+            <button
+              type="button"
+              onClick={() => setDetailsOpen(v => !v)}
+              aria-expanded={detailsOpen}
+              className="font-medium underline underline-offset-2 hover:text-amber-900"
+            >
+              {detailsOpen ? 'Less' : 'Details'}
+            </button>
           </p>
         </div>
+        {detailsOpen && (
+          <p className="mt-2 pl-[22px] text-xs text-amber-700 leading-relaxed">
+            The account moves by the adjustment and the other side goes to the offset equity account.
+            The entry is posted immediately — correcting it later means reversing it, not editing it.
+          </p>
+        )}
+      </div>
+
+      {error && (
+        <div role="alert" className="mb-4 p-3 bg-red-50 text-red-600 rounded-lg text-sm">
+          {error}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <div role="group" aria-label="Adjustment direction" className="grid grid-cols-2 gap-2">
+            {(['increase', 'decrease'] as const).map(dir => {
+              const active = shownDirection === dir;
+              const Icon = dir === 'increase' ? TrendingUp : TrendingDown;
+              return (
+                <button
+                  key={dir}
+                  type="button"
+                  aria-pressed={active}
+                  disabled={mode === 'to'}
+                  onClick={() => setDirection(dir)}
+                  className={cn(
+                    'flex items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition',
+                    active && dir === 'increase' && 'border-emerald-300 bg-emerald-50 text-emerald-700',
+                    active && dir === 'decrease' && 'border-red-300 bg-red-50 text-red-700',
+                    !active && 'border-border text-muted-foreground hover:bg-muted/50',
+                    mode === 'to' && 'cursor-not-allowed opacity-60'
+                  )}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {dir === 'increase' ? 'Increase' : 'Decrease'}
+                </button>
+              );
+            })}
+          </div>
+          {mode === 'to' && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Direction follows the target balance below.
+            </p>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-xs font-medium">Adjustment</span>
+          <div role="group" aria-label="Adjustment mode" className="inline-flex rounded-md bg-muted p-0.5">
+            <button
+              type="button"
+              aria-pressed={mode === 'by'}
+              onClick={() => switchMode('by')}
+              className={cn(
+                'rounded px-2 py-1 text-[11px] font-medium transition',
+                mode === 'by' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Adjust by amount
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === 'to'}
+              onClick={() => switchMode('to')}
+              className={cn(
+                'rounded px-2 py-1 text-[11px] font-medium transition',
+                mode === 'to' ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Set exact balance
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label htmlFor="adjustment-amount" className="block text-xs font-medium mb-1">
+              {mode === 'by' ? 'Amount' : 'New balance'} *
+            </label>
+            <UnitInput
+              id="adjustment-amount"
+              type="text"
+              inputMode="decimal"
+              prefix={currencySymbol}
+              value={amountInput}
+              onChange={e => handleAmountChange(e.target.value)}
+              placeholder="0.00"
+              aria-invalid={!!amountError}
+              aria-describedby={amountError ? 'adjustment-amount-error' : undefined}
+              className={cn('rounded-lg py-2 font-semibold', amountError && 'border-red-400')}
+            />
+            {amountError ? (
+              <p id="adjustment-amount-error" className="mt-1 text-[11px] text-red-600">
+                {amountError}
+              </p>
+            ) : (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {mode === 'by' ? 'Always positive — direction is set above' : 'Balance after posting'}
+              </p>
+            )}
+          </div>
+          <div>
+            <label htmlFor="adjustment-date" className="block text-xs font-medium mb-1">
+              Date *
+            </label>
+            <input
+              id="adjustment-date"
+              type="date"
+              required
+              value={entryDate}
+              onChange={e => setEntryDate(e.target.value)}
+              className="w-full border border-border rounded-lg px-3 py-2 text-sm"
+            />
+            {!entryDate && <p className="mt-1 text-[11px] text-red-600">Date is required</p>}
+          </div>
+        </div>
+
+        <div className="rounded-lg bg-muted/50 px-3.5 py-3">
+          <div className="flex items-center justify-between text-xs text-muted-foreground py-0.5">
+            <span>Current balance</span>
+            <span className="tabular-nums">{formatCurrency(currentBalance)}</span>
+          </div>
+          <div className="flex items-center justify-between text-xs py-0.5">
+            <span className="text-muted-foreground">Adjustment</span>
+            <span className={cn('tabular-nums font-medium', deltaTone)}>{deltaLabel}</span>
+          </div>
+          <div className="mt-1.5 flex items-center justify-between border-t border-border pt-2 text-sm font-semibold">
+            <span>New balance</span>
+            <span
+              aria-live="polite"
+              className={cn('tabular-nums', plan.newBalance < 0 && 'text-red-600')}
+            >
+              {formatCurrency(plan.newBalance)}
+            </span>
+          </div>
+          {plan.newBalance < 0 && plan.delta !== 0 && currentBalance >= 0 && (
+            <p role="alert" className="mt-2 flex items-start gap-1.5 text-[11px] text-amber-700">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              This leaves a negative balance — check the direction before posting.
+            </p>
+          )}
+          {currentBalance < 0 && (
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] text-amber-700">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              This account is already negative. The preview shows the exact sides that will be
+              posted — confirm they match your intent.
+            </p>
+          )}
+        </div>
 
         <div>
-          <label className="block text-xs font-medium mb-1">Description</label>
+          <p className="mb-1.5 text-[11px] text-muted-foreground">Journal entry preview</p>
+          <div className="overflow-hidden rounded-lg border border-border">
+            {plan.delta === 0 ? (
+              <p className="px-3 py-2.5 text-xs text-muted-foreground">No entry will be posted.</p>
+            ) : (
+              <>
+                <JournalPreviewRow
+                  side={plan.targetDebit > 0 ? 'Dr' : 'Cr'}
+                  code={account.code}
+                  name={account.name}
+                  amount={plan.magnitude}
+                />
+                <JournalPreviewRow
+                  side={plan.offsetDebit > 0 ? 'Dr' : 'Cr'}
+                  code={offsetAccount?.code ?? '—'}
+                  name={offsetAccount?.name ?? 'No offset account selected'}
+                  amount={plan.magnitude}
+                  last
+                />
+              </>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-muted/50 px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2 text-xs">
+              <span className="shrink-0 text-muted-foreground">Offset</span>
+              <span className="truncate font-medium">
+                {offsetAccount ? `${offsetAccount.code} · ${offsetAccount.name}` : 'Not selected'}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setOffsetPickerOpen(v => !v)}
+              aria-expanded={offsetPickerOpen}
+              className="shrink-0 text-xs font-medium text-blue-600 hover:text-blue-700"
+            >
+              {offsetPickerOpen ? 'Done' : 'Change'}
+            </button>
+          </div>
+          {offsetPickerOpen && (
+            <select
+              aria-label="Offset account"
+              value={offsetAccountId}
+              onChange={e => setOffsetAccountId(e.target.value)}
+              className="mt-2 w-full rounded-lg border border-border px-3 py-2 text-sm"
+            >
+              <option value="">Select equity account…</option>
+              {offsetAccounts.map(acc => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.code} - {acc.name}
+                </option>
+              ))}
+            </select>
+          )}
+          {offsetAccounts.length === 0 && (
+            <p className="mt-1 text-[11px] text-red-600">
+              No active equity account found. Create one (for example 3900 Opening Balance Equity)
+              before posting an adjustment.
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="adjustment-description" className="block text-xs font-medium mb-1">
+            Description
+          </label>
           <textarea
-            value={form.description}
-            onChange={e => setForm({ ...form, description: e.target.value })}
+            id="adjustment-description"
+            value={description}
+            onChange={e => setDescription(e.target.value)}
             rows={2}
             className="w-full border border-border rounded-lg px-3 py-2 text-sm resize-none"
-            placeholder="Reason for adjustment..."
+            placeholder="Reason for adjustment (recommended)"
           />
         </div>
 
         <div className="flex items-center gap-3 pt-2 border-t border-border">
           <button
             type="button"
-            onClick={() => setIsOpen(false)}
-            className="flex-1 px-4 py-2 border border-border rounded-lg text-sm font-medium hover:bg-muted/50 transition"
+            onClick={closePanel}
+            className="px-4 py-2 border border-border rounded-lg text-sm font-medium hover:bg-muted/50 transition"
           >
             Cancel
           </button>
           <button
             type="submit"
-            disabled={saving}
-            className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50"
+            disabled={!canSubmit}
+            className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {saving ? 'Posting...' : 'Post Adjustment'}
+            {saving ? 'Posting…' : postLabel}
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function JournalPreviewRow({
+  side,
+  code,
+  name,
+  amount,
+  last,
+}: {
+  side: 'Dr' | 'Cr';
+  code: string;
+  name: string;
+  amount: number;
+  last?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        'grid grid-cols-[28px_1fr_auto] items-center gap-2.5 px-3 py-1.5 text-xs',
+        !last && 'border-b border-border'
+      )}
+    >
+      <span
+        className={cn(
+          'rounded text-center text-[10px] font-semibold',
+          side === 'Dr' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'
+        )}
+      >
+        {side}
+      </span>
+      <span className="truncate">
+        <span className="tabular-nums text-muted-foreground">{code}</span>
+        {' · '}
+        {name}
+      </span>
+      <span className="tabular-nums text-muted-foreground">{formatCurrency(amount)}</span>
     </div>
   );
 }
