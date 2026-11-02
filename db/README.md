@@ -35,6 +35,7 @@ Three reasons, each of which breaks the restore if ignored:
 | `03_restore.sh` | The four-pass restore, plus post-restore repair |
 | `04_post_restore.sql` | Grants, the `on_auth_user_created` trigger, cron jobs, realtime publication |
 | `05_verify.py` | Compares the target to `baseline.json` row by row |
+| `06_seed_migration_history.sh` | Records the repo's migration files in `supabase_migrations.schema_migrations` on the new project |
 | `baseline.json` | Row counts captured from live source at dump time |
 | `verify/` | The schema and app-contract assertions from the validated `safe_migration` package |
 | `checksums.txt` | SHA-256 of the archive actually used |
@@ -49,11 +50,41 @@ Three reasons, each of which breaks the restore if ignored:
 # 2. restore into the new project
 ./03_restore.sh --url "$TARGET_DB_URL" --dump ~/Backups/sisolution/cutover-XXXX.dump
 
-# 3. prove it before pointing the app at it
+# 3. record which migrations the restored schema already contains
+./06_seed_migration_history.sh "$TARGET_DB_URL"
+
+# 4. prove it before pointing the app at it
 ./05_verify.py --url "$TARGET_DB_URL"
 ```
 
 `05_verify.py` must print `PASS`. If it prints `FAILED`, do not cut over.
+
+## Why step 3 exists
+
+The restore rebuilds `public` from a `pg_dump`, so every migration is already
+reflected in the new schema — but the new project's own
+`supabase_migrations.schema_migrations` is empty. The kit deliberately does not
+restore the source's history table, because its rows describe the *source*
+project.
+
+That empty table is a trap. A later `supabase db push` sees no history and tries
+to replay all ~348 migrations against a populated database. It fails on the
+first non-idempotent `create table` or `alter table ... add column`, and because
+migrations run in order it can leave a partially applied chain behind.
+
+`06_seed_migration_history.sh` closes the gap: it inserts one row per migration
+file, using `on conflict (version) do nothing`, so it is safe to re-run.
+
+Pass `--until <timestamp>` when the dump predates the newest migrations. Anything
+written after the dump is **not** in the restored schema and must stay
+unrecorded so it can still be applied.
+
+The script reports two numbers worth reading:
+
+- **files not yet recorded** should be `0`; a non-zero count exits `2`.
+- **recorded with no file on disk** is expected to be non-zero. Fourteen rows in
+  the source history name migrations whose file was later renamed or removed.
+  They are real historical entries and are left untouched.
 
 ## What `05_verify.py` asserts
 
