@@ -226,6 +226,48 @@ describe('product import — planning', () => {
     expect(result.products[0].warnings.join(' ')).toMatch(/greater than 1/i);
   });
 
+  test('a price change on a multi-unit product scales larger-unit prices proportionally', () => {
+    const result = plan('SKU,Sale Price,Cost Price\nCEM-001,180,120', {
+      existing: [{
+        id: 'p1', sku: 'CEM-001', name: 'Cement', unit: 'coil', base_unit: 'coil',
+        enable_multi_unit: true, sale_price: 150, cost_price: 100,
+      }],
+    });
+    const product = result.products[0];
+    expect(product.priceScale).toEqual({
+      sale: 1.2, cost: 1.2, saleNew: 180, costNew: 120,
+    });
+    expect(product.warnings.join(' ')).toMatch(/scale proportionally/i);
+  });
+
+  test('a sale-price-only change scales sale prices only', () => {
+    const result = plan('SKU,Sale Price\nCEM-001,300', {
+      existing: [{
+        id: 'p1', sku: 'CEM-001', name: 'Cement', unit: 'coil', base_unit: 'coil',
+        enable_multi_unit: true, sale_price: 150, cost_price: 100,
+      }],
+    });
+    expect(result.products[0].priceScale).toEqual({ sale: 2, saleNew: 300 });
+  });
+
+  test('a price change on a plain product emits no scaling instruction', () => {
+    const result = plan('SKU,Sale Price\nHAM-001,200', {
+      existing: [{ id: 'p1', sku: 'HAM-001', name: 'Hammer', sale_price: 150 }],
+    });
+    expect(result.products[0].priceScale).toBeUndefined();
+  });
+
+  test('a price change on a multi-unit product whose old price is 0 cannot scale', () => {
+    const result = plan('SKU,Sale Price\nCEM-001,180', {
+      existing: [{
+        id: 'p1', sku: 'CEM-001', name: 'Cement', unit: 'coil', base_unit: 'coil',
+        enable_multi_unit: true, sale_price: 0, cost_price: 0,
+      }],
+    });
+    expect(result.products[0].priceScale).toBeUndefined();
+    expect(result.products[0].warnings.join(' ')).toMatch(/could not be scaled/i);
+  });
+
   test('stock sums across variant rows', () => {
     const result = plan(
       'Name,SKU,Color,Current Stock\nT-Shirt,TS-001,Red,10\nT-Shirt,TS-001,Blue,5',

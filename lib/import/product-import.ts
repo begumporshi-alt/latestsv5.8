@@ -202,6 +202,24 @@ export interface ExistingProduct {
   base_unit?: string | null;
   enable_multi_unit?: boolean | null;
   is_active?: boolean | null;
+  /** Current base-unit prices — used to scale multi-unit rows proportionally. */
+  sale_price?: number | null;
+  cost_price?: number | null;
+}
+
+/**
+ * Price change applied to a multi-unit product's unit rows. The base row is
+ * set to the imported prices exactly; every larger unit (box, carton…) scales
+ * by the same ratio so its price derives from the new base price. The unit
+ * rows themselves are fetched at preview/write time — this is the instruction.
+ */
+export interface PriceScale {
+  /** new/old ratio for the base sale price; undefined = sale price untouched */
+  sale?: number;
+  cost?: number;
+  /** absolute new base-unit prices for the base unit row */
+  saleNew?: number;
+  costNew?: number;
 }
 
 export interface PlannedUnit {
@@ -227,6 +245,8 @@ export interface PlannedProduct {
   colors: string[];
   sizes: string[];
   units: PlannedUnit[];
+  /** Present when a price import on a multi-unit product must rescale unit rows. */
+  priceScale?: PriceScale;
   warnings: string[];
 }
 
@@ -490,6 +510,37 @@ export function buildImportPlan(input: PlanInput): ImportPlan {
 
     if (first.cost_price !== undefined) fields.cost_price = first.cost_price;
     if (first.sale_price !== undefined) fields.sale_price = first.sale_price;
+
+    // POS charges a multi-unit product's sale-unit row price (product_units),
+    // so a price import that left unit rows alone would never reach the
+    // counter. Larger units scale by the same ratio; the base row is set to
+    // the imported price exactly.
+    let priceScale: PriceScale | undefined;
+    if (!isCreate && target!.enable_multi_unit) {
+      const oldSale = Number(target!.sale_price) || 0;
+      const oldCost = Number(target!.cost_price) || 0;
+      const saleRatio = fields.sale_price !== undefined && oldSale > 0
+        ? (fields.sale_price as number) / oldSale
+        : undefined;
+      const costRatio = fields.cost_price !== undefined && oldCost > 0
+        ? (fields.cost_price as number) / oldCost
+        : undefined;
+      const oldPriceZero =
+        (fields.sale_price !== undefined && oldSale <= 0) ||
+        (fields.cost_price !== undefined && oldCost <= 0);
+      if (saleRatio !== undefined || costRatio !== undefined) {
+        priceScale = {
+          sale: saleRatio,
+          cost: costRatio,
+          saleNew: fields.sale_price as number | undefined,
+          costNew: fields.cost_price as number | undefined,
+        };
+        warnings.push('Larger-unit prices (box, carton…) scale proportionally with the base price change.');
+      } else if (oldPriceZero) {
+        warnings.push('Previous base price is 0, so larger-unit prices could not be scaled — adjust them in the product editor.');
+      }
+    }
+
     if (first.mrp !== undefined) fields.mrp = first.mrp;
     if (first.tax_rate !== undefined) fields.tax_rate = first.tax_rate;
     if (first.min_stock_level !== undefined) fields.min_stock_level = Math.round(first.min_stock_level);
@@ -596,6 +647,7 @@ export function buildImportPlan(input: PlanInput): ImportPlan {
       colors,
       sizes,
       units,
+      priceScale,
       warnings,
     });
   }
