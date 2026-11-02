@@ -10,14 +10,14 @@ const SERVICE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 //
 // Next/webpack statically substitutes the literal expression
 // `process.env.NEXT_PUBLIC_<name>` at build time, wherever it appears — in
-// server bundles, and in any client bundle that happens to import this
-// module. That substitution is what would publish a key that bypasses every
-// RLS policy. Bracket access is not statically substituted: it resolves at
-// runtime on the server, and yields undefined in the browser.
+// server bundles, and in any client bundle that happens to import this module.
+// That substitution is what would publish a key that bypasses every RLS policy.
 //
-// The fallback is retained so deployments that still store the key under the
-// prefixed name keep working. The preferred end state is to rename the
-// variable to SUPABASE_SERVICE_ROLE_KEY and drop the fallback entirely.
+// The unprefixed name is the only one read statically. The legacy
+// `NEXT_PUBLIC_`-prefixed name is still honoured through bracket access, which
+// is not statically substituted: it resolves at runtime on the server and
+// yields undefined in the browser. Deployments should move to the unprefixed
+// name and drop the fallback.
 const SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
   process.env['NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY'];

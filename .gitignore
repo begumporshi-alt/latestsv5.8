@@ -27,6 +27,14 @@ yarn-error.log*
 # local env files
 .env
 .env*.local
+.env.source
+!.env.example
+
+# cutover kit: restore logs and database archives never belong in git
+/db/logs/
+/db/dumps/
+*.dump
+*.dump.log
 
 # vercel
 .vercel
@@ -74,4 +82,9 @@ scripts/fifo_*.js
 .freebuff/
 .tmp-mk-session.cjs
 .video_agent/
+.workbuddy-ai/
 .zcode/
+
+# python bytecode from db/ tooling
+__pycache__/
+*.pyc

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { tokenizeSearch, matchValues, rankRows } from '@/lib/search';
@@ -1184,12 +1184,11 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
               )}
               {items.length > 0 && (
               <div className="border border-border rounded-lg overflow-hidden">
-                <table className="w-full">
+                <table className="w-full table-fixed">
                   <thead className="bg-muted/40">
                     <tr>
-                      <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Price</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Price</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Net Rate</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
@@ -1206,73 +1205,82 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                       const netRate = item.unit_price * (1 - (item.discount_percent || 0) / 100);
                       const isBelowCost = showCostPrices && netRate > 0 && costPerUnit > netRate;
                       return (
-                        <tr key={index} className={isOverStock ? 'bg-red-50/50' : ''}>
-                          <td className="px-3 py-2">
-                            <p className="text-sm font-medium text-foreground">{item.product_name}</p>
-                            <p className="text-[10px] text-muted-foreground">{item.product_sku}</p>
-                            {item.stock_qty !== null && (
-                              <p className={`text-[10px] font-medium ${item.stock_qty > 0 ? (isOverStock ? 'text-red-500' : 'text-green-600') : 'text-red-500'}`}>
-                                {item.stock_qty > 0 ? `${item.stock_qty} ${item.product_base_unit || 'units'} in stock` : 'Out of stock'}
-                                {isOverStock && <span className="ml-1"><AlertTriangle className="w-3 h-3 inline" /></span>}
-                              </p>
-                            )}
-                            {item.available_units && item.selected_unit && (
-                              <div className="mt-1">
-                                <select
-                                  value={item.selected_unit.id}
-                                  onChange={e => {
-                                    const unit = item.available_units?.find((u: any) => u.id === e.target.value);
-                                    if (unit) updateItem(index, 'selected_unit', unit);
-                                  }}
-                                  className="w-full border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                        <Fragment key={index}>
+                          {/* Row 1 — product identity: full-width, name on a single line */}
+                          <tr className="bg-muted/30">
+                            <td colSpan={7} className="px-3 py-1.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <p
+                                  className="text-sm font-medium text-foreground truncate min-w-0"
+                                  title={item.product_name}
                                 >
-                                  {item.available_units.map(u => (
-                                    <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>
-                                  ))}
-                                </select>
-                                <p className="text-[10px] text-muted-foreground mt-0.5">1 {item.selected_unit.unit_name} = {item.selected_unit.conversion_factor} {item.product_base_unit || 'base'}</p>
+                                  {item.product_name}
+                                </p>
+                                <span className="text-[10px] text-muted-foreground shrink-0">{item.product_sku}</span>
+                                <span className="ml-auto flex items-center gap-2 shrink-0">
+                                  {item.available_warehouses && item.available_warehouses.length > 0 && (
+                                    <select
+                                      value={item.warehouse_id || ''}
+                                      onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
+                                      className="w-40 border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-2 py-1 text-xs focus:outline-none"
+                                    >
+                                      {item.available_warehouses?.map(w => {
+                                        const whName = warehouses.find(wh => wh.id === w.warehouse_id)?.name || w.warehouse_name;
+                                        return (
+                                          <option key={w.warehouse_id} value={w.warehouse_id}>{whName} ({w.stock} {item.product_base_unit || 'pcs'})</option>
+                                        );
+                                      })}
+                                    </select>
+                                  )}
+                                  {item.available_units && item.selected_unit && (
+                                    <>
+                                      <span className="hidden lg:inline text-[10px] text-muted-foreground whitespace-nowrap">1 {item.selected_unit.unit_name} = {item.selected_unit.conversion_factor} {item.product_base_unit || 'base'}</span>
+                                      <select
+                                        value={item.selected_unit.id}
+                                        onChange={e => {
+                                          const unit = item.available_units?.find((u: any) => u.id === e.target.value);
+                                          if (unit) updateItem(index, 'selected_unit', unit);
+                                        }}
+                                        className="w-36 border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                                      >
+                                        {item.available_units.map(u => (
+                                          <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>
+                                        ))}
+                                      </select>
+                                    </>
+                                  )}
+                                  {showCostPrices && (
+                                    <div
+                                      className={`shrink-0 rounded-md border px-1.5 py-0.5 text-right leading-tight ${isBelowCost ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}
+                                      title={`Cost price: ${formatCurrency(costPerUnit)} per ${costUnitLabel} — ${item.quantity} × ${formatCurrency(costPerUnit)} = ${formatCurrency(lineCost)}${isBelowCost ? ' (selling below cost)' : ''}`}
+                                    >
+                                      <p className={`text-[10px] whitespace-nowrap ${isBelowCost ? 'text-red-600' : 'text-amber-700'}`}>
+                                        Cost {formatCurrency(costPerUnit)}
+                                      </p>
+                                      <p className={`text-[11px] font-semibold tabular-nums whitespace-nowrap ${isBelowCost ? 'text-red-700' : 'text-amber-900'}`}>
+                                        = {formatCurrency(lineCost)}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {item.stock_qty !== null && (
+                                    <span className={`text-[10px] font-medium rounded px-1.5 py-0.5 whitespace-nowrap ${item.stock_qty > 0 ? (isOverStock ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700') : 'bg-red-50 text-red-600'}`}>
+                                      {item.stock_qty > 0 ? `${item.stock_qty} ${item.product_base_unit || 'units'} in stock${isOverStock ? ' (over limit!)' : ''}` : 'Out of stock'}
+                                    </span>
+                                  )}
+                                </span>
                               </div>
-                            )}
-                            {(showCostPrices || (item.available_warehouses && item.available_warehouses.length > 0)) && (
-                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                                {item.available_warehouses && item.available_warehouses.length > 0 && (
-                                  <select
-                                    value={item.warehouse_id || ''}
-                                    onChange={e => updateItem(index, 'warehouse_id', e.target.value)}
-                                    className="flex-1 min-w-[88px] border border-emerald-200 bg-emerald-50 text-emerald-700 rounded px-2 py-1 text-xs focus:outline-none"
-                                  >
-                                    {item.available_warehouses?.map(w => {
-                                      const whName = warehouses.find(wh => wh.id === w.warehouse_id)?.name || w.warehouse_name;
-                                      return (
-                                        <option key={w.warehouse_id} value={w.warehouse_id}>{whName} ({w.stock} {item.product_base_unit || 'pcs'})</option>
-                                      );
-                                    })}
-                                  </select>
-                                )}
-                                {showCostPrices && (
-                                  <div
-                                    className={`shrink-0 rounded-md border px-1.5 py-0.5 text-right leading-tight ${isBelowCost ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}
-                                    title={`Cost price: ${formatCurrency(costPerUnit)} per ${costUnitLabel} — ${item.quantity} × ${formatCurrency(costPerUnit)} = ${formatCurrency(lineCost)}${isBelowCost ? ' (selling below cost)' : ''}`}
-                                  >
-                                    <p className={`text-[10px] whitespace-nowrap ${isBelowCost ? 'text-red-600' : 'text-amber-700'}`}>
-                                      Cost {formatCurrency(costPerUnit)}
-                                    </p>
-                                    <p className={`text-[11px] font-semibold tabular-nums whitespace-nowrap ${isBelowCost ? 'text-red-700' : 'text-amber-900'}`}>
-                                      = {formatCurrency(lineCost)}
-                                    </p>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </td>
+                            </td>
+                          </tr>
+                          {/* Row 2 — editable line fields */}
+                          <tr className={isOverStock ? 'bg-red-50/50' : ''}>
                           <td className="px-3 py-2">
-                            <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className={`w-full border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none ${isOverStock ? 'border-red-300 bg-red-50' : 'border-border'}`} />
+                            <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className={`w-full border rounded px-2 py-1.5 text-sm text-right tabular-nums focus:outline-none ${isOverStock ? 'border-red-300 bg-red-50' : 'border-border'}`} />
                             {item.available_units && item.selected_unit && (
                               <p className="text-[10px] text-muted-foreground text-center mt-0.5">= {item.base_quantity} {item.product_base_unit || 'base'}</p>
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
+                            <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', e.target.value)} className="w-full border border-border rounded px-2 py-1.5 text-sm text-right tabular-nums focus:outline-none" />
                           </td>
                           <td className="px-3 py-2">
                             <input type="number" min="0" max="100" value={item.discount_percent} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
@@ -1295,7 +1303,8 @@ function CreateQuotationModal({ customers: initialCustomers, products, warehouse
                           <td className="px-2 py-2">
                             <button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                           </td>
-                        </tr>
+                          </tr>
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -2030,12 +2039,12 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
             )}
             {items.length > 0 && (
               <div className="border border-border rounded-lg overflow-hidden">
-                <table className="w-full">
+                <table className="w-full table-fixed">
                   <thead className="bg-muted/40">
                     <tr>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Price</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Price</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
                       <th className="w-8"></th>
@@ -2051,8 +2060,8 @@ function EditQuotationModal({ quotation, customers, products, warehouses, onClos
                       return (
                       <tr key={index}>
                         <td className="px-3 py-2">
-                          <p className="text-sm font-medium text-foreground">{item.product_name}</p>
-                          <p className="text-[10px] text-muted-foreground">{item.product_sku}</p>
+                          <p className="text-sm font-medium text-foreground break-words" title={item.product_name}>{item.product_name}</p>
+                          <p className="text-[10px] text-muted-foreground break-words">{item.product_sku}</p>
                           {item.stock_qty !== null && (
                             <p className={`text-[10px] font-medium ${item.stock_qty > 0 ? 'text-green-600' : 'text-red-500'}`}>
                               {item.stock_qty} {item.product_base_unit || 'units'} available
