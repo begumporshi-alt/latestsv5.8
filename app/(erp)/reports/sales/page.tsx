@@ -1,60 +1,141 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabase';
-import { formatCurrency, formatAxisCurrency } from '@/lib/format';
-import { fetchAll } from '@/lib/fetch-all';
 import {
-  TrendingUp, Package, Users, Download, FileSpreadsheet, Calendar,
-  ArrowRight, RefreshCw, Printer, Search, X, Tag, Layers, ShoppingCart, Receipt
+  BarChart3,
+  Calendar,
+  Download,
+  Layers,
+  Loader2,
+  Package,
+  Printer,
+  Receipt,
+  RefreshCw,
+  Search,
+  ShoppingCart,
+  Table2,
+  Tag,
+  TrendingUp,
+  Users,
+  X,
+  CloudOff,
+  ChevronDown,
 } from 'lucide-react';
 import {
-  LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+
+import { supabase } from '@/lib/supabase';
+import { formatAxisCurrency, formatCurrency } from '@/lib/format';
+import { useProfile } from '@/hooks/use-profile';
 import Pagination from '@/components/ui/AppPagination';
-
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280', '#0ea5e9', '#d946ef', '#14b8a6', '#f97316'];
-
-type Dimension = 'product' | 'brand' | 'category' | 'customer';
-type View = 'summary' | Dimension;
-
-interface BreakdownRow {
-  id: string | null;
-  name: string;
-  unit: string | null;
-  quantity: number;
-  invoice_count: number;
-  revenue: number;
-  cost: number;
-  profit: number;
-}
-interface MonthlyRow { month: string; revenue: number; cost: number }
-interface DetailRow {
-  invoice_id: string;
-  invoice_number: string;
-  invoice_date: string;
-  customer_name: string | null;
-  quantity: number;
-  revenue: number;
-  cost: number;
-}
+import SalesReportDocument, { type CompanyInfo } from '@/components/reports/SalesReportDocument';
+import RevenueCompositionCard from '@/components/reports/RevenueCompositionCard';
+import {
+  DonutChart,
+  HorizontalBarChart,
+  ParetoChart,
+  dimensionTotal,
+  toChartData,
+} from '@/components/reports/SalesCharts';
+import {
+  DIMENSIONS,
+  PERIOD_OPTIONS,
+  fetchSalesBreakdown,
+  marginPct,
+  salesKeys,
+  type BreakdownRow,
+  type Dimension,
+  type View,
+} from '@/lib/reports/sales-report';
+import {
+  usePrefetchBreakdown,
+  useReportPeriod,
+  useSalesBreakdown,
+  useSalesDetail,
+  useSalesSummary,
+} from '@/lib/reports/use-sales-report';
+import {
+  DIMENSION_TABS,
+  useSalesReportStore,
+  type ChartMetric,
+  type PrintScope,
+} from '@/lib/reports/sales-report-store';
+import { printReportDocument } from '@/lib/reports/print-report';
 
 type SortKey = 'name' | 'quantity' | 'invoice_count' | 'revenue' | 'cost' | 'profit';
 
+const TAB_ICON: Record<View, typeof TrendingUp> = {
+  summary: TrendingUp,
+  product: Package,
+  brand: Tag,
+  category: Layers,
+  customer: Users,
+};
+
 export default function SalesReportPage() {
-  const [period, setPeriod] = useState('this_month');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [view, setView] = useState<View>('summary');
-  const [loading, setLoading] = useState(true);
-  const [dimLoading, setDimLoading] = useState<Dimension | null>(null);
+  const period = useSalesReportStore((s) => s.period);
+  const dateFrom = useSalesReportStore((s) => s.dateFrom);
+  const dateTo = useSalesReportStore((s) => s.dateTo);
+  const view = useSalesReportStore((s) => s.view);
+  const displayMode = useSalesReportStore((s) => s.displayMode);
+  const topN = useSalesReportStore((s) => s.topN);
+  const metric = useSalesReportStore((s) => s.metric);
+  const printScope = useSalesReportStore((s) => s.printScope);
+  const setPeriod = useSalesReportStore((s) => s.setPeriod);
+  const setCustomRange = useSalesReportStore((s) => s.setCustomRange);
+  const setView = useSalesReportStore((s) => s.setView);
+  const setDisplayMode = useSalesReportStore((s) => s.setDisplayMode);
+  const setTopN = useSalesReportStore((s) => s.setTopN);
+  const setMetric = useSalesReportStore((s) => s.setMetric);
+  const setPrintScope = useSalesReportStore((s) => s.setPrintScope);
 
-  const [kpis, setKpis] = useState({ revenue: 0, orders: 0, returns: 0, cogs: 0, grossProfit: 0 });
-  const [monthly, setMonthly] = useState<MonthlyRow[]>([]);
-  const [breakdown, setBreakdown] = useState<Partial<Record<Dimension, BreakdownRow[]>>>({});
+  const resolved = useReportPeriod();
+  const { start, end } = resolved;
 
+  const queryClient = useQueryClient();
+  const prefetchBreakdown = usePrefetchBreakdown(start, end);
+  const { profile } = useProfile();
+
+  const summaryQuery = useSalesSummary(start, end);
+  const summary = summaryQuery.data;
+
+  const dimension: Dimension | null = view === 'summary' ? null : view;
+  const breakdownQuery = useSalesBreakdown(dimension ?? 'product', start, end, {
+    enabled: dimension !== null,
+    placeholderRows: dimension ? summary?.dimensions[dimension].rows : undefined,
+  });
+
+  const companyQuery = useQuery({
+    queryKey: ['settings', 'company'],
+    queryFn: async (): Promise<CompanyInfo> => {
+      const { data } = await supabase
+        .from('app_settings')
+        .select('setting_value')
+        .eq('setting_key', 'company')
+        .maybeSingle();
+      const value = (data?.setting_value || {}) as Partial<CompanyInfo>;
+      return {
+        name: value.name || 'SI Building Solutions',
+        address: value.address,
+        phone: value.phone,
+        email: value.email,
+        logo_url: value.logo_url,
+      };
+    },
+    staleTime: 30 * 60_000,
+  });
+
+  // --- transient view state (never persisted: a report should reopen clean) --
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('revenue');
   const [sortAsc, setSortAsc] = useState(false);
@@ -62,535 +143,797 @@ export default function SalesReportPage() {
   const [pageSize, setPageSize] = useState(25);
 
   const [drill, setDrill] = useState<{ dim: Dimension; id: string | null; name: string } | null>(null);
-  const [drillRows, setDrillRows] = useState<DetailRow[]>([]);
-  const [drillLoading, setDrillLoading] = useState(false);
+  const drillQuery = useSalesDetail(drill?.dim ?? null, drill?.id ?? null, start, end, !!drill);
 
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [printMenu, setPrintMenu] = useState(false);
+  const [printBusy, setPrintBusy] = useState(false);
+  const [fullRows, setFullRows] = useState<Partial<Record<Dimension, BreakdownRow[]>>>({});
+  const printRef = useRef<HTMLDivElement>(null);
 
-  // toISOString() renders local midnight as the previous UTC day (GMT+6 →
-  // "This Month" would start on the 30th of the prior month). Build the
-  // calendar date from local components instead.
-  const toISODate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-  function getDateRange(p: string): { startDate: string; endDate: string | null } {
-    const now = new Date();
-    const today = toISODate(now);
-    switch (p) {
-      case 'today': return { startDate: today, endDate: today };
-      case 'this_week': {
-        const ws = new Date(now); ws.setDate(ws.getDate() - ws.getDay());
-        return { startDate: toISODate(ws), endDate: today };
-      }
-      case 'this_month': return { startDate: toISODate(new Date(now.getFullYear(), now.getMonth(), 1)), endDate: null };
-      case 'this_quarter': {
-        const qs = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
-        return { startDate: toISODate(qs), endDate: null };
-      }
-      case 'this_year': return { startDate: toISODate(new Date(now.getFullYear(), 0, 1)), endDate: null };
-      case 'custom': return { startDate: dateFrom || today, endDate: dateTo || null };
-      default: return { startDate: today, endDate: null };
-    }
-  }
-
-  const { startDate, endDate } = getDateRange(period);
-  const today = toISODate(new Date());
-  const effectiveStart = startDate;
-  const effectiveEnd = endDate || today;
-
-  useEffect(() => { loadSummary(); setBreakdown({}); }, [period, dateFrom, dateTo, refreshKey]);
   useEffect(() => {
     setSearch('');
-    if (view !== 'summary' && !breakdown[view] && !dimLoading) loadBreakdown(view);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view]);
+    setPage(1);
+  }, [view, period, dateFrom, dateTo]);
 
-  async function loadSummary() {
-    setLoading(true);
-    // Round 1: everything that doesn't depend on account IDs. Round 2 below
-    // runs the two ledger RPCs in parallel once account 5000/4050 are known.
-    const [invoicesRes, accountsRes, monthlyRes, prodRes, catRes] = await Promise.all([
-      fetchAll(() => supabase.from('invoices').select('total_amount, tax_amount, shipping_cost')
-        .neq('status', 'cancelled').neq('status', 'draft')
-        .gte('invoice_date', effectiveStart).lte('invoice_date', effectiveEnd)
-        .order('invoice_date').order('id')),
-      supabase.from('accounts').select('id, code').in('code', ['5000', '4050']),
-      supabase.rpc('sales_monthly', { p_start_date: effectiveStart, p_end_date: effectiveEnd }),
-      supabase.rpc('sales_breakdown', { p_dimension: 'product', p_start_date: effectiveStart, p_end_date: effectiveEnd }),
-      supabase.rpc('sales_breakdown', { p_dimension: 'category', p_start_date: effectiveStart, p_end_date: effectiveEnd }),
-    ]);
+  // ------------------------------------------------------------------ rows --
 
-    const revenue = (invoicesRes || []).reduce((s: number, i: any) => s + Number(i.total_amount) - Number(i.tax_amount || 0) - Number(i.shipping_cost || 0), 0);
-
-    const cogsAcc = (accountsRes.data || []).find((a: any) => a.code === '5000');
-    const retAcc = (accountsRes.data || []).find((a: any) => a.code === '4050');
-    const [cogsRes, retRes] = await Promise.all([
-      cogsAcc ? supabase.rpc('period_net_debit', { p_account_id: cogsAcc.id, p_start_date: effectiveStart, p_end_date: effectiveEnd }) : Promise.resolve({ data: 0 }),
-      retAcc ? supabase.rpc('period_net_debit', { p_account_id: retAcc.id, p_start_date: effectiveStart, p_end_date: effectiveEnd }) : Promise.resolve({ data: 0 }),
-    ]);
-    const cogs = Number(cogsRes.data || 0);
-    const returns = Number(retRes.data || 0);
-
-    setKpis({ revenue, orders: invoicesRes?.length || 0, returns, cogs, grossProfit: revenue - returns - cogs });
-
-    setMonthly(fillMonths((monthlyRes.data || []) as MonthlyRow[]));
-    // Summary shows the top-products table and category pie — fetch those
-    // dimensions up front too (By Brand / By Customer still load on demand).
-    setBreakdown(prev => ({
-      ...prev,
-      product: (prodRes.data || []) as BreakdownRow[],
-      category: (catRes.data || []) as BreakdownRow[],
-    }));
-    setLoading(false);
-  }
-
-  // The RPC only returns months that have sales — pad the gaps so the
-  // trend line shows zero-months instead of skipping them.
-  function fillMonths(rows: MonthlyRow[]): MonthlyRow[] {
-    const map = new Map(rows.map(r => [r.month, r]));
-    const out: MonthlyRow[] = [];
-    const cur = new Date(effectiveStart + 'T00:00:00');
-    const end = new Date(effectiveEnd + 'T00:00:00');
-    let guard = 0;
-    while (cur <= end && guard < 60) {
-      const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`;
-      const row = map.get(key);
-      out.push({ month: key, revenue: Number(row?.revenue || 0), cost: Number(row?.cost || 0) });
-      cur.setMonth(cur.getMonth() + 1);
-      guard++;
-    }
-    return out;
-  }
-
-  async function loadBreakdown(dim: Dimension) {
-    setDimLoading(dim);
-    // PostgREST caps any single request at 1000 rows — once products-with-sales
-    // passes that, the tail would be silently dropped. Page past the cap like
-    // the table queries do (revenue desc, then name, keeps pages stable).
-    try {
-      const rows = await fetchAll(() => supabase.rpc('sales_breakdown', {
-        p_dimension: dim, p_start_date: effectiveStart, p_end_date: effectiveEnd,
-      }).order('revenue', { ascending: false }).order('name'));
-      setBreakdown(prev => ({ ...prev, [dim]: rows as BreakdownRow[] }));
-    } finally {
-      setDimLoading(null);
-    }
-  }
-
-  const rows = view === 'summary' ? (breakdown.product || []).slice(0, 10) : (breakdown[view as Dimension] || []);
+  const rows: BreakdownRow[] = useMemo(() => {
+    if (!dimension) return [];
+    return breakdownQuery.data ?? summary?.dimensions[dimension].rows ?? [];
+  }, [dimension, breakdownQuery.data, summary]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const matched = q ? rows.filter((r: BreakdownRow) => r.name.toLowerCase().includes(q)) : rows;
-    const sorted = [...matched].sort((a: BreakdownRow, b: BreakdownRow) => {
+    const matched = q ? rows.filter((r) => r.name.toLowerCase().includes(q)) : rows;
+    return [...matched].sort((a, b) => {
       if (sortKey === 'name') return sortAsc ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name);
       return sortAsc ? a[sortKey] - b[sortKey] : b[sortKey] - a[sortKey];
     });
-    return sorted;
   }, [rows, search, sortKey, sortAsc]);
+
+  const totals = useMemo(
+    () =>
+      filteredRows.reduce(
+        (acc, r) => ({
+          quantity: acc.quantity + r.quantity,
+          invoice_count: acc.invoice_count + r.invoice_count,
+          revenue: acc.revenue + r.revenue,
+          cost: acc.cost + r.cost,
+          profit: acc.profit + r.profit,
+        }),
+        { quantity: 0, invoice_count: 0, revenue: 0, cost: 0, profit: 0 },
+      ),
+    [filteredRows],
+  );
 
   const safePage = Math.min(page, Math.max(1, Math.ceil(filteredRows.length / pageSize)));
   const pagedRows = useMemo(
     () => filteredRows.slice((safePage - 1) * pageSize, safePage * pageSize),
-    [filteredRows, safePage, pageSize]
+    [filteredRows, safePage, pageSize],
   );
-
-  const totals = useMemo(() => filteredRows.reduce((acc, r) => ({
-    quantity: acc.quantity + r.quantity,
-    invoice_count: acc.invoice_count + r.invoice_count,
-    revenue: acc.revenue + r.revenue,
-    cost: acc.cost + r.cost,
-    profit: acc.profit + r.profit,
-  }), { quantity: 0, invoice_count: 0, revenue: 0, cost: 0, profit: 0 }), [filteredRows]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) setSortAsc(!sortAsc);
-    else { setSortKey(key); setSortAsc(key === 'name'); }
+    else {
+      setSortKey(key);
+      setSortAsc(key === 'name');
+    }
   }
 
-  useEffect(() => { setPage(1); }, [view, search, period, dateFrom, dateTo]);
+  // ----------------------------------------------------------------- chart --
 
-  function openDrill(dim: Dimension, row: BreakdownRow) {
-    setDrill({ dim, id: row.id, name: row.name });
-    setDrillRows([]);
-    setDrillLoading(true);
-    supabase.rpc('sales_breakdown_detail', {
-      p_dimension: dim, p_dimension_id: row.id, p_start_date: effectiveStart, p_end_date: effectiveEnd,
-    }).then(({ data }) => {
-      setDrillRows((data || []) as DetailRow[]);
-      setDrillLoading(false);
-    });
+  const chartLimit = topN === 0 ? Math.min(rows.length, 60) : topN;
+  const chartData = useMemo(
+    () => toChartData(rows, metric, chartLimit),
+    [rows, metric, chartLimit],
+  );
+  // Denominator for every chart share: the whole dimension, not the top-N cut.
+  const chartTotal = useMemo(() => dimensionTotal(rows, metric), [rows, metric]);
+
+  // ----------------------------------------------------------------- print --
+
+  async function handlePrint(scope: PrintScope) {
+    setPrintMenu(false);
+    setPrintBusy(true);
+    try {
+      if (scope === 'full') {
+        // Printing every section needs every full list. This is the one place
+        // a deliberate, user-initiated fetch of all four is correct.
+        const lists = await Promise.all(
+          DIMENSIONS.map((dim) =>
+            queryClient.ensureQueryData({
+              queryKey: salesKeys.breakdown(dim, start, end),
+              queryFn: () => fetchSalesBreakdown(dim, start, end),
+              staleTime: 5 * 60_000,
+            }),
+          ),
+        );
+        setFullRows(
+          DIMENSIONS.reduce<Partial<Record<Dimension, BreakdownRow[]>>>((acc, dim, i) => {
+            acc[dim] = lists[i];
+            return acc;
+          }, {}),
+        );
+      } else {
+        setFullRows((prev) => {
+          const next: Partial<Record<Dimension, BreakdownRow[]>> = {};
+          if (dimension) next[dimension] = breakdownQuery.data ?? summary?.dimensions[dimension].rows;
+          return next;
+        });
+      }
+
+      setPrintScope(scope);
+      // Two frames: one for the store update, one for the document commit.
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      );
+
+      const title = `Sales report · ${resolved.label}`;
+      const opened = printReportDocument(printRef.current, title);
+      if (!opened) {
+        // Popup blocked — the same node is print-visible, so the in-page path
+        // produces the identical document.
+        window.print();
+      }
+    } finally {
+      setPrintBusy(false);
+    }
   }
+
+  // ------------------------------------------------------------------ csv ---
 
   function exportToCSV() {
     let csv = '';
     let filename = 'sales_report';
-    if (view === 'summary') {
-      csv = 'Month,Revenue,Cost,Gross Profit\n' + monthly.map(m => `${m.month},${m.revenue},${m.cost},${m.revenue - m.cost}`).join('\n');
+
+    if (view === 'summary' && summary) {
+      const header = 'Month,Revenue,Cost,Gross Profit\n';
+      csv =
+        header +
+        summary.monthly
+          .map((m) => `${m.month},${m.revenue.toFixed(2)},${m.cost.toFixed(2)},${(m.revenue - m.cost).toFixed(2)}`)
+          .join('\n');
+      filename = `sales_summary_${start}_to_${end}`;
     } else {
-      filename = `sales_by_${view}`;
-      csv = `${view === 'product' ? 'Product' : view === 'brand' ? 'Brand' : view === 'category' ? 'Category' : 'Customer'},Quantity,Invoices,Revenue,Cost,Profit,Margin %\n`
-        + filteredRows.map(r => `"${r.name}",${r.quantity},${r.invoice_count},${r.revenue},${r.cost},${r.profit},${r.revenue > 0 ? ((r.profit / r.revenue) * 100).toFixed(1) : 0}`).join('\n')
-        + `\nTOTAL,${totals.quantity},${totals.invoice_count},${totals.revenue},${totals.cost},${totals.profit},${totals.revenue > 0 ? ((totals.profit / totals.revenue) * 100).toFixed(1) : 0}`;
+      const label = view === 'product' ? 'Product' : view === 'brand' ? 'Brand' : view === 'category' ? 'Category' : 'Customer';
+      csv =
+        `${label},Quantity,Invoices,Revenue,Cost,Profit,Margin %\n` +
+        filteredRows
+          .map(
+            (r) =>
+              `"${r.name.replace(/"/g, '""')}",${r.quantity},${r.invoice_count},${r.revenue.toFixed(2)},${r.cost.toFixed(2)},${r.profit.toFixed(2)},${marginPct(r.profit, r.revenue).toFixed(1)}`,
+          )
+          .join('\n') +
+        `\nTOTAL,${totals.quantity},${totals.invoice_count},${totals.revenue.toFixed(2)},${totals.cost.toFixed(2)},${totals.profit.toFixed(2)},${marginPct(totals.profit, totals.revenue).toFixed(1)}`;
+      filename = `sales_by_${view}_${start}_to_${end}`;
     }
-    const blob = new Blob([csv], { type: 'text/csv' });
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${filename}_${effectiveStart}_to_${effectiveEnd}.csv`;
+    a.download = `${filename}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  const views: { id: View; label: string; icon: any }[] = [
-    { id: 'summary', label: 'Summary', icon: TrendingUp },
-    { id: 'product', label: 'By Product', icon: Package },
-    { id: 'brand', label: 'By Brand', icon: Tag },
-    { id: 'category', label: 'By Category', icon: Layers },
-    { id: 'customer', label: 'By Customer', icon: Users },
-  ];
+  // ---------------------------------------------------------------- render --
 
-  const periodLabel = { today: 'Today', this_week: 'This Week', this_month: 'This Month', this_quarter: 'This Quarter', this_year: 'This Year', custom: 'Custom Range' }[period] || period;
-
-  const chartData = monthly.map(m => ({ ...m, profit: m.revenue - m.cost, label: m.month.slice(2) }));
+  const kpis = summary?.kpis;
+  const isOfflineSource = summary?.source === 'cache' || summary?.source === 'replica';
+  const loading = summaryQuery.isLoading;
 
   return (
-    <div className="space-y-5 animate-fade-in print-modal">
-      <div className="hidden print:block mb-4 border-b border-border pb-3">
-        <h1 className="text-xl font-bold">Sales Report</h1>
-        <p className="text-sm text-muted-foreground">Period: {effectiveStart} to {effectiveEnd} · Generated {new Date().toLocaleString()}</p>
-      </div>
-
-      <div className="flex items-center justify-between flex-wrap gap-3 print:hidden">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Sales Report</h1>
-          <p className="text-muted-foreground text-sm mt-0.5 flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" />{periodLabel}</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <select value={period} onChange={e => setPeriod(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white">
-            <option value="today">Today</option>
-            <option value="this_week">This Week</option>
-            <option value="this_month">This Month</option>
-            <option value="this_quarter">This Quarter</option>
-            <option value="this_year">This Year</option>
-            <option value="custom">Custom Range</option>
-          </select>
-          {period === 'custom' && (
-            <div className="flex items-center gap-1">
-              <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none" />
-              <span className="text-muted-foreground">-</span>
-              <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none" />
-            </div>
-          )}
-          <button onClick={() => setRefreshKey(k => k + 1)} className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition">
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
-          <button onClick={() => window.print()} className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition">
-            <Printer className="w-3.5 h-3.5" />
-          </button>
-          <button onClick={exportToCSV} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
-            <Download className="w-4 h-4" />Export
-          </button>
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
-        </div>
-      ) : (
-        <>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 print:grid-cols-6">
-            <div className="stat-card">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">Revenue</p>
-                <TrendingUp className="w-4 h-4 text-green-500" />
-              </div>
-              <p className="text-lg font-bold text-foreground">{formatCurrency(kpis.revenue)}</p>
-              <p className="text-xs text-muted-foreground mt-1">net of VAT &amp; shipping</p>
-            </div>
-            <div className="stat-card">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">Invoices</p>
-                <Receipt className="w-4 h-4 text-blue-500" />
-              </div>
-              <p className="text-2xl font-bold text-foreground">{kpis.orders}</p>
-              <p className="text-xs text-muted-foreground mt-1">non-cancelled</p>
-            </div>
-            <div className="stat-card">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">Sales Returns</p>
-                <ShoppingCart className="w-4 h-4 text-orange-500" />
-              </div>
-              <p className="text-lg font-bold text-red-600">{kpis.returns > 0 ? formatCurrency(kpis.returns) : '—'}</p>
-              <p className="text-xs text-muted-foreground mt-1">account 4050</p>
-            </div>
-            <div className="stat-card">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">COGS</p>
-                <Package className="w-4 h-4 text-amber-500" />
-              </div>
-              <p className="text-lg font-bold text-red-600">{formatCurrency(kpis.cogs)}</p>
-              <p className="text-xs text-muted-foreground mt-1">{kpis.revenue > 0 ? ((kpis.cogs / kpis.revenue) * 100).toFixed(1) : 0}% of revenue</p>
-            </div>
-            <div className="stat-card">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">Gross Profit</p>
-                <TrendingUp className="w-4 h-4 text-green-500" />
-              </div>
-              <p className="text-lg font-bold text-green-600">{formatCurrency(kpis.grossProfit)}</p>
-              <p className="text-xs font-medium mt-1">{kpis.revenue > 0 ? ((kpis.grossProfit / kpis.revenue) * 100).toFixed(1) : 0}% margin</p>
-            </div>
-            <div className="stat-card">
-              <div className="flex items-center justify-between mb-1">
-                <p className="text-xs text-muted-foreground">Avg. Invoice</p>
-                <Receipt className="w-4 h-4 text-purple-500" />
-              </div>
-              <p className="text-lg font-bold text-foreground">{formatCurrency(kpis.orders > 0 ? kpis.revenue / kpis.orders : 0)}</p>
-              <p className="text-xs text-muted-foreground mt-1">per invoice</p>
-            </div>
+    <>
+      <div className="space-y-5 animate-fade-in print:hidden">
+        {/* ---------------------------------------------------------- header */}
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">Sales report</h1>
+            <p className="text-muted-foreground text-sm mt-0.5 flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5" />
+              {resolved.label}
+              <span className="text-muted-foreground/60">·</span>
+              <span className="tabular-nums">
+                {start} to {end}
+              </span>
+            </p>
           </div>
 
-          <div className="flex gap-1 bg-muted/50 p-1 rounded-xl w-fit overflow-x-auto print:hidden">
-            {views.map(v => (
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              value={period}
+              onChange={(e) => setPeriod(e.target.value as typeof period)}
+              className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none bg-white"
+            >
+              {PERIOD_OPTIONS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+
+            {period === 'custom' && (
+              <div className="flex items-center gap-1">
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setCustomRange(e.target.value, dateTo)}
+                  className="border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none"
+                />
+                <span className="text-muted-foreground">–</span>
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setCustomRange(dateFrom, e.target.value)}
+                  className="border border-border rounded-lg px-2 py-1.5 text-sm focus:outline-none"
+                />
+              </div>
+            )}
+
+            <button
+              onClick={() => queryClient.invalidateQueries({ queryKey: ['sales-report'] })}
+              title="Refresh"
+              className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${summaryQuery.isFetching ? 'animate-spin' : ''}`} />
+            </button>
+
+            <div className="relative">
               <button
-                key={v.id}
-                onClick={() => setView(v.id)}
-                className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition whitespace-nowrap ${view === v.id ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                onClick={() => setPrintMenu((v) => !v)}
+                disabled={printBusy || loading}
+                className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition disabled:opacity-50"
               >
-                <v.icon className="w-4 h-4" />
-                {v.label}
+                {printBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
+                Print
+                <ChevronDown className="w-3 h-3" />
               </button>
-            ))}
-          </div>
+              {printMenu && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setPrintMenu(false)} />
+                  <div className="absolute right-0 mt-1 w-64 bg-white border border-border rounded-lg shadow-lg z-20 overflow-hidden">
+                    <button
+                      onClick={() => handlePrint('current')}
+                      className="w-full text-left px-3 py-2.5 hover:bg-muted/60 transition"
+                    >
+                      <div className="text-sm font-medium text-foreground">Current view</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Cover page + {view === 'summary' ? 'summary only' : 'this section, every row'}
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => handlePrint('full')}
+                      className="w-full text-left px-3 py-2.5 hover:bg-muted/60 transition border-t border-border"
+                    >
+                      <div className="text-sm font-medium text-foreground">Full report</div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        Cover + product, brand, category and customer
+                      </div>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
 
-          {view === 'summary' && (
-            <div className="space-y-4">
-              <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
-                <h3 className="text-sm font-semibold text-foreground mb-4">Revenue &amp; Gross Profit Trend</h3>
-                <ResponsiveContainer width="100%" height={280}>
-                  <LineChart data={chartData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                    <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => formatAxisCurrency(v)} />
-                    <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                    <Line type="monotone" dataKey="revenue" stroke="#3b82f6" strokeWidth={2} name="Revenue" dot={false} />
-                    <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} name="Gross Profit" dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+            <button
+              onClick={exportToCSV}
+              disabled={loading}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition disabled:opacity-50"
+            >
+              <Download className="w-4 h-4" />
+              Export
+            </button>
+          </div>
+        </div>
+
+        {/* ------------------------------------------------- offline notice */}
+        {isOfflineSource && summary && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <CloudOff className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              {summary.source === 'replica' ? (
+                <>
+                  <span className="font-medium">Computed on this device.</span> The connection is
+                  unavailable, so figures come from the local replica — accurate as of the last
+                  sync, and may exclude sales made on other devices since then.
+                </>
+              ) : (
+                <>
+                  <span className="font-medium">Showing the last saved copy.</span> This period was
+                  loaded while online and is being served from the device cache.
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------ KPIs */}
+        {loading ? (
+          <div className="flex items-center justify-center py-16">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
+          </div>
+        ) : summaryQuery.isError ? (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-center">
+            <p className="text-sm font-medium text-red-900">Could not load the sales report</p>
+            <p className="text-xs text-red-700 mt-1">
+              {(summaryQuery.error as Error)?.message || 'Unknown error'}
+            </p>
+            <button
+              onClick={() => summaryQuery.refetch()}
+              className="mt-3 text-xs font-medium text-red-900 underline"
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+              <KpiCard
+                label="Revenue"
+                value={formatCurrency(kpis?.revenue ?? 0)}
+                hint="net of VAT, shipping and cart discount"
+                icon={<TrendingUp className="w-4 h-4 text-blue-600" />}
+              />
+              <KpiCard
+                label="Invoices"
+                value={(kpis?.orders ?? 0).toLocaleString('en-US')}
+                hint="cancelled and draft excluded"
+                icon={<Receipt className="w-4 h-4 text-slate-500" />}
+              />
+              <KpiCard
+                label="Sales returns"
+                value={formatCurrency(kpis?.returns ?? 0)}
+                hint="account 4050"
+                icon={<ShoppingCart className="w-4 h-4 text-amber-500" />}
+                tone="negative"
+              />
+              <KpiCard
+                label="COGS"
+                value={formatCurrency(kpis?.cogs ?? 0)}
+                hint={
+                  kpis && kpis.revenue > 0
+                    ? `${((kpis.cogs / kpis.revenue) * 100).toFixed(1)}% of revenue`
+                    : 'account 5000'
+                }
+                icon={<Package className="w-4 h-4 text-amber-500" />}
+                tone="negative"
+              />
+              <KpiCard
+                label="Gross profit"
+                value={formatCurrency(kpis?.gross_profit ?? 0)}
+                hint={kpis ? `${marginPct(kpis.gross_profit, kpis.revenue).toFixed(1)}% margin` : ''}
+                icon={<TrendingUp className="w-4 h-4 text-green-600" />}
+                tone="positive"
+              />
+              <KpiCard
+                label="Avg. invoice"
+                value={formatCurrency(kpis?.avg_invoice ?? 0)}
+                hint="per invoice"
+                icon={<Receipt className="w-4 h-4 text-slate-500" />}
+              />
+            </div>
+
+            {/* ------------------------------------------------------- tabs */}
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex gap-1 bg-muted/50 p-1 rounded-xl w-fit overflow-x-auto">
+                {DIMENSION_TABS.map((t) => {
+                  const Icon = TAB_ICON[t.id];
+                  const active = view === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => setView(t.id)}
+                      onMouseEnter={() => t.id !== 'summary' && prefetchBreakdown(t.id as Dimension)}
+                      onFocus={() => t.id !== 'summary' && prefetchBreakdown(t.id as Dimension)}
+                      className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition whitespace-nowrap ${
+                        active ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                      {t.label}
+                    </button>
+                  );
+                })}
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="table-wrapper">
-                  <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-foreground">Top 10 Products</h3>
-                    <button onClick={() => setView('product')} className="text-xs text-blue-600 hover:underline flex items-center gap-1">View all <ArrowRight className="w-3 h-3" /></button>
+              {view !== 'summary' && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex items-center bg-muted/50 rounded-lg p-0.5">
+                    <button
+                      onClick={() => setDisplayMode(view, 'table')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition ${
+                        displayMode[view] === 'table' ? 'bg-white shadow-sm text-foreground' : 'text-muted-foreground'
+                      }`}
+                    >
+                      <Table2 className="w-3.5 h-3.5" />
+                      Table
+                    </button>
+                    <button
+                      onClick={() => setDisplayMode(view, 'chart')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition ${
+                        displayMode[view] === 'chart' ? 'bg-white shadow-sm text-foreground' : 'text-muted-foreground'
+                      }`}
+                    >
+                      <BarChart3 className="w-3.5 h-3.5" />
+                      Chart
+                    </button>
                   </div>
-                  <table className="w-full">
-                    <thead><tr className="bg-muted/40 border-b border-border">
-                      {['#', 'Product', 'Qty', 'Revenue', 'Profit'].map(h => <th key={h} className="text-left text-xs font-semibold text-muted-foreground px-4 py-3">{h}</th>)}
-                    </tr></thead>
-                    <tbody className="divide-y divide-border">
-                      {rows.length > 0 ? rows.map((p, i) => (
-                        <tr key={p.id || i} className="hover:bg-muted/30 transition-colors">
-                          <td className="px-4 py-2.5 text-sm text-muted-foreground">{i + 1}</td>
-                          <td className="px-4 py-2.5 text-sm font-semibold text-foreground">{p.name}</td>
-                          <td className="px-4 py-2.5 text-sm text-foreground">{p.quantity}</td>
-                          <td className="px-4 py-2.5 text-sm font-semibold text-foreground">{formatCurrency(p.revenue)}</td>
-                          <td className={`px-4 py-2.5 text-sm font-semibold ${p.profit > 0 ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(p.profit)}</td>
-                        </tr>
-                      )) : (
-                        <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground text-sm">No product sales in this period</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
 
-                <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
-                  <h3 className="text-sm font-semibold text-foreground mb-4">Revenue by Category</h3>
-                  {(breakdown.category || []).length > 0 ? (
-                    <div className="flex items-center gap-4">
-                      <ResponsiveContainer width={160} height={160}>
-                        <PieChart>
-                          <Pie data={(breakdown.category || []).slice(0, 8)} cx="50%" cy="50%" innerRadius={45} outerRadius={70} paddingAngle={2} dataKey="revenue">
-                            {(breakdown.category || []).slice(0, 8).map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                          </Pie>
-                          <Tooltip formatter={(v: number) => [formatCurrency(v), '']} contentStyle={{ fontSize: 11, borderRadius: 8 }} />
-                        </PieChart>
-                      </ResponsiveContainer>
-                      <div className="flex-1 space-y-2">
-                        {(breakdown.category || []).slice(0, 8).map((cat, i) => (
-                          <div key={cat.id || i} className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-1.5">
-                              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
-                              <span className="text-xs text-muted-foreground truncate">{cat.name}</span>
-                            </div>
-                            <span className="text-xs font-semibold text-foreground">{formatCurrency(cat.revenue)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-center py-8 text-muted-foreground text-sm">
-                      {dimLoading === 'category' ? 'Loading…' : 'No category data in this period'}
-                    </div>
+                  {displayMode[view] === 'chart' && (
+                    <>
+                      <select
+                        value={metric}
+                        onChange={(e) => setMetric(e.target.value as ChartMetric)}
+                        className="border border-border rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none"
+                      >
+                        <option value="revenue">Revenue</option>
+                        <option value="profit">Gross profit</option>
+                        <option value="quantity">Quantity</option>
+                      </select>
+                      <select
+                        value={topN}
+                        onChange={(e) => setTopN(Number(e.target.value))}
+                        className="border border-border rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none"
+                      >
+                        <option value={10}>Top 10</option>
+                        <option value={25}>Top 25</option>
+                        <option value={50}>Top 50</option>
+                        <option value={0}>All</option>
+                      </select>
+                    </>
                   )}
                 </div>
-              </div>
+              )}
             </div>
-          )}
 
-          {view !== 'summary' && (
-            <div className="table-wrapper">
-              <div className="px-4 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2">
-                <h3 className="text-sm font-semibold text-foreground capitalize">Sales by {view}</h3>
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
-                  <input
-                    value={search}
-                    onChange={e => setSearch(e.target.value)}
-                    placeholder={`Search ${view}…`}
-                    className="border border-border rounded-lg pl-8 pr-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 w-56"
+            {/* ---------------------------------------------------- summary */}
+            {view === 'summary' && (
+              <div className="space-y-4">
+                {/* A trend needs at least two points. For a single-month period
+                    the series has one bucket, which Recharts draws as a lone
+                    dot on an otherwise empty axis — it reads as a broken chart
+                    rather than as information. The KPI strip above already
+                    carries that month's figures, so the card is omitted. Same
+                    rule as the printed document. */}
+                {(summary?.monthly.length ?? 0) > 1 && (
+                  <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-sm font-semibold text-foreground">Revenue &amp; gross profit trend</h3>
+                      <span className="text-xs text-muted-foreground">
+                        {summary?.monthly.length} months with activity
+                      </span>
+                    </div>
+                    <ResponsiveContainer width="100%" height={280}>
+                      <LineChart data={(summary?.monthly ?? []).map((m) => ({ ...m, profit: m.revenue - m.cost, label: m.month.slice(2) }))}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                        <XAxis dataKey="label" tick={{ fontSize: 10.5, fill: '#64748b' }} axisLine={false} tickLine={false} />
+                        <YAxis
+                          // Nine-figure currency ticks ("1,50,000,000.00") need a
+                          // wider axis box; the 60px default clips the leading digits.
+                          width={96}
+                          tick={{ fontSize: 10.5, fill: '#64748b' }}
+                          axisLine={false}
+                          tickLine={false}
+                          tickFormatter={(v) => formatAxisCurrency(v)}
+                        />
+                        <Tooltip
+                          formatter={(v: number) => [formatCurrency(v), '']}
+                          contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                        />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Line type="monotone" dataKey="revenue" stroke="#1e3a6e" strokeWidth={2} name="Revenue" dot={false} isAnimationActive={false} />
+                        <Line type="monotone" dataKey="profit" stroke="#4caf50" strokeWidth={2} name="Gross profit" dot={false} isAnimationActive={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <RevenueCompositionCard
+                    title="Revenue by category"
+                    subtitle="Share of net revenue"
+                    rows={summary?.dimensions.category.rows ?? []}
+                    total={kpis?.revenue ?? 0}
+                    totalMembers={summary?.dimensions.category.total}
+                    onOpen={() => setView('category')}
+                  />
+                  <RevenueCompositionCard
+                    title="Revenue by brand"
+                    subtitle="Share of net revenue"
+                    rows={summary?.dimensions.brand.rows ?? []}
+                    total={kpis?.revenue ?? 0}
+                    totalMembers={summary?.dimensions.brand.total}
+                    onOpen={() => setView('brand')}
+                  />
+                  <RevenueCompositionCard
+                    title="Revenue by product"
+                    subtitle="Top products by revenue"
+                    rows={summary?.dimensions.product.rows ?? []}
+                    total={kpis?.revenue ?? 0}
+                    totalMembers={summary?.dimensions.product.total}
+                    onOpen={() => setView('product')}
+                  />
+                  <RevenueCompositionCard
+                    title="Revenue by customer"
+                    subtitle="Concentration in the top accounts"
+                    rows={summary?.dimensions.customer.rows ?? []}
+                    total={kpis?.revenue ?? 0}
+                    totalMembers={summary?.dimensions.customer.total}
+                    onOpen={() => setView('customer')}
                   />
                 </div>
               </div>
-              {dimLoading === view ? (
-                <div className="flex items-center justify-center py-12">
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" />
-                </div>
-              ) : (
-                <table className="w-full">
-                  <thead><tr className="bg-muted/40 border-b border-border">
-                    {[['#', null], [view === 'product' ? 'Product' : view === 'brand' ? 'Brand' : view === 'category' ? 'Category' : 'Customer', 'name'],
-                      ['Qty Sold', 'quantity'], ['Invoices', 'invoice_count'], ['Revenue', 'revenue'], ['Cost', 'cost'], ['Profit', 'profit'],
-                      ['Margin', null], ['% of Rev', null]].map(([h, key], idx) => (
-                      <th
-                        key={idx}
-                        onClick={key ? () => toggleSort(key as SortKey) : undefined}
-                        className={`text-left text-xs font-semibold text-muted-foreground px-4 py-3 ${key ? 'cursor-pointer hover:text-foreground select-none' : ''}`}
-                      >
-                        {h}{key === sortKey ? (sortAsc ? ' ▲' : ' ▼') : ''}
-                      </th>
-                    ))}
-                  </tr></thead>
-                  <tbody className="divide-y divide-border">
-                    {pagedRows.length > 0 ? pagedRows.map((r, i) => {
-                      return (
-                        <tr
-                          key={r.id || `idx-${i}`}
-                          onClick={() => openDrill(view as Dimension, r)}
-                          className="hover:bg-muted/30 transition-colors cursor-pointer"
-                          title="Click to see invoices"
-                        >
-                          <td className="px-4 py-2.5 text-sm text-muted-foreground">{(safePage - 1) * pageSize + i + 1}</td>
-                          <td className="px-4 py-2.5 text-sm font-semibold text-foreground">{r.name}</td>
-                          <td className="px-4 py-2.5 text-sm text-foreground">
-                            {r.quantity}{r.unit ? <span className="text-muted-foreground text-xs ml-1">{r.unit}</span> : null}
-                          </td>
-                          <td className="px-4 py-2.5 text-sm text-foreground">{r.invoice_count}</td>
-                          <td className="px-4 py-2.5 text-sm font-semibold text-foreground">{formatCurrency(r.revenue)}</td>
-                          <td className="px-4 py-2.5 text-sm text-red-600">{formatCurrency(r.cost)}</td>
-                          <td className={`px-4 py-2.5 text-sm font-semibold ${r.profit > 0 ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(r.profit)}</td>
-                          <td className="px-4 py-2.5">
-                            <span className={`text-xs font-medium ${r.profit > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                              {r.revenue > 0 ? ((r.profit / r.revenue) * 100).toFixed(1) : 0}%
-                            </span>
-                          </td>
-                          <td className="px-4 py-2.5">
-                            <span className="text-xs text-muted-foreground">{totals.revenue > 0 ? ((r.revenue / totals.revenue) * 100).toFixed(1) : 0}%</span>
-                          </td>
-                        </tr>
-                      );
-                    }) : (
-                      <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground text-sm">
-                        {search ? 'No matches for your search' : `No ${view} sales in this period`}
-                      </td></tr>
+            )}
+
+            {/* -------------------------------------------------- dimension */}
+            {view !== 'summary' && dimension && (
+              <div className="space-y-4">
+                {displayMode[view] === 'chart' ? (
+                  <div className="bg-white rounded-xl border border-border p-5 shadow-sm">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-sm font-semibold text-foreground">
+                        {metric === 'revenue' ? 'Revenue' : metric === 'profit' ? 'Gross profit' : 'Quantity'} by{' '}
+                        {view}
+                      </h3>
+                      <span className="text-xs text-muted-foreground">
+                        {chartData.length} of {rows.length} shown
+                      </span>
+                    </div>
+
+                    {dimension === 'customer' ? (
+                      <ParetoChart
+                        data={chartData}
+                        metric={metric}
+                        totalValue={chartTotal}
+                        height={Math.max(340, Math.min(chartData.length, 15) * 26 + 120)}
+                      />
+                    ) : dimension === 'brand' || dimension === 'category' ? (
+                      <DonutChart
+                        data={chartData}
+                        metric={metric}
+                        height={320}
+                        totalValue={chartTotal}
+                        totalMembers={Math.max(rows.length - chartData.length, 0)}
+                      />
+                    ) : (
+                      <HorizontalBarChart
+                        data={chartData}
+                        metric={metric}
+                        height={Math.max(320, chartData.length * 26)}
+                      />
                     )}
-                  </tbody>
-                  {filteredRows.length > 0 && (
-                    <tfoot>
-                      <tr className="bg-muted/40 border-t border-border font-semibold">
-                        <td className="px-4 py-3 text-sm text-foreground" colSpan={2}>TOTAL</td>
-                        <td className="px-4 py-3 text-sm text-foreground">{totals.quantity}</td>
-                        <td className="px-4 py-3 text-sm text-foreground">{totals.invoice_count}</td>
-                        <td className="px-4 py-3 text-sm text-foreground">{formatCurrency(totals.revenue)}</td>
-                        <td className="px-4 py-3 text-sm text-red-600">{formatCurrency(totals.cost)}</td>
-                        <td className="px-4 py-3 text-sm text-green-600">{formatCurrency(totals.profit)}</td>
-                        <td className="px-4 py-3 text-xs text-foreground">{totals.revenue > 0 ? ((totals.profit / totals.revenue) * 100).toFixed(1) : 0}%</td>
-                        <td className="px-4 py-3" />
-                      </tr>
-                    </tfoot>
-                  )}
-                </table>
-              )}
-              {dimLoading !== view && filteredRows.length > 0 && (
-                <Pagination
-                  page={safePage}
-                  pageSize={pageSize}
-                  total={filteredRows.length}
-                  onPageChange={setPage}
-                  onPageSizeChange={size => { setPageSize(size); }}
-                />
-              )}
-            </div>
-          )}
+                  </div>
+                ) : (
+                  <div className="table-wrapper">
+                    <div className="px-4 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-semibold text-foreground capitalize">Sales by {view}</h3>
+                        {breakdownQuery.isFetching && (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                        )}
+                        {breakdownQuery.isPlaceholderData && (
+                          <span className="text-xs text-muted-foreground">loading full list…</span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          value={search}
+                          onChange={(e) => {
+                            setSearch(e.target.value);
+                            setPage(1);
+                          }}
+                          placeholder={`Search ${view}…`}
+                          className="border border-border rounded-lg pl-8 pr-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 w-56"
+                        />
+                      </div>
+                    </div>
 
-          <p className="text-xs text-muted-foreground print:hidden">
-            Revenue basis: invoice line subtotals (VAT and shipping are billed at invoice level).
-            COGS basis: cost price recorded on each line at time of sale. Click any row to see its invoices.
-          </p>
-        </>
-      )}
+                    <table className="w-full">
+                      <thead>
+                        <tr className="bg-muted/40 border-b border-border">
+                          {(
+                            [
+                              ['#', null],
+                              [view === 'product' ? 'Product' : view === 'brand' ? 'Brand' : view === 'category' ? 'Category' : 'Customer', 'name'],
+                              ['Qty sold', 'quantity'],
+                              ['Invoices', 'invoice_count'],
+                              ['Revenue', 'revenue'],
+                              ['Cost', 'cost'],
+                              ['Profit', 'profit'],
+                              ['Margin', null],
+                              ['% of rev', null],
+                            ] as [string, SortKey | null][]
+                          ).map(([label, key], idx) => (
+                            <th
+                              key={idx}
+                              onClick={key ? () => toggleSort(key) : undefined}
+                              className={`text-left text-xs font-semibold text-muted-foreground px-4 py-3 ${
+                                key ? 'cursor-pointer hover:text-foreground select-none' : ''
+                              }`}
+                            >
+                              {label}
+                              {key === sortKey ? (sortAsc ? ' ▲' : ' ▼') : ''}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {pagedRows.length > 0 ? (
+                          pagedRows.map((r, i) => (
+                            <tr
+                              key={r.id ?? `idx-${i}`}
+                              onClick={() => setDrill({ dim: dimension, id: r.id, name: r.name })}
+                              className="hover:bg-muted/30 transition-colors cursor-pointer"
+                              title="Click to see the invoices behind this row"
+                            >
+                              <td className="px-4 py-2.5 text-sm text-muted-foreground">
+                                {(safePage - 1) * pageSize + i + 1}
+                              </td>
+                              <td className="px-4 py-2.5 text-sm font-semibold text-foreground">{r.name}</td>
+                              <td className="px-4 py-2.5 text-sm text-foreground">
+                                {Math.round(r.quantity).toLocaleString('en-US')}
+                                {r.unit ? <span className="text-muted-foreground text-xs ml-1">{r.unit}</span> : null}
+                              </td>
+                              <td className="px-4 py-2.5 text-sm text-foreground">{r.invoice_count}</td>
+                              <td className="px-4 py-2.5 text-sm font-semibold text-foreground tabular-nums">
+                                {formatCurrency(r.revenue)}
+                              </td>
+                              <td className="px-4 py-2.5 text-sm text-muted-foreground tabular-nums">
+                                {formatCurrency(r.cost)}
+                              </td>
+                              <td
+                                className={`px-4 py-2.5 text-sm font-semibold tabular-nums ${
+                                  r.profit >= 0 ? 'text-green-600' : 'text-red-600'
+                                }`}
+                              >
+                                {formatCurrency(r.profit)}
+                              </td>
+                              <td className="px-4 py-2.5">
+                                <span
+                                  className={`text-xs font-medium tabular-nums ${
+                                    r.profit >= 0 ? 'text-green-600' : 'text-red-600'
+                                  }`}
+                                >
+                                  {marginPct(r.profit, r.revenue).toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className="px-4 py-2.5">
+                                <span className="text-xs text-muted-foreground tabular-nums">
+                                  {totals.revenue > 0 ? ((r.revenue / totals.revenue) * 100).toFixed(1) : '0.0'}%
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={9} className="px-4 py-10 text-center text-muted-foreground text-sm">
+                              {breakdownQuery.isLoading
+                                ? 'Loading…'
+                                : search
+                                  ? 'No matches for your search'
+                                  : `No ${view} sales in this period`}
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                      {filteredRows.length > 0 && (
+                        <tfoot>
+                          <tr className="bg-muted/40 border-t border-border font-semibold">
+                            <td className="px-4 py-3 text-sm text-foreground" colSpan={2}>
+                              TOTAL
+                            </td>
+                            <td className="px-4 py-3 text-sm text-foreground tabular-nums">
+                              {Math.round(totals.quantity).toLocaleString('en-US')}
+                            </td>
+                            <td className="px-4 py-3 text-sm text-foreground tabular-nums">{totals.invoice_count}</td>
+                            <td className="px-4 py-3 text-sm text-foreground tabular-nums">{formatCurrency(totals.revenue)}</td>
+                            <td className="px-4 py-3 text-sm text-muted-foreground tabular-nums">{formatCurrency(totals.cost)}</td>
+                            <td
+                              className={`px-4 py-3 text-sm tabular-nums ${
+                                totals.profit >= 0 ? 'text-green-600' : 'text-red-600'
+                              }`}
+                            >
+                              {formatCurrency(totals.profit)}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-foreground tabular-nums">
+                              {marginPct(totals.profit, totals.revenue).toFixed(1)}%
+                            </td>
+                            <td className="px-4 py-3" />
+                          </tr>
+                        </tfoot>
+                      )}
+                    </table>
 
+                    {filteredRows.length > 0 && (
+                      <Pagination
+                        page={safePage}
+                        pageSize={pageSize}
+                        total={filteredRows.length}
+                        onPageChange={setPage}
+                        onPageSizeChange={(size) => setPageSize(size)}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Revenue is the invoice-line subtotal after allocating each invoice&apos;s cart discount
+              pro-rata, excluding VAT and shipping. COGS in the summary strip is the ledger figure
+              (account 5000, matching the P&amp;L); dimension tables use the cost price recorded on
+              each line at the time of sale
+              {kpis && Math.abs(kpis.cogs - kpis.cogs_line) >= 0.5
+                ? `, which differs from the ledger by ${formatCurrency(kpis.cogs - kpis.cogs_line)}`
+                : ''}
+              . Cancelled and draft invoices are excluded. Click any row for its invoices.
+            </p>
+          </>
+        )}
+      </div>
+
+      {/* ----------------------------------------------------------- drill */}
       {drill && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 print:hidden" onClick={() => setDrill(null)}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 print:hidden"
+          onClick={() => setDrill(null)}
+        >
           <div className="absolute inset-0 bg-black/50" />
-          <div className="relative bg-white rounded-xl shadow-xl border border-border w-full max-w-3xl max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div
+            className="relative bg-white rounded-xl shadow-xl border border-border w-full max-w-3xl max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between px-5 py-4 border-b border-border">
               <div>
                 <h3 className="text-sm font-bold text-foreground">{drill.name}</h3>
-                <p className="text-xs text-muted-foreground">Invoices · {effectiveStart} to {effectiveEnd}</p>
+                <p className="text-xs text-muted-foreground">
+                  Invoices · {start} to {end}
+                </p>
               </div>
               <button onClick={() => setDrill(null)} className="p-1.5 hover:bg-muted rounded-lg transition">
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="overflow-y-auto flex-1">
-              {drillLoading ? (
+              {drillQuery.isLoading ? (
                 <div className="flex items-center justify-center py-10">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" />
                 </div>
-              ) : drillRows.length === 0 ? (
+              ) : (drillQuery.data?.length ?? 0) === 0 ? (
                 <div className="text-center py-10 text-muted-foreground text-sm">No invoices found</div>
               ) : (
                 <table className="w-full">
                   <thead className="sticky top-0 bg-white">
                     <tr className="bg-muted/40 border-b border-border">
-                      {['Invoice #', 'Date', 'Customer', 'Qty', 'Revenue', 'Cost', 'Profit'].map(h => (
-                        <th key={h} className="text-left text-xs font-semibold text-muted-foreground px-4 py-2.5">{h}</th>
+                      {['Invoice #', 'Date', 'Customer', 'Qty', 'Revenue', 'Cost', 'Profit'].map((h) => (
+                        <th key={h} className="text-left text-xs font-semibold text-muted-foreground px-4 py-2.5">
+                          {h}
+                        </th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {drillRows.map(d => (
+                    {(drillQuery.data ?? []).map((d) => (
                       <tr key={d.invoice_id} className="hover:bg-muted/30 transition-colors">
                         <td className="px-4 py-2.5 text-sm font-semibold text-blue-600">{d.invoice_number}</td>
                         <td className="px-4 py-2.5 text-sm text-foreground">{d.invoice_date}</td>
                         <td className="px-4 py-2.5 text-sm text-foreground">{d.customer_name || '—'}</td>
-                        <td className="px-4 py-2.5 text-sm text-foreground">{d.quantity}</td>
-                        <td className="px-4 py-2.5 text-sm font-semibold text-foreground">{formatCurrency(d.revenue)}</td>
-                        <td className="px-4 py-2.5 text-sm text-red-600">{formatCurrency(d.cost)}</td>
-                        <td className={`px-4 py-2.5 text-sm font-semibold ${d.revenue - d.cost > 0 ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(d.revenue - d.cost)}</td>
+                        <td className="px-4 py-2.5 text-sm text-foreground">{Math.round(d.quantity)}</td>
+                        <td className="px-4 py-2.5 text-sm font-semibold text-foreground tabular-nums">
+                          {formatCurrency(d.revenue)}
+                        </td>
+                        <td className="px-4 py-2.5 text-sm text-muted-foreground tabular-nums">
+                          {formatCurrency(d.cost)}
+                        </td>
+                        <td
+                          className={`px-4 py-2.5 text-sm font-semibold tabular-nums ${
+                            d.revenue - d.cost >= 0 ? 'text-green-600' : 'text-red-600'
+                          }`}
+                        >
+                          {formatCurrency(d.revenue - d.cost)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot>
                     <tr className="bg-muted/40 border-t border-border font-semibold">
-                      <td className="px-4 py-2.5 text-sm" colSpan={3}>TOTAL ({drillRows.length} invoices)</td>
-                      <td className="px-4 py-2.5 text-sm">{drillRows.reduce((s, d) => s + d.quantity, 0)}</td>
-                      <td className="px-4 py-2.5 text-sm">{formatCurrency(drillRows.reduce((s, d) => s + d.revenue, 0))}</td>
-                      <td className="px-4 py-2.5 text-sm text-red-600">{formatCurrency(drillRows.reduce((s, d) => s + d.cost, 0))}</td>
-                      <td className="px-4 py-2.5 text-sm text-green-600">{formatCurrency(drillRows.reduce((s, d) => s + d.revenue - d.cost, 0))}</td>
+                      <td className="px-4 py-2.5 text-sm" colSpan={3}>
+                        TOTAL ({(drillQuery.data ?? []).length} invoices)
+                      </td>
+                      <td className="px-4 py-2.5 text-sm">
+                        {Math.round((drillQuery.data ?? []).reduce((s, d) => s + d.quantity, 0))}
+                      </td>
+                      <td className="px-4 py-2.5 text-sm tabular-nums">
+                        {formatCurrency((drillQuery.data ?? []).reduce((s, d) => s + d.revenue, 0))}
+                      </td>
+                      <td className="px-4 py-2.5 text-sm text-muted-foreground tabular-nums">
+                        {formatCurrency((drillQuery.data ?? []).reduce((s, d) => s + d.cost, 0))}
+                      </td>
+                      <td className="px-4 py-2.5 text-sm text-green-600 tabular-nums">
+                        {formatCurrency((drillQuery.data ?? []).reduce((s, d) => s + d.revenue - d.cost, 0))}
+                      </td>
                     </tr>
                   </tfoot>
                 </table>
@@ -600,9 +943,61 @@ export default function SalesReportPage() {
         </div>
       )}
 
-      <div className="hidden print:block text-center text-xs text-muted-foreground mt-4">
-        <Link href="/reports" className="no-underline text-muted-foreground">Reports &amp; Analytics</Link> · Sales Report · {effectiveStart} to {effectiveEnd}
+      {/*
+        The printable document. Hidden on screen, visible only when printing:
+        `print-modal` re-enables visibility inside globals.css's print block,
+        which is what makes the in-page fallback (popup blocked) produce the
+        same A4 sheets as the popup path.
+      */}
+      <div ref={printRef} className="hidden print:block print-modal">
+        {summary && (
+          <SalesReportDocument
+            summary={summary}
+            fullRows={fullRows}
+            periodLabel={resolved.label}
+            scope={printScope}
+            activeView={view}
+            metric={metric}
+            company={companyQuery.data ?? { name: 'SI Building Solutions' }}
+            preparedBy={profile?.full_name || 'Admin'}
+            isOffline={isOfflineSource}
+            syncedAt={summary.fetchedAt}
+          />
+        )}
       </div>
+
+      <div className="hidden print:block text-center text-xs text-muted-foreground mt-4">
+        <Link href="/reports" className="no-underline text-muted-foreground">
+          Reports &amp; analytics
+        </Link>
+      </div>
+    </>
+  );
+}
+
+function KpiCard({
+  label,
+  value,
+  hint,
+  icon,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  icon: React.ReactNode;
+  tone?: 'neutral' | 'positive' | 'negative';
+}) {
+  const valueClass =
+    tone === 'positive' ? 'text-green-600' : tone === 'negative' ? 'text-foreground' : 'text-foreground';
+  return (
+    <div className="bg-white rounded-xl border border-border p-4 shadow-sm">
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-xs text-muted-foreground">{label}</p>
+        {icon}
+      </div>
+      <p className={`text-lg font-bold tabular-nums ${valueClass}`}>{value}</p>
+      <p className="text-xs text-muted-foreground mt-1 leading-tight">{hint}</p>
     </div>
   );
 }
