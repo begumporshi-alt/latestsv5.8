@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { format, isValid, parseISO } from 'date-fns';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
-import { Download, Printer, TriangleAlert as AlertTriangle, CircleCheck as CheckCircle2, Calendar, Building2, RefreshCw } from 'lucide-react';
+import { Download, Printer, TriangleAlert as AlertTriangle, Building2, RefreshCw } from 'lucide-react';
+import { AsOfDatePicker } from '@/components/AsOfDatePicker';
+import { useAsOfDate } from '@/hooks/use-as-of-date';
 
 interface BsRow {
   section: string;
@@ -13,27 +16,28 @@ interface BsRow {
 }
 
 export default function BalanceSheetPage() {
-  const [asOf, setAsOf] = useState(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  });
+  const { asOf, setAsOf, ready } = useAsOfDate();
   const [rows, setRows] = useState<BsRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [companyName, setCompanyName] = useState('SI Building Solutions.');
+  // Guards against an older response landing after a newer one.
+  const requestRef = useRef(0);
 
   useEffect(() => { loadSettings(); }, []);
-  useEffect(() => { load(); }, [asOf]);
 
   async function loadSettings() {
     const { data } = await supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle();
     if (data?.setting_value?.name) setCompanyName(data.setting_value.name);
   }
 
-  async function load() {
+  const load = useCallback(async () => {
+    const seq = ++requestRef.current;
     setLoading(true);
     setError(null);
     const { data, error: rpcError } = await supabase.rpc('get_balance_sheet', { p_as_of: asOf });
+    // A newer request is already in flight; its response is the one that counts.
+    if (seq !== requestRef.current) return;
     if (rpcError) {
       setError(rpcError.message);
       setRows([]);
@@ -41,7 +45,11 @@ export default function BalanceSheetPage() {
       setRows((data || []) as BsRow[]);
     }
     setLoading(false);
-  }
+  }, [asOf]);
+
+  // Fetch once the deep link has been resolved, so ?asOf= does not cost a
+  // wasted round trip showing today's figures first.
+  useEffect(() => { if (ready) load(); }, [ready, load]);
 
   const assets = rows.filter(r => r.section === 'asset');
   const liabilities = rows.filter(r => r.section === 'liability');
@@ -50,6 +58,9 @@ export default function BalanceSheetPage() {
   const difference = summary['DIFFERENCE'] ?? 0;
   const inBalance = Math.abs(difference) < 0.01;
 
+  const parsedAsOf = parseISO(asOf);
+  const asOfLabel = isValid(parsedAsOf) ? format(parsedAsOf, 'd MMMM yyyy') : asOf;
+
   function exportCsv() {
     const escape = (v: any) => {
       const s = v === null || v === undefined ? '' : String(v);
@@ -57,7 +68,7 @@ export default function BalanceSheetPage() {
     };
     const lines: string[] = [
       'BALANCE SHEET',
-      `As of ${asOf}`,
+      `As of ${asOfLabel}`,
       '',
       'ASSETS',
       ...assets.map(r => `${escape(r.code)} ${escape(r.name)},${Number(r.balance).toFixed(2)}`),
@@ -135,23 +146,26 @@ export default function BalanceSheetPage() {
         </div>
       </div>
 
-      <div className="flex items-center justify-between flex-wrap gap-3 print:hidden">
+      <div className="flex items-start justify-between flex-wrap gap-3 print:hidden">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Balance Sheet</h1>
           <p className="text-muted-foreground text-sm mt-0.5">Assets, liabilities and equity as of a date</p>
         </div>
         <div className="flex items-center gap-2">
-          <Calendar className="w-4 h-4 text-muted-foreground" />
-          <input
-            type="date"
-            value={asOf}
-            onChange={e => setAsOf(e.target.value)}
-            className="border border-border rounded-lg px-3 py-2 text-sm bg-white"
-          />
-          <button onClick={load} className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition">
+          <button
+            onClick={load}
+            title="Refresh balances"
+            aria-label="Refresh balances"
+            className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition"
+          >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
-          <button onClick={() => window.print()} className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition">
+          <button
+            onClick={() => window.print()}
+            title="Print"
+            aria-label="Print balance sheet"
+            className="flex items-center gap-1.5 border border-border px-3 py-2 rounded-lg text-sm hover:bg-muted transition"
+          >
             <Printer className="w-3.5 h-3.5" />
           </button>
           <button onClick={exportCsv} className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
@@ -159,6 +173,8 @@ export default function BalanceSheetPage() {
           </button>
         </div>
       </div>
+
+      <AsOfDatePicker value={asOf} onChange={setAsOf} loading={loading} className="print:hidden" />
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex gap-3 print:hidden">
@@ -174,13 +190,13 @@ export default function BalanceSheetPage() {
             <h2 className="text-lg font-bold text-gray-900 tracking-wide">{companyName}</h2>
           </div>
           <h3 className="text-base font-semibold text-gray-800 mt-2">BALANCE SHEET</h3>
-          <p className="text-sm text-gray-500 mt-1">As of {asOf}</p>
+          <p className="text-sm text-gray-500 mt-1" suppressHydrationWarning>As of {asOfLabel}</p>
         </div>
 
-        {loading ? (
+        {loading && rows.length === 0 ? (
           <div className="px-8 py-12 text-center text-gray-400">Loading balances…</div>
         ) : (
-          <div className="px-6 py-4 space-y-6">
+          <div className={`px-6 py-4 space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`}>
             {/* ASSETS */}
             <div>
               {sectionHead('ASSETS')}
