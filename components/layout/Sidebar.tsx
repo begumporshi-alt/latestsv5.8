@@ -80,6 +80,7 @@ const navItems: NavItem[] = [
       { title: 'Journal Entries', href: '/accounting/journal' },
       { title: 'Trial Balance', href: '/accounting/trial-balance' },
       { title: 'Balance Sheet', href: '/accounting/balance-sheet' },
+      { title: 'Quick Balance Sheet', href: '/accounting/quick-balance-sheet' },
       { title: 'Cash Flow', href: '/accounting/cash-flow' },
       { title: 'Bank Reconciliation', href: '/accounting/bank-reconciliation' },
       { title: 'Transfers & Withdrawals', href: '/accounting/transfers' },
