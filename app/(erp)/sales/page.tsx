@@ -7,7 +7,7 @@ import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator, Zap } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator, Zap, RefreshCw } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import { loadChallanItems } from '@/lib/challan-items';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
@@ -40,35 +40,17 @@ import { printNode } from '@/lib/print';
 import { isInvoiceOverdue } from '@/lib/format';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
-import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
+import {
+  EMPTY_STATS,
+  getPeriodRange,
+  useInvalidateSales,
+  useSalesListRefs,
+  useSalesPage,
+  useSalesProducts,
+  type InvoiceWithCustomer,
+  type SalesPeriod,
+} from '@/lib/sales';
 import { REPLICA, replicaRows } from '@/lib/offline/replica';
-
-// Cached aggregate served offline — see loadData/fetchSalesData.
-interface SalesPageData {
-  invoicesWithReturns: InvoiceWithCustomer[];
-  paymentMethods: { code: string; name: string }[];
-  warehouses: any[];
-  customers: Customer[];
-  products: Product[];
-  companySettings: any;
-  cogsGap: any;
-  stats: {
-    total: number; paid: number; refunded: number; netCollected: number; outstanding: number;
-    overdue: number; storeCreditBalance: number; badDebt: number; cogs: number;
-    paymentCollectedAtSale: number; invoiceCount: number; costHistoryTotal: number;
-  };
-}
-
-/** Slow-changing reference data, cached separately with a longer TTL so the
- *  period-scoped aggregate (invoices/payments/returns) doesn't re-download
- *  the full product catalog and customer list on every 60s refresh. */
-interface SalesRefs {
-  customers: Customer[];
-  products: Product[];
-  warehouses: any[];
-  paymentMethods: { code: string; name: string }[];
-  companySettings: any;
-}
 
 const statusConfig: Record<InvoiceStatus, { label: string; color: string; bg: string }> = {
   draft: { label: 'Draft', color: 'text-gray-600', bg: 'bg-gray-100' },
@@ -101,13 +83,6 @@ const deliveryStatusConfig: Record<string, { label: string; color: string; bg: s
   cancelled: { label: 'Cancelled', color: 'text-gray-500', bg: 'bg-gray-100' },
 };
 
-interface InvoiceWithCustomer extends Omit<Invoice, 'customer'> {
-  customer?: { name: string; code: string; phone?: string; address?: string };
-  sales_returns?: { id: string; return_number: string; total_refund_amount: number; items: { quantity_returned: number }[] }[];
-  payments?: { id: string; payment_method: string; amount: number; payment_date: string }[];
-  deliveries?: { id: string; delivery_number: string; status: string; was_edited?: boolean; edit_note?: string }[];
-}
-
 interface InvoiceItem {
   product_id: string;
   product?: Product;
@@ -122,10 +97,6 @@ interface InvoiceItem {
 
 export default function SalesPage() {
   const router = useRouter();
-  const [invoices, setInvoices] = useState<InvoiceWithCustomer[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [filterPaymentMethod, setFilterPaymentMethod] = useState('');
@@ -136,9 +107,6 @@ export default function SalesPage() {
   const [period, setPeriod] = useState<'today' | 'last7' | 'last30' | 'all' | 'custom'>('today');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [productFilteredIds, setProductFilteredIds] = useState<Set<string> | null>(null);
-  const [paymentMethods, setPaymentMethods] = useState<{ code: string; name: string }[]>([]);
-  const [warehouses, setWarehouses] = useState<{ id: string; name: string; code: string }[]>([]);
-  const [stats, setStats] = useState({ total: 0, paid: 0, refunded: 0, netCollected: 0, outstanding: 0, overdue: 0, storeCreditBalance: 0, badDebt: 0, cogs: 0, paymentCollectedAtSale: 0, invoiceCount: 0, costHistoryTotal: 0 });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showQuickSell, setShowQuickSell] = useState(false);
   const [showNetCollectedModal, setShowNetCollectedModal] = useState(false);
@@ -150,17 +118,71 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
   const [invoicePayments, setInvoicePayments] = useState<any[]>([]);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentInvoice, setPaymentInvoice] = useState<InvoiceWithCustomer | null>(null);
-  const [companySettings, setCompanySettings] = useState<any>({ name: '', address: '', phone: '', email: '', logo_url: '' });
   const [vatSettings, setVatSettings] = useState<VatSettings>({ enabled: false, rate: 15, mode: 'exclusive', default_on: true });
   const [convertingInvoice, setConvertingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [viewingChallan, setViewingChallan] = useState<any>(null);
-  const [cogsGap, setCogsGap] = useState<any>(null);
   const [editingInvoice, setEditingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [cancellingInvoice, setCancellingInvoice] = useState<InvoiceWithCustomer | null>(null);
   const [viewTab, setViewTab] = useState<'details' | 'history' | 'cost-history'>('details');
-  const [dataStale, setDataStale] = useState(false);
 
-  useEffect(() => { loadData(); }, [period, filterDateFrom, filterDateTo]);
+  // ------------------------------------------------------------- data --
+  // Three queries: the period list, the small reference data the filters
+  // read, and the catalogue — the last fetched only when a form, print view
+  // or the product filter actually needs it.
+  const range = getPeriodRange(period, filterDateFrom, filterDateTo);
+  const pageQuery = useSalesPage(period, range.from, range.to);
+  const listRefsQuery = useSalesListRefs();
+  const needsCatalogue =
+    showCreateModal || showQuickSell || !!editingInvoice || !!viewingInvoice ||
+    !!convertingInvoice || showAdvancedFilters;
+  const productsQuery = useSalesProducts(needsCatalogue);
+  const invalidateSales = useInvalidateSales();
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Manual re-fetch of every query this page owns.
+  //
+  // The provider turns refetchOnWindowFocus off, because an ERP tab is often
+  // left open for hours and re-downloading the period on every alt-tab burns
+  // egress for nothing. That leaves no way to pull fresh figures short of a
+  // reload, so this is the explicit path. Each refetch also rewrites the
+  // offline snapshot as a side effect (the cache runs at a zero TTL), so
+  // refreshing here refreshes what the device will show when it goes offline.
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await invalidateSales();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  const invoices: InvoiceWithCustomer[] = pageQuery.data?.data.invoicesWithReturns ?? [];
+  const stats = pageQuery.data?.data.stats ?? EMPTY_STATS;
+  const cogsGap = pageQuery.data?.data.cogsGap ?? null;
+  const loading = pageQuery.isPending;
+  // cachedQuery reports whether this payload came from the network or from the
+  // device's snapshot; the banner has always meant the latter.
+  const dataStale = pageQuery.data ? !pageQuery.data.fresh : false;
+
+  const paymentMethods = listRefsQuery.data?.data.paymentMethods ?? [];
+  const customers = listRefsQuery.data?.data.customers ?? [];
+  const warehouses = listRefsQuery.data?.data.warehouses ?? [];
+  const companySettings = listRefsQuery.data?.data.companySettings ?? { name: '', address: '', phone: '', email: '', logo_url: '' };
+  const products = productsQuery.data?.data ?? [];
+
+  // A device that has never opened this page online has no snapshot to fall
+  // back on. Previously loadData's catch raised this toast; the query's error
+  // state is the equivalent signal.
+  useEffect(() => {
+    if (pageQuery.isError) {
+      toast({
+        title: 'Offline — no cached sales data',
+        description: 'Open this page once while online so this device builds its offline copy.',
+        variant: 'destructive',
+      });
+    }
+  }, [pageQuery.isError]);
+
 
   // Deep-link support: /sales?search=INV-940620 pre-fills the search box
   // (used by the Inventory Audit page's invoice links). The period filter can
@@ -175,245 +197,6 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
 
   // VAT rate for the printed invoice's tax row label (view/print modal).
   useEffect(() => { loadVatSettings(supabase).then(setVatSettings); }, []);
-
-  function getPeriodRange() {
-    const today = new Date().toISOString().split('T')[0];
-    if (period === 'today') return { from: today, to: today };
-    if (period === 'last7') {
-      const d = new Date(); d.setDate(d.getDate() - 6);
-      return { from: d.toISOString().split('T')[0], to: today };
-    }
-    if (period === 'last30') {
-      const d = new Date(); d.setDate(d.getDate() - 29);
-      return { from: d.toISOString().split('T')[0], to: today };
-    }
-    if (period === 'custom') {
-      return { from: filterDateFrom || '', to: filterDateTo || '' };
-    }
-    return { from: '', to: '' };
-  }
-
-  // The full sales aggregate (invoices + customers + products + payments +
-  // returns + deliveries + stats inputs) is cached per period window, so the
-  // order list stays reviewable offline with a stale banner. `force` drops
-  // the cached window first — a modal save (payment/edit/cancel/convert)
-  // must show its own write, and the fresh-cache fast path would otherwise
-  // serve the pre-save snapshot for up to the TTL.
-  async function loadData(force = false) {
-    setLoading(true);
-    const { from, to } = getPeriodRange();
-    const key = `sales:page-data:${period}:${from}:${to}`;
-    // Offline the delete is skipped — the stale cache (plus the outbox
-    // overlay) is the offline copy; deleting it would break the fallback.
-    if (force && networkMonitor.getState().online) await cacheDelete(key).catch(() => {});
-    try {
-      const [res, refs] = await Promise.all([
-        cachedQuery<SalesPageData>(key, 60_000, () => fetchSalesData(from, to)),
-        // Non-fatal: a device that opens the page offline before the refs
-        // snapshot exists (e.g. right after this change ships) still gets the
-        // invoice list — pickers are just empty until the next online load.
-        cachedQuery<SalesRefs>('sales:refs', 300_000, fetchSalesRefs).catch(() => null),
-      ]);
-      applySalesData(refs ? { ...res.data, ...refs.data } : res.data);
-      setDataStale(!res.fresh || !(refs && refs.fresh));
-    } catch {
-      setInvoices([]);
-      toast({
-        title: 'Offline — no cached sales data',
-        description: 'Open this page once while online so this device builds its offline copy.',
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Products (2.5k rows with units + inventory), customers, warehouses,
-  // payment methods and company settings change rarely. They get their own
-  // 5-minute cache so the 60s period aggregate stays small and fast.
-  async function fetchSalesRefs(): Promise<SalesRefs> {
-    const [custRes, productsData, paymentMethodsRes, warehousesRes, settingsRes] = await Promise.all([
-      fetchAll(() => supabase.from('customers').select('*').eq('is_active', true).order('name').order('id')),
-      fetchAll(() => supabase.from('products').select(`*, units:product_units(id, product_id, unit_name, unit_short, conversion_factor, is_base_unit, is_sale_unit, price, cost_price, is_active, sort_order), inventory_items(id, warehouse_id, quantity_on_hand)`).eq('is_active', true).order('name').order('id')),
-      supabase.from('payment_methods').select('code, name').eq('is_active', true).order('sort_order'),
-      supabase.from('warehouses').select('id, name, code').eq('is_active', true).order('is_default', { ascending: false }).order('name'),
-      supabase.from('app_settings').select('setting_value').eq('setting_key', 'company').maybeSingle(),
-    ]);
-    return {
-      customers: custRes || [],
-      products: productsData || [],
-      paymentMethods: paymentMethodsRes.data || [],
-      warehouses: warehousesRes.data || [],
-      companySettings: settingsRes.data?.setting_value || null,
-    };
-  }
-
-  async function fetchSalesData(from: string, to: string): Promise<SalesPageData> {
-    // All completeness-dependent queries go through fetchAll so stats and
-    // pickers are never silently truncated by Supabase's row caps (the
-    // invoices query previously had .limit(500), which hid the oldest 80
-    // invoices and understated Total Sales by ~6.3L).
-    const [invoicesData, returnsData, paymentsData, deliveriesData, receivablePaymentsData, returnsForStatsData, accountsRes, cphData, creditRes, gapRes] = await Promise.all([
-      fetchAll(() => {
-        let q = supabase.from('invoices').select('*, customer:customers(name, code, phone, email, address)').order('created_at', { ascending: false });
-        if (from) q = q.gte('invoice_date', from);
-        if (to) q = q.lte('invoice_date', to);
-        return q;
-      }),
-      fetchAll(() => supabase.from('sales_returns').select('id, invoice_id, return_number, total_refund_amount, items:sales_return_items(quantity_returned)')),
-      fetchAll(() => supabase.from('payments').select('id, reference_id, payment_method, amount, payment_date').eq('reference_type', 'invoice')),
-      fetchAll(() => supabase.from('deliveries').select('id, invoice_id, delivery_number, status, was_edited, edit_note')),
-      fetchAll(() => {
-        let q = supabase.from('payments')
-          .select('id, reference_id, reference_type, payment_method, amount, payment_date, payment_type, bad_debt_amount')
-          .eq('payment_type', 'received')
-          .in('reference_type', ['invoice', 'receivable'])
-          .eq('is_reversed', false)
-          .neq('payment_for', 'reversal_payment');
-        if (from) q = q.gte('payment_date', from);
-        if (to) q = q.lte('payment_date', to);
-        return q;
-      }),
-      // Refunds for the stats cards — filtered by return_date to match the payment period window.
-      fetchAll(() => {
-        let q = supabase.from('sales_returns')
-          .select('id, invoice_id, return_number, total_refund_amount, refund_method, return_date, items:sales_return_items(quantity_returned)');
-        if (from) q = q.gte('return_date', from);
-        if (to) q = q.lte('return_date', to);
-        return q;
-      }),
-      supabase.from('accounts').select('id, code, name, account_type'),
-      fetchAll(() => supabase.from('cost_price_history').select('invoice_id, cost_price_for_added_qty')),
-      // Formerly sequential after the batch — fetched in parallel to cut
-      // two serial round trips from the first load.
-      supabase.from('customer_store_credits').select('balance').eq('status', 'active'),
-      supabase.rpc('get_cogs_history_gap_breakdown', {
-        p_start_date: from || null,
-        p_end_date: to || null,
-      }),
-    ]);
-
-    // Refunds for the stats cards — filtered by return_date to match the payment period window.
-    const periodRefunded = (returnsForStatsData || []).reduce((s: number, r: any) => s + Number(r.total_refund_amount), 0);
-
-    // Attach deliveries to their corresponding invoices
-    const deliveriesMap = new Map<string, any[]>();
-    (deliveriesData || []).forEach((del: any) => {
-      if (del.invoice_id) {
-        const existing = deliveriesMap.get(del.invoice_id) || [];
-        existing.push(del);
-        deliveriesMap.set(del.invoice_id, existing);
-      }
-    });
-
-    // Attach sales returns to their corresponding invoices
-    const returnsMap = new Map<string, any[]>();
-    (returnsData || []).forEach((ret: any) => {
-      const existing = returnsMap.get(ret.invoice_id) || [];
-      existing.push(ret);
-      returnsMap.set(ret.invoice_id, existing);
-    });
-
-    // Attach payments to their corresponding invoices
-    const paymentsMap = new Map<string, any[]>();
-    (paymentsData || []).forEach((pay: any) => {
-      const existing = paymentsMap.get(pay.reference_id) || [];
-      existing.push(pay);
-      paymentsMap.set(pay.reference_id, existing);
-    });
-
-    // Attach per-invoice cost totals from cost price history (per-invoice
-    // basis for matching the COGS journal entry against recorded cost)
-    const costMap = new Map<string, number>();
-    (cphData || []).forEach((r: any) => {
-      costMap.set(r.invoice_id, (costMap.get(r.invoice_id) || 0) + Number(r.cost_price_for_added_qty || 0));
-    });
-
-    const invoicesWithReturns = (invoicesData || []).map((inv: any) => ({
-      ...inv,
-      sales_returns: returnsMap.get(inv.id) || [],
-      payments: paymentsMap.get(inv.id) || [],
-      deliveries: deliveriesMap.get(inv.id) || [],
-      cph_total: costMap.get(inv.id) || 0,
-    }));
-
-    const activeInv = invoicesWithReturns.filter((i: any) => i.status !== 'cancelled' && i.status !== 'draft');
-
-    // Calculate collected amount from payments table filtered by payment_date,
-    // so payments on old invoices collected today still show in today's stats.
-    // Reversed payments (from invoice edits/cancels) are excluded so they don't inflate the total.
-    const allReceivedPayments = receivablePaymentsData || [];
-    const invoiceCollected = allReceivedPayments
-      .filter((p: any) => p.reference_type === 'invoice')
-      .reduce((s: number, p: any) => s + Number(p.amount), 0);
-    const receivableCollected = allReceivedPayments
-      .filter((p: any) => p.reference_type === 'receivable')
-      .reduce((s: number, p: any) => s + Number(p.amount), 0);
-    const totalCollected = invoiceCollected + receivableCollected;
-
-    // Fetch store credit balance (not period-dependent) — fetched in the
-    // parallel batch above.
-    const storeCreditBalance = (creditRes.data || []).reduce((s: number, c: any) => s + Number(c.balance), 0);
-
-    // COGS: net debit balance on account code 5000 within the period
-    const cogsAccount = (accountsRes.data || []).find((a: any) => a.code === '5000');
-    let cogsAmount = 0;
-    if (cogsAccount) {
-      const { data: cogsData } = await supabase.rpc('period_net_debit', {
-        p_account_id: cogsAccount.id,
-        p_start_date: from || '1900-01-01',
-        p_end_date: to || '2100-12-31',
-      });
-      cogsAmount = Math.max(0, Number(cogsData || 0));
-    }
-
-    // Why Total COGS (journal) differs from Total Cost (History): per-cause
-    // decomposition on the same period basis as the two cards — fetched in
-    // the parallel batch above.
-    const gapRows = gapRes.data;
-
-    // Payment collected at sale: total amount paid on invoices that were fully or partially paid at time of sale
-    const paymentCollectedAtSale = activeInv
-      .filter((i: any) => Number(i.amount_paid || 0) > 0)
-      .reduce((s: number, i: any) => s + Number(i.amount_paid || 0), 0);
-
-    return {
-      invoicesWithReturns,
-      // Reference data is merged in by loadData from the longer-lived
-      // 'sales:refs' cache (see fetchSalesRefs).
-      paymentMethods: [],
-      warehouses: [],
-      customers: [],
-      products: [],
-      companySettings: null,
-      cogsGap: (gapRows && gapRows.length > 0) ? gapRows[0] : null,
-      stats: {
-        total: activeInv.reduce((s: number, i: any) => s + Number(i.total_amount), 0),
-        paid: totalCollected,
-        refunded: periodRefunded,
-        netCollected: totalCollected - periodRefunded,
-        outstanding: activeInv.reduce((s: number, i: any) => s + Number(i.balance_due || 0), 0),
-        overdue: activeInv.filter((i: any) => isInvoiceOverdue(i)).length,
-        storeCreditBalance,
-        badDebt: activeInv.reduce((s: number, i: any) => s + Number(i.bad_debt_amount || 0), 0),
-        cogs: cogsAmount,
-        paymentCollectedAtSale,
-        invoiceCount: activeInv.length,
-        costHistoryTotal: activeInv.reduce((s: number, i: any) => s + Number(i.cph_total || 0), 0),
-      },
-    };
-  }
-
-  function applySalesData(d: SalesPageData) {
-    setInvoices(d.invoicesWithReturns);
-    setPaymentMethods(d.paymentMethods);
-    setWarehouses(d.warehouses);
-    setCustomers(d.customers);
-    setProducts(d.products);
-    if (d.companySettings) setCompanySettings(d.companySettings);
-    setCogsGap(d.cogsGap);
-    setStats(d.stats);
-  }
 
   async function viewDeliveryChallan(deliveryId: string) {
     const { data: del } = await supabase
@@ -493,7 +276,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } else {
       toast({ title: 'Success', description: `Invoice marked as ${statusConfig[newStatus].label}` });
-      loadData(true);
+      invalidateSales();
     }
   }
 
@@ -577,6 +360,16 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           <p className="text-muted-foreground text-sm mt-0.5">Track all sales transactions</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            aria-label="Refresh"
+            title="Re-fetch invoices, payments, returns and the reference data for this period"
+            className="flex items-center justify-center gap-2 border border-border text-foreground hover:bg-muted/60 px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold transition shrink-0 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{refreshing ? 'Refreshing' : 'Refresh'}</span>
+          </button>
           <Link href="/sales/pos" className="flex items-center justify-center gap-2 border border-blue-600 text-blue-600 hover:bg-blue-50 px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold transition shrink-0">
             <ShoppingCart className="w-4 h-4" />
             <span className="hidden sm:inline">POS</span>
@@ -1013,7 +806,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           products={products}
           warehouses={warehouses}
           onClose={() => setShowCreateModal(false)}
-          onSaved={loadData}
+          onSaved={invalidateSales}
         />
       )}
 
@@ -1021,7 +814,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
         open={showQuickSell}
         onClose={() => setShowQuickSell(false)}
         isPos={false}
-        onCreated={loadData}
+        onCreated={invalidateSales}
       />
 
       {viewingInvoice && (
@@ -1120,21 +913,21 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
         <RecordPaymentModal
           invoice={paymentInvoice}
           onClose={() => { setShowPaymentModal(false); setPaymentInvoice(null); }}
-          onSaved={() => { setShowPaymentModal(false); setPaymentInvoice(null); loadData(true); }}
+          onSaved={() => { setShowPaymentModal(false); setPaymentInvoice(null); invalidateSales(); }}
         />
       )}
 
       {showNetCollectedModal && (
         <NetCollectedBreakdownModal
           stats={stats}
-          periodRange={getPeriodRange()}
+          periodRange={range}
           onClose={() => setShowNetCollectedModal(false)}
         />
       )}
 
       {showCogsModal && (
         <CogsBreakdownModal
-          periodRange={getPeriodRange()}
+          periodRange={range}
           onClose={() => setShowCogsModal(false)}
         />
       )}
@@ -1150,7 +943,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           invoice={convertingInvoice}
           companySettings={companySettings}
           onClose={() => setConvertingInvoice(null)}
-          onSaved={() => { setConvertingInvoice(null); loadData(true); }}
+          onSaved={() => { setConvertingInvoice(null); invalidateSales(); }}
         />
       )}
 
@@ -1160,7 +953,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           customers={customers}
           products={products}
           onClose={() => setEditingInvoice(null)}
-          onSaved={() => { setEditingInvoice(null); loadData(true); }}
+          onSaved={() => { setEditingInvoice(null); invalidateSales(); }}
         />
       )}
 
@@ -1168,7 +961,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
         <CancelInvoiceModal
           invoice={cancellingInvoice}
           onClose={() => setCancellingInvoice(null)}
-          onDone={() => { setCancellingInvoice(null); loadData(true); }}
+          onDone={() => { setCancellingInvoice(null); invalidateSales(); }}
         />
       )}
 
