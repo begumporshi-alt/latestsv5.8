@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import { formatCurrency } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
@@ -9,6 +9,7 @@ import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { X, HandCoins, CircleCheck as CheckCircle2, TriangleAlert as AlertTriangle } from 'lucide-react';
 import type { PaymentMethod } from '@/lib/types';
+import { buildAllocationPlan, buildCollectRequest } from '@/lib/collect-payment';
 
 interface InvoiceOutstanding {
   id: string;
@@ -74,10 +75,15 @@ export default function CollectPaymentModal({
   useEffect(() => {
     if (activeTab === 'invoice' && invoiceOutstanding > 0) {
       setLoadingInvoices(true);
+      // balance_due > 0: a handful of invoices still carry status
+      // 'sent'/'partially_paid' with nothing left to collect (zero-total
+      // invoices, or ones fully settled by write-off). They rendered as ৳0.00
+      // rows that rejected every allocation.
       supabase.from('invoices')
         .select('id, invoice_number, balance_due, total_amount, amount_paid')
         .eq('customer_id', customerId)
         .in('status', ['sent', 'partially_paid'])
+        .gt('balance_due', 0)
         .order('invoice_date', { ascending: true })
         .then(({ data }) => {
           const invs = (data || []) as InvoiceOutstanding[];
@@ -112,6 +118,26 @@ export default function CollectPaymentModal({
   // Manual-tab balance (single receivable pool).
   const currentBalance = manualOutstanding;
 
+  // Cash that will actually move. A collection can settle an invoice by
+  // write-off alone, in which case no cash/bank account is involved and the
+  // "Receive Into" dropdown must not block submission.
+  const cashReceived = activeTab === 'invoice' ? totalReceived : form.amount;
+
+  // The split shown in the table IS the split that gets posted — one derived
+  // plan, used by both the render and the submit handler. It used to be built
+  // inside the handler, so the operator could not see that a write-off had
+  // been pushed onto a later invoice by the cash allocation.
+  const allocationPlan = useMemo(
+    () => buildAllocationPlan(invoices, allocations, form.bad_debt_amount || 0),
+    [invoices, allocations, form.bad_debt_amount],
+  );
+  const planByInvoice = useMemo(() => {
+    const map = new Map<string, number>();
+    allocationPlan.rows.forEach(r => map.set(r.invoice_id, r.bad_debt_amount));
+    return map;
+  }, [allocationPlan]);
+  const hasWriteOff = (form.bad_debt_amount || 0) > 0;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -144,7 +170,7 @@ export default function CollectPaymentModal({
         return;
       }
     }
-    if ((activeTab === 'invoice' ? totalReceived : form.amount) > 0 && !form.account_id) {
+    if (cashReceived > 0 && !form.account_id) {
       setError('Please select a cash/bank account to receive payment into');
       return;
     }
@@ -164,19 +190,19 @@ export default function CollectPaymentModal({
   }
 
   async function processMultiInvoicePayment() {
-    // Build the allocation payload. The global bad-debt figure is distributed
-    // FIFO across the invoices, capped at each invoice's remaining balance.
-    const allocRows: { invoice_id: string; amount: number; bad_debt_amount: number }[] = [];
-    let badRemaining = form.bad_debt_amount || 0;
-    for (const inv of invoices) {
-      const amount = Math.round((allocations[inv.id] || 0) * 100) / 100;
-      const freeBalance = (Number(inv.balance_due) || 0) - amount;
-      const bad = Math.max(0, Math.min(badRemaining, freeBalance));
-      if (amount <= 0 && bad <= 0) continue;
-      allocRows.push({ invoice_id: inv.id, amount, bad_debt_amount: Math.round(bad * 100) / 100 });
-      badRemaining -= bad;
+    // Same plan the table renders, so what was shown is what is posted.
+    const plan = allocationPlan;
+
+    if (plan.rows.length === 0) throw new Error('Nothing to collect — allocate at least one invoice');
+
+    // Previously an over-sized write-off was silently truncated and the toast
+    // still reported the figure the user typed. Refuse instead: the operator
+    // asked to write off more than the customer owes.
+    if (plan.badDebtUnapplied > 0.005) {
+      throw new Error(
+        `${formatCurrency(plan.badDebtUnapplied)} of the bad debt has no open balance to absorb it — reduce the write-off or the cash allocations`,
+      );
     }
-    if (allocRows.length === 0) throw new Error('Nothing to collect — allocate at least one invoice');
 
     if (!networkMonitor.getState().online) {
       // Offline: one payment.create op per allocated invoice (the existing
@@ -185,7 +211,7 @@ export default function CollectPaymentModal({
       // All ops share one collection_id so the customer statement prints the
       // collection as a single combined Payment row.
       const collectionId = crypto.randomUUID();
-      for (const row of allocRows) {
+      for (const row of plan.rows) {
         const inv = invoices.find(i => i.id === row.invoice_id)!;
         await enqueueOp('payment.create', {
           idempotency_key: crypto.randomUUID(),
@@ -198,7 +224,11 @@ export default function CollectPaymentModal({
           reference_number: form.reference_number || null,
           notes: form.notes || null,
           collection_id: collectionId,
-        }, `Payment ${formatCurrency(row.amount)} — ${inv.invoice_number}`);
+          // Replayed by sync_payment_create, which now persists it. Without
+          // this the collection routed to the payment-method default on
+          // reconnect while the same collection online went to the chosen bank.
+          account_id: form.account_id || null,
+        }, `Settle ${formatCurrency(row.amount + row.bad_debt_amount)} — ${inv.invoice_number}`);
       }
       if (overpayment > 0 && overpaymentMode === 'advance') {
         await enqueueOp('advance.receive', {
@@ -213,28 +243,29 @@ export default function CollectPaymentModal({
       }
       toast({
         title: 'Collection queued offline',
-        description: `${allocRows.length} invoice payment${allocRows.length === 1 ? '' : 's'}${overpayment > 0 && overpaymentMode === 'advance' ? ' + advance' : ''} will post when you reconnect.`,
+        description: `${plan.rows.length} invoice payment${plan.rows.length === 1 ? '' : 's'}${overpayment > 0 && overpaymentMode === 'advance' ? ' + advance' : ''} queued. Figures are re-checked against the live balance when you reconnect.`,
       });
       onSaved();
       onClose();
       return;
     }
 
-    const { data, error: rpcError } = await supabase.rpc('collect_customer_payment', {
-      p_customer_id: customerId,
-      p_payment_date: form.payment_date,
-      p_payment_method: form.payment_method,
-      p_reference_number: form.reference_number || null,
-      p_notes: form.notes || null,
-      p_allocations: allocRows,
-      p_overpayment: overpayment,
-      p_route_overpayment: overpaymentMode === 'advance',
-    });
+    const { error: rpcError } = await supabase.rpc('collect_customer_payment', buildCollectRequest({
+      customerId,
+      paymentDate: form.payment_date,
+      paymentMethod: form.payment_method,
+      referenceNumber: form.reference_number,
+      notes: form.notes,
+      allocations: plan.rows,
+      overpayment,
+      routeOverpayment: overpaymentMode === 'advance',
+      accountId: form.account_id,
+    }));
     if (rpcError) throw rpcError;
 
-    const parts = [`${allocRows.length} invoice${allocRows.length === 1 ? '' : 's'} collected`];
+    const parts = [`${plan.rows.length} invoice${plan.rows.length === 1 ? '' : 's'} settled`];
     if (overpayment > 0 && overpaymentMode === 'advance') parts.push(`${formatCurrency(overpayment)} added to advance`);
-    if ((form.bad_debt_amount || 0) > 0) parts.push(`bad debt ${formatCurrency(form.bad_debt_amount)}`);
+    if (plan.badDebtAllocated > 0) parts.push(`bad debt ${formatCurrency(plan.badDebtAllocated)}`);
     toast({ title: 'Success', description: parts.join(' · ') });
     onSaved();
     onClose();
@@ -422,7 +453,9 @@ export default function CollectPaymentModal({
             {/* Multi-invoice allocation */}
             {activeTab === 'invoice' && (
               <div>
-                <label className="block text-xs font-medium mb-1">Amount Received *</label>
+                <label className="block text-xs font-medium mb-1">
+                  Amount Received{(form.bad_debt_amount || 0) > 0 ? '' : ' *'}
+                </label>
                 <UnitInput
                   prefix="৳" min="0" step="0.01"
                   value={totalReceived || ''}
@@ -433,9 +466,30 @@ export default function CollectPaymentModal({
                   }}
                   className="rounded-lg text-base font-semibold"
                 />
+                {totalReceived <= 0 && (form.bad_debt_amount || 0) > 0 && (
+                  <p className="text-[10px] text-orange-600 mt-1">
+                    No cash received — this collection settles the invoice by write-off only.
+                  </p>
+                )}
                 {invoices.length > 1 && (
                   <p className="text-[10px] text-muted-foreground mt-1">Auto-allocated oldest due first — edit any row below to change the split.</p>
                 )}
+
+                {/* Bad debt sits above the table so the write-off column below
+                    reflects it while it is being typed. */}
+                <div className="mt-3">
+                  <label className="block text-xs font-medium mb-1 flex items-center gap-1">
+                    Bad Debt
+                    <span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay — written off, applied oldest first)</span>
+                  </label>
+                  <UnitInput
+                    prefix="৳" min="0" step="0.01"
+                    value={form.bad_debt_amount || ''}
+                    onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })}
+                    className="rounded-lg focus:ring-orange-500/20"
+                  />
+                </div>
+
                 <div className="border border-border rounded-lg overflow-hidden mt-2">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/40">
@@ -443,11 +497,14 @@ export default function CollectPaymentModal({
                         <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Invoice</th>
                         <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Due</th>
                         <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Allocate</th>
+                        {hasWriteOff && (
+                          <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Write-off</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody>
                       {loadingInvoices ? (
-                        <tr><td colSpan={3} className="px-3 py-4 text-center text-xs text-muted-foreground animate-pulse">Loading invoices...</td></tr>
+                        <tr><td colSpan={hasWriteOff ? 4 : 3} className="px-3 py-4 text-center text-xs text-muted-foreground animate-pulse">Loading invoices...</td></tr>
                       ) : invoices.map(inv => (
                         <tr key={inv.id} className="border-t border-border">
                           <td className="px-3 py-2 font-medium">{inv.invoice_number}</td>
@@ -464,27 +521,28 @@ export default function CollectPaymentModal({
                               className="w-full border border-border rounded-md px-2 py-1 text-right tabular-nums text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                             />
                           </td>
+                          {hasWriteOff && (
+                            <td className="text-right px-3 py-2 tabular-nums text-orange-600">
+                              {formatCurrency(planByInvoice.get(inv.id) || 0)}
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+
+                {allocationPlan.badDebtUnapplied > 0.005 && (
+                  <div className="bg-orange-50 border border-orange-200 rounded-lg p-2.5 flex items-start gap-2 mt-2">
+                    <AlertTriangle className="w-4 h-4 text-orange-500 mt-0.5 shrink-0" />
+                    <p className="text-[11px] text-orange-700">
+                      {formatCurrency(allocationPlan.badDebtUnapplied)} of the bad debt has no open balance to absorb it.
+                      Reduce the write-off or the cash allocations.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
-
-            {/* Bad debt (shared across tabs) */}
-            <div>
-              <label className="block text-xs font-medium mb-1 flex items-center gap-1">
-                Bad Debt
-                <span className="text-[10px] text-muted-foreground font-normal">(won&apos;t pay — written off, applied oldest first)</span>
-              </label>
-              <UnitInput
-                prefix="৳" min="0" step="0.01"
-                value={form.bad_debt_amount || ''}
-                onChange={e => setForm({ ...form, bad_debt_amount: parseFloat(e.target.value) || 0 })}
-                className="rounded-lg focus:ring-orange-500/20"
-              />
-            </div>
 
             {/* Totals + overpayment (invoice tab) */}
             {activeTab === 'invoice' && (
@@ -493,7 +551,10 @@ export default function CollectPaymentModal({
                   <div className="flex justify-between"><span className="text-muted-foreground">Amount received:</span><span className="font-semibold">{formatCurrency(totalReceived)}</span></div>
                   <div className="flex justify-between"><span className="text-muted-foreground">Allocated to invoices:</span><span className="font-semibold">{formatCurrency(sumAllocated)}</span></div>
                   {(form.bad_debt_amount || 0) > 0 && (
-                    <div className="flex justify-between"><span className="text-muted-foreground">Bad debt write-off:</span><span className="font-semibold text-orange-600">{formatCurrency(form.bad_debt_amount)}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Bad debt write-off:</span><span className="font-semibold text-orange-600">{formatCurrency(allocationPlan.badDebtAllocated)}</span></div>
+                  )}
+                  {allocationPlan.badDebtUnapplied > 0.005 && (
+                    <div className="flex justify-between"><span className="text-muted-foreground">Unapplied write-off:</span><span className="font-semibold text-red-600">{formatCurrency(allocationPlan.badDebtUnapplied)}</span></div>
                   )}
                   <div className="flex justify-between border-t border-border pt-1.5">
                     <span className="text-muted-foreground">{overpayment > 0 ? 'Overpayment:' : 'Unallocated:'}</span>
@@ -603,9 +664,9 @@ export default function CollectPaymentModal({
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium mb-1">Receive Into *</label>
+                <label className="block text-xs font-medium mb-1">Receive Into {cashReceived > 0 ? '*' : ''}</label>
                 <select
-                  required
+                  required={cashReceived > 0}
                   value={form.account_id}
                   onChange={e => setForm({ ...form, account_id: e.target.value })}
                   className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none"

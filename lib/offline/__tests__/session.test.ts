@@ -34,8 +34,8 @@ jest.mock('../../supabase-raw', () => ({
 
 // The storage key is `sb-<project-ref>-auth-token`, so the module needs to know
 // which project it is talking to. Set it through the environment rather than
-// mocking the config module: the resolver falls back to this same env value, so
-// the test exercises the real path instead of a stand-in.
+// mocking the config module: both the runtime resolver and the direct env read
+// end up here, so this exercises the real path instead of a stand-in.
 process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://abcd.supabase.co';
 process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = 'test-key';
 

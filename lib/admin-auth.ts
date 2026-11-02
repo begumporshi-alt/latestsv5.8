@@ -5,11 +5,22 @@ import { createClient, type SupabaseClient, type User } from '@supabase/supabase
 // forwarded access token and checks their role in profiles before acting.
 
 const SERVICE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-// Read the conventional name only. A `NEXT_PUBLIC_`-prefixed alias must never
-// be accepted here: webpack substitutes NEXT_PUBLIC_* at build time, so any
-// reference — even one that is never taken at runtime — would inline the
-// service-role key into a bundle that ships to the browser.
-const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// The service-role key must never be inlined into a client bundle.
+//
+// Next/webpack statically substitutes the literal expression
+// `process.env.NEXT_PUBLIC_<name>` at build time, wherever it appears — in
+// server bundles, and in any client bundle that happens to import this module.
+// That substitution is what would publish a key that bypasses every RLS policy.
+//
+// The unprefixed name is the only one read statically. The legacy
+// `NEXT_PUBLIC_`-prefixed name is still honoured through bracket access, which
+// is not statically substituted: it resolves at runtime on the server and
+// yields undefined in the browser. Deployments should move to the unprefixed
+// name and drop the fallback.
+const SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env['NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY'];
 
 export { SERVICE_URL, SERVICE_ROLE_KEY };
 
