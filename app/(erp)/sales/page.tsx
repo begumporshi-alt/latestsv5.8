@@ -7,7 +7,7 @@ import { fetchAll } from '@/lib/fetch-all';
 import { formatCurrency, formatDate } from '@/lib/format';
 import { UnitInput } from '@/components/ui/unit-input';
 import { toast } from '@/hooks/use-toast';
-import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator, Zap } from 'lucide-react';
+import { ShoppingCart, Plus, Search, Eye, EyeOff, X, Trash2, TrendingUp, TrendingDown, Clock, CircleCheck as CheckCircle2, Printer, DollarSign, Send, CreditCard, UserPlus, RotateCcw, Package, Filter, ChevronDown, ChevronRight, Wallet, CircleArrowDown as ArrowDownCircle, CircleArrowUp as ArrowUpCircle, Truck, Calendar, ExternalLink, Pencil, History, Ban, TriangleAlert as AlertTriangle, Banknote, Info, Copy, ClipboardPaste, FileText, Calculator, Zap, RefreshCw } from 'lucide-react';
 import DeliveryChallan from '@/components/DeliveryChallan';
 import { loadChallanItems } from '@/lib/challan-items';
 import EditInvoiceModal from '@/components/EditInvoiceModal';
@@ -137,6 +137,24 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
     !!convertingInvoice || showAdvancedFilters;
   const productsQuery = useSalesProducts(needsCatalogue);
   const invalidateSales = useInvalidateSales();
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Manual re-fetch of every query this page owns.
+  //
+  // The provider turns refetchOnWindowFocus off, because an ERP tab is often
+  // left open for hours and re-downloading the period on every alt-tab burns
+  // egress for nothing. That leaves no way to pull fresh figures short of a
+  // reload, so this is the explicit path. Each refetch also rewrites the
+  // offline snapshot as a side effect (the cache runs at a zero TTL), so
+  // refreshing here refreshes what the device will show when it goes offline.
+  async function handleRefresh() {
+    setRefreshing(true);
+    try {
+      await invalidateSales();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const invoices: InvoiceWithCustomer[] = pageQuery.data?.data.invoicesWithReturns ?? [];
   const stats = pageQuery.data?.data.stats ?? EMPTY_STATS;
@@ -342,6 +360,16 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           <p className="text-muted-foreground text-sm mt-0.5">Track all sales transactions</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            aria-label="Refresh"
+            title="Re-fetch invoices, payments, returns and the reference data for this period"
+            className="flex items-center justify-center gap-2 border border-border text-foreground hover:bg-muted/60 px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold transition shrink-0 disabled:opacity-60"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">{refreshing ? 'Refreshing' : 'Refresh'}</span>
+          </button>
           <Link href="/sales/pos" className="flex items-center justify-center gap-2 border border-blue-600 text-blue-600 hover:bg-blue-50 px-3 sm:px-4 py-2 rounded-lg text-sm font-semibold transition shrink-0">
             <ShoppingCart className="w-4 h-4" />
             <span className="hidden sm:inline">POS</span>
