@@ -11,6 +11,7 @@
 set -euo pipefail
 
 PGBIN="${PGBIN:-/opt/homebrew/opt/postgresql@17/bin}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DB_URL="${1:-}"
 OUT="${2:-$HOME/Backups/sisolution/cutover-$(date +%Y%m%d-%H%M).dump}"
 
@@ -52,3 +53,17 @@ echo "==> archive verified: $ENTRIES TOC entries"
 
 shasum -a 256 "$OUT" | tee -a "$(dirname "$OUT")/checksums.txt"
 echo "==> recorded checksum"
+
+# Capture the verification baseline from the same database, right now. It has to
+# describe the same moment as the dump: 05_verify.py compares the restored
+# target against it row by row, so a stale baseline reports every busy table as
+# a mismatch and hides a genuinely lost row among the noise.
+echo "==> capturing verification baseline"
+BASELINE_ARGS=(--url "$DB_URL" --out "$HERE/baseline.json" --dump-file "$OUT")
+if [[ -n "${PROJECT_REF:-}" ]]; then
+  BASELINE_ARGS+=(--project-ref "$PROJECT_REF")
+fi
+if [[ -n "${REGION:-}" ]]; then
+  BASELINE_ARGS+=(--region "$REGION")
+fi
+python3 "$HERE/01b_capture_baseline.py" "${BASELINE_ARGS[@]}"

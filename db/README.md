@@ -31,6 +31,7 @@ Three reasons, each of which breaks the restore if ignored:
 | File | Purpose |
 |---|---|
 | `01_dump_source.sh` | Fresh `pg_dump -Fc` of the current database, with a TOC integrity check |
+| `01b_capture_baseline.py` | Records row counts and schema shape into `baseline.json` at dump time — called automatically by `01_dump_source.sh` |
 | `02_extract_auth.py` | Pulls `auth.users` + `auth.identities` out of the archive and rewrites them for the target's column set |
 | `03_restore.sh` | The four-pass restore, plus post-restore repair |
 | `04_post_restore.sql` | Grants, the `on_auth_user_created` trigger, cron jobs, realtime publication |
@@ -45,6 +46,8 @@ Three reasons, each of which breaks the restore if ignored:
 
 ```bash
 # 1. dump the source (only while no writes are happening)
+#    also rewrites baseline.json from the same database, so verify has
+#    something current to compare against
 ./01_dump_source.sh "$SOURCE_DB_URL"
 
 # 2. restore into the new project
@@ -88,9 +91,9 @@ The script reports two numbers worth reading:
 
 ## What `05_verify.py` asserts
 
-- Every one of the 79 tables exists with its **exact** row count (79,148 total).
-  Not approximately — six missing journal lines is a changed ledger.
-- 222 RLS policies, 77 triggers, 8 auth users.
+- Every public table exists with its **exact** row count. Not approximately —
+  six missing journal lines is a changed ledger.
+- The RLS policy, trigger and `auth.users` counts match the baseline.
 - Sum of debits equals sum of credits in `journal_lines`.
 - `invoices` and `payments` carry exactly **one** accounting trigger each. Two
   would double-post every transaction; this is the defect the upstream migration
@@ -99,6 +102,12 @@ The script reports two numbers worth reading:
   single over-long entry number makes `LPAD(text,6,'0')` truncate, which collapses
   every subsequent number onto an existing row and blocks all posting.
 - Every table and RPC the Next.js app calls is present (53 tables, 68 RPCs).
+
+The expected counts live in `baseline.json`, not in this README. They change with
+every business day, so hardcoding them here would only guarantee they are wrong
+by the next cutover. `01_dump_source.sh` rewrites the baseline from the source
+database immediately after `pg_dump` returns, so the two always describe the same
+moment. Do not edit `baseline.json` by hand.
 
 ## Prerequisites on the new project
 
