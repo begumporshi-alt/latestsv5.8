@@ -3,38 +3,22 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { cachedQuery } from '@/lib/offline/cache';
 import { formatCurrency, formatAxisCurrency, formatRelativeTime, formatDate } from '@/lib/format';
 import { tokenizeSearch, matchesTokens, rankRows } from '@/lib/search';
 import { toast } from '@/hooks/use-toast';
-import { getInventoryValue } from '@/lib/inventory-value';
+import {
+  EMPTY_STATS,
+  useDashboardCharts,
+  useDashboardInventory,
+  useDashboardOverview,
+  useRefreshDashboard,
+} from '@/lib/dashboard';
 import {
   PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, LineChart, Line, ResponsiveContainer
 } from 'recharts';
-import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown, TriangleAlert as AlertTriangle } from 'lucide-react';
+import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown, RefreshCw, TriangleAlert as AlertTriangle } from 'lucide-react';
 import AppPagination from '@/components/ui/AppPagination';
-import type { Customer } from '@/lib/types';
-
-/** Shape of the cached dashboard aggregate (see loadDashboardData). */
-interface DashboardData {
-  reconciliation: any[];
-  stats: {
-    todaySales: number; monthlySales: number; inventoryValue: number; inventoryItems: number;
-    receivables: number; payables: number; totalExpenses: number; todayCollection: number;
-    deliveryPending: number; deliveryInTransit: number; deliveryDelivered: number; deliveryFailed: number;
-    onlineOrders: number; onlineRevenue: number;
-  };
-  lowStockItems: any[];
-  topCustomers: Customer[];
-  invoiceDues: { id: string; name: string; due: number }[];
-  manualDues: { id: string; name: string; due: number }[];
-  recentActivities: any[];
-  salesChartData: { month: string; sales: number; profit: number }[];
-  categoryData: { name: string; value: number; color: string }[];
-}
-
-const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#6b7280'];
 
 const deliveryStatusConfig = {
   pending: { label: 'Pending', color: 'text-orange-500', bg: 'bg-orange-50', icon: Clock },
@@ -54,248 +38,55 @@ const activityIcons: Record<string, { icon: React.ElementType; color: string }> 
 };
 
 export default function DashboardPage() {
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({
-    todaySales: 0,
-    monthlySales: 0,
-    inventoryValue: 0,
-    inventoryItems: 0,
-    receivables: 0,
-    payables: 0,
-    totalExpenses: 0,
-    todayCollection: 0,
-    deliveryPending: 0,
-    deliveryInTransit: 0,
-    deliveryDelivered: 0,
-    deliveryFailed: 0,
-    onlineOrders: 0,
-    onlineRevenue: 0,
-  });
-  const [salesChartData, setSalesChartData] = useState<{ month: string; sales: number; profit: number }[]>([]);
-  const [categoryData, setCategoryData] = useState<{ name: string; value: number; color: string }[]>([]);
-  const [topCustomers, setTopCustomers] = useState<Customer[]>([]);
-  const [invoiceDues, setInvoiceDues] = useState<{ id: string; name: string; due: number }[]>([]);
-  const [manualDues, setManualDues] = useState<{ id: string; name: string; due: number }[]>([]);
-  const [lowStockItems, setLowStockItems] = useState<any[]>([]);
-  const [recentActivities, setRecentActivities] = useState<any[]>([]);
-  const [reconChecks, setReconChecks] = useState<any[]>([]);
+  // Three queries by cost, not by section. The KPI row must not queue behind
+  // the inventory ledger walk, which is what a single aggregate forced it to
+  // do before.
+  const overview = useDashboardOverview();
+  const charts = useDashboardCharts();
+  const inventory = useDashboardInventory();
+  const refreshDashboard = useRefreshDashboard();
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Deliberately the same names the render already used — the 900 lines below
+  // are unchanged by this refactor.
+  const stats = { ...EMPTY_STATS, ...overview.data?.stats };
+  const inventoryValue = inventory.data?.inventoryValue ?? null;
+  const salesChartData = charts.data?.salesChartData ?? [];
+  const categoryData = charts.data?.categoryData ?? [];
+  const topCustomers = overview.data?.topCustomers ?? [];
+  const invoiceDues = overview.data?.invoiceDues ?? [];
+  const manualDues = overview.data?.manualDues ?? [];
+  const lowStockItems = overview.data?.lowStockItems ?? [];
+  const recentActivities = overview.data?.recentActivities ?? [];
+  const reconChecks = inventory.data?.reconciliation ?? [];
+
   const [showReceivablesModal, setShowReceivablesModal] = useState(false);
   const [showPayablesModal, setShowPayablesModal] = useState(false);
   const [showExpensesModal, setShowExpensesModal] = useState(false);
 
-  useEffect(() => {
-    loadDashboardData();
-  }, []);
-
-  async function loadDashboardData() {
-    setLoading(true);
+  async function handleRefresh() {
+    setRefreshing(true);
     try {
-      // The whole dashboard aggregate is cached for 60s — this page is the
-      // installed app's start screen and re-mounting it (tab switches, back
-      // navigation) shouldn't re-run ~20 queries, the inventory scan and the
-      // chart RPCs. Offline, the last snapshot is served.
-      const res = await cachedQuery<DashboardData>('dashboard:page-data', 60_000, fetchDashboardData);
-      applyDashboardData(res.data);
-    } catch (err) {
-      // A partial dashboard (or the offline notice) beats a stuck skeleton —
-      // this page is the installed app's start screen.
-      console.error('[dashboard] load failed:', err);
+      await refreshDashboard();
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
   }
 
-  function applyDashboardData(d: DashboardData) {
-    setReconChecks(d.reconciliation);
-    setStats(d.stats);
-    setLowStockItems(d.lowStockItems);
-    setTopCustomers(d.topCustomers);
-    setInvoiceDues(d.invoiceDues);
-    setManualDues(d.manualDues);
-    setRecentActivities(d.recentActivities);
-    setSalesChartData(d.salesChartData);
-    setCategoryData(d.categoryData);
-  }
-
-  async function fetchDashboardData(): Promise<DashboardData> {
-    const today = new Date().toISOString().split('T')[0];
-    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
-
-    const yearStart = new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0];
-
-    const [
-      todayInvRes, monthlyInvRes, customersRes, suppliersRes,
-      dlvRes, onlineOrdersRes, topCustRes, unpaidInvRes, recvEntriesRes, recvPaymentsRes,
-      lowStockRes, actRes, expensesRes, todayCollectionRes
-    ] = await Promise.all([
-      supabase.from('invoices').select('total_amount').eq('invoice_date', today).neq('status', 'cancelled'),
-      supabase.from('invoices').select('total_amount, created_at').gte('invoice_date', monthStart).neq('status', 'cancelled'),
-      supabase.from('customers').select('outstanding_balance'),
-      supabase.from('suppliers').select('outstanding_balance'),
-      supabase.from('deliveries').select('status'),
-      supabase.from('online_orders').select('total_amount, status').gte('created_at', monthStart),
-      supabase.from('customers').select('*').order('total_purchases', { ascending: false }).limit(5),
-      supabase.from('invoices').select('customer_id, balance_due, customer:customers(id, name)').not('status', 'in', '("cancelled","refunded","paid")').gt('balance_due', 0),
-      supabase.from('journal_entries').select('id, customer_id, total_debit, customer:customers(id, name)').eq('reference_type', 'receivable').eq('is_posted', true),
-      supabase.from('payments').select('reference_id, amount').eq('reference_type', 'receivable').eq('is_reversed', false),
-      supabase.from('inventory_items').select('quantity_on_hand, product:products(id, name, sku, min_stock_level, image_url)').lt('quantity_on_hand', 20).limit(5),
-      supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(5),
-      supabase.from('journal_entries').select('total_debit, entry_date').eq('reference_type', 'manual').eq('is_posted', true).gte('entry_date', yearStart),
-      supabase.from('payments').select('amount').eq('payment_date', today).eq('payment_type', 'received').neq('is_reversed', true).neq('payment_for', 'reversal_payment'),
-    ]);
-
-    // Stat-card row count — a zero-payload head count instead of paginating
-    // the whole inventory_items table through the wire just to count it.
-    const { count: invItemCount } = await supabase
-      .from('inventory_items')
-      .select('id', { count: 'exact', head: true });
-
-    const todaySales = (todayInvRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
-    const monthlySales = (monthlyInvRes.data || []).reduce((s: number, i: any) => s + Number(i.total_amount), 0);
-    const receivables = (customersRes.data || []).reduce((s: number, c: any) => s + Number(c.outstanding_balance), 0);
-    const payables = (suppliersRes.data || []).reduce((s: number, s2: any) => s + Number(s2.outstanding_balance), 0);
-    const invResult = await getInventoryValue(supabase);
-    const invValue = invResult.total;
-
-    const { data: reconData } = await supabase.rpc('get_inventory_reconciliation');
-    const reconciliation = ((reconData || []) as any[]).sort((a: any, b: any) => a.sort_key - b.sort_key);
-
-    const deliveries = dlvRes.data || [];
-    const onlineOrders = onlineOrdersRes.data || [];
-    const totalExpenses = (expensesRes.data || []).reduce((s: number, e: any) => s + Number(e.total_debit), 0);
-    const todayCollection = (todayCollectionRes.data || []).reduce((s: number, p: any) => s + Number(p.amount), 0);
-
-    const deliveryStats: Record<string, number> = { pending: 0, in_transit: 0, delivered: 0, failed: 0 };
-    deliveries.forEach((d: any) => { if (deliveryStats[d.status] !== undefined) deliveryStats[d.status]++; });
-
-    const stats = {
-      todaySales,
-      monthlySales,
-      inventoryValue: invValue,
-      inventoryItems: invItemCount ?? 0,
-      receivables,
-      payables,
-      totalExpenses,
-      todayCollection,
-      deliveryPending: deliveryStats.pending,
-      deliveryInTransit: deliveryStats.in_transit,
-      deliveryDelivered: deliveryStats.delivered,
-      deliveryFailed: deliveryStats.failed,
-      onlineOrders: onlineOrders.filter((o: any) => o.status !== 'cancelled').length,
-      onlineRevenue: onlineOrders.filter((o: any) => o.status !== 'cancelled').reduce((s: number, o: any) => s + Number(o.total_amount), 0),
-    };
-
-    const lowStock = (lowStockRes.data || []).filter((i: any) => i.product && i.quantity_on_hand < (i.product.min_stock_level || 20));
-    const lowStockItems = lowStock.slice(0, 3);
-    const topCustomers = topCustRes.data || [];
-
-    // Invoice dues per customer: unpaid invoice balances (same rule as the sales page)
-    const invDueMap = new Map<string, { id: string; name: string; due: number }>();
-    (unpaidInvRes.data || []).forEach((i: any) => {
-      if (!i.customer_id || !i.customer) return;
-      const entry = invDueMap.get(i.customer_id) || { id: i.customer.id ?? i.customer_id, name: i.customer.name, due: 0 };
-      entry.due += Number(i.balance_due || 0);
-      invDueMap.set(i.customer_id, entry);
-    });
-    const invoiceDues = [...invDueMap.values()].filter((d) => d.due > 0).sort((a, b) => b.due - a.due).slice(0, 5);
-
-    // Manual dues per customer: receivable journal entries minus payments against them
-    const paidByEntry = new Map<string, number>();
-    (recvPaymentsRes.data || []).forEach((p: any) => {
-      if (p.reference_id) paidByEntry.set(p.reference_id, (paidByEntry.get(p.reference_id) || 0) + Number(p.amount || 0));
-    });
-    const manualDueMap = new Map<string, { id: string; name: string; due: number }>();
-    (recvEntriesRes.data || []).forEach((e: any) => {
-      if (!e.customer_id || !e.customer) return;
-      const outstanding = Number(e.total_debit || 0) - (paidByEntry.get(e.id) || 0);
-      if (outstanding <= 0) return;
-      const entry = manualDueMap.get(e.customer_id) || { id: e.customer.id ?? e.customer_id, name: e.customer.name, due: 0 };
-      entry.due += outstanding;
-      manualDueMap.set(e.customer_id, entry);
-    });
-    const manualDues = [...manualDueMap.values()].sort((a, b) => b.due - a.due).slice(0, 5);
-
-    const recentActivities = actRes.data || [];
-
-    const salesChartData = await getSalesChartData();
-    const categoryData = await getCategoryData();
-
-    return {
-      reconciliation,
-      stats,
-      lowStockItems,
-      topCustomers,
-      invoiceDues,
-      manualDues,
-      recentActivities,
-      salesChartData,
-      categoryData,
-    };
-  }
-
-  async function getSalesChartData() {
-    // Rolling last-6-months window ending with the current month — the old
-    // version hardcoded Jan–Jun, so from July onward the chart never showed
-    // current data. sales_monthly (same source as /reports/sales) returns
-    // real revenue and COGS-based cost; the old profit line was a flat 35%
-    // estimate. toISODate avoids the GMT+6 toISOString date shift.
-    const now = new Date();
-    const toISODate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const start = toISODate(new Date(now.getFullYear(), now.getMonth() - 5, 1));
-    const end = toISODate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
-    const { data } = await supabase.rpc('sales_monthly', { p_start_date: start, p_end_date: end });
-    const byMonth = new Map(((data || []) as any[]).map((r: any) => [r.month, r]));
-
-    const months: { key: string; label: string }[] = [];
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      months.push({
-        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
-        label: d.toLocaleString('en-US', { month: 'short' }),
-      });
-    }
-
-    return months.map(({ key, label }) => {
-      const row = byMonth.get(key) as any;
-      const revenue = Number(row?.revenue || 0);
-      const cost = Number(row?.cost || 0);
-      return { month: label, sales: revenue, profit: revenue - cost };
-    });
-  }
-
-  async function getCategoryData() {
-    const { data: products } = await supabase
-      .from('products')
-      .select('sale_price, category:categories(name), inventory_items(quantity_on_hand)');
-
-    const categoryTotals: Record<string, number> = {};
-    (products || []).forEach((p: any) => {
-      const catName = p.category?.name || 'Others';
-      const stockValue = (p.inventory_items || []).reduce((s: number, i: any) => s + Number(i.quantity_on_hand), 0);
-      categoryTotals[catName] = (categoryTotals[catName] || 0) + (stockValue * Number(p.sale_price));
-    });
-
-    const total = Object.values(categoryTotals).reduce((a, b) => a + b, 0) || 1;
-
-    return Object.entries(categoryTotals)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 6)
-      .map(([name, value], i) => ({
-        name,
-        value: Math.round((value / total) * 100),
-        color: COLORS[i]
-      }));
-  }
-
+  // A KPI whose source has not resolved yet shows an em dash rather than
+  // ৳0.00 — a zero is a claim about the business, a dash is a claim about the
+  // request. `isSuccess` (not `isLoading`) so a background refetch never
+  // blanks a figure that is already on screen.
+  const ready = overview.isSuccess;
   const kpis = [
-    { label: "Today's Sales", value: formatCurrency(stats.todaySales), icon: ShoppingCart, bg: 'bg-blue-50', color: 'text-blue-500' },
-    { label: "Today's Collection", value: formatCurrency(stats.todayCollection), icon: Banknote, bg: 'bg-emerald-50', color: 'text-emerald-500' },
-    { label: 'Monthly Revenue', value: formatCurrency(stats.monthlySales), icon: TrendingUp, bg: 'bg-green-50', color: 'text-green-500' },
-    { label: 'Inventory Value', value: formatCurrency(stats.inventoryValue), icon: Package, bg: 'bg-purple-50', color: 'text-purple-500' },
-    { label: 'Pending Deliveries', value: String(stats.deliveryPending + stats.deliveryInTransit), icon: Truck, bg: 'bg-orange-50', color: 'text-orange-500' },
-    { label: 'Receivables', value: formatCurrency(stats.receivables), icon: Receipt, bg: 'bg-red-50', color: 'text-red-500', clickable: true, modal: 'receivables' as const },
-    { label: 'Payables', value: formatCurrency(stats.payables), icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500', clickable: true, modal: 'payables' as const },
-    { label: 'Total Expenses', value: formatCurrency(stats.totalExpenses), icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500', clickable: true, modal: 'expenses' as const },
+    { label: "Today's Sales", value: ready ? formatCurrency(stats.todaySales) : '—', icon: ShoppingCart, bg: 'bg-blue-50', color: 'text-blue-500' },
+    { label: "Today's Collection", value: ready ? formatCurrency(stats.todayCollection) : '—', icon: Banknote, bg: 'bg-emerald-50', color: 'text-emerald-500' },
+    { label: 'Monthly Revenue', value: ready ? formatCurrency(stats.monthlySales) : '—', icon: TrendingUp, bg: 'bg-green-50', color: 'text-green-500' },
+    { label: 'Inventory Value', value: inventoryValue != null ? formatCurrency(inventoryValue) : '—', icon: Package, bg: 'bg-purple-50', color: 'text-purple-500' },
+    { label: 'Pending Deliveries', value: ready ? String(stats.deliveryPending + stats.deliveryInTransit) : '—', icon: Truck, bg: 'bg-orange-50', color: 'text-orange-500' },
+    { label: 'Receivables', value: ready ? formatCurrency(stats.receivables) : '—', icon: Receipt, bg: 'bg-red-50', color: 'text-red-500', clickable: true, modal: 'receivables' as const },
+    { label: 'Payables', value: ready ? formatCurrency(stats.payables) : '—', icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500', clickable: true, modal: 'payables' as const },
+    { label: 'Total Expenses', value: ready ? formatCurrency(stats.totalExpenses) : '—', icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500', clickable: true, modal: 'expenses' as const },
   ];
 
   return (
@@ -318,6 +109,15 @@ export default function DashboardPage() {
             <Wallet className="w-4 h-4" />
             Add Expense
           </Link>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title="Re-fetch every figure on this page"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white border border-border hover:bg-muted/60 text-foreground text-sm font-medium rounded-lg shadow-sm transition-colors disabled:opacity-60"
+          >
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Refreshing' : 'Refresh'}
+          </button>
         </div>
       </div>
 
