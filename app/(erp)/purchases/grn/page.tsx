@@ -34,12 +34,26 @@ interface PurchaseOrderItem {
   unit_cost: number;
   discount_percent: number;
   warehouse_id?: string | null;
+  unit_name?: string | null;
+  unit_conversion_factor?: number | null;
 }
 
 // What the buyer actually pays per unit: PO unit cost minus the line discount.
 // receive_grn posts batches and movements at this figure for PO-based receipts.
 function effectiveUnitCost(item: PurchaseOrderItem): number {
   return Number(item.unit_cost) * (1 - (Number(item.discount_percent) || 0) / 100);
+}
+
+// How many base units one purchase unit of this line contains (1 box = 12 coils).
+function lineConversion(item: PurchaseOrderItem): number {
+  const conv = Number(item.unit_conversion_factor);
+  return Number.isFinite(conv) && conv > 0 ? conv : 1;
+}
+
+// The buyer pays per purchase unit; stock is counted per base unit, and
+// receive_grn converts both before posting. This is the per-base-unit figure.
+function baseUnitCost(item: PurchaseOrderItem): number {
+  return effectiveUnitCost(item) / lineConversion(item);
 }
 
 // Discrete-unit products (pcs/box) can only be received whole.
@@ -522,7 +536,10 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
           return {
             po_item_id: directMode ? null : itemId,
             product_id: item.product_id,
+            // Purchase units (boxes). receive_grn converts quantity and cost
+            // to the product's base unit server-side, from the PO line.
             quantity: Number(qty),
+            unit_name: item.unit_name || item.product?.unit || null,
             unit_cost: effectiveUnitCost(item),
             expiry_date: expiryDates[itemId] || null,
             // Each line lands in the warehouse its PO line was raised for
@@ -580,14 +597,20 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         grn_number?: string;
         cost_updates?: { name: string; before: number; after: number; forced?: boolean }[];
         sale_price_updates?: { name: string; before: number; after: number }[];
+        items?: { product_id: string; quantity_base: number; unit_cost_base: number }[];
       };
 
-      const receivedLines = itemsToReceive.map(([itemId, qty]) => {
+      const receivedLines = itemsToReceive.map(([itemId, qty], lineIdx) => {
         const item = items.find(i => i.id === itemId);
+        // Prefer the server's posted figures: for a multi-unit line the batch
+        // is in base units at per-base-unit cost, not boxes at the box price.
+        // Matched by index — two PO lines can carry the same product.
+        const detail = result.items?.[lineIdx];
+        const matched = detail && item && detail.product_id === item.product_id;
         return {
           name: item?.product?.name || 'Unknown product',
-          qty: Number(qty),
-          cost: item ? effectiveUnitCost(item) : 0,
+          qty: matched ? Number(detail.quantity_base) : Number(qty),
+          cost: matched ? Number(detail.unit_cost_base) : (item ? effectiveUnitCost(item) : 0),
         };
       });
 
@@ -822,12 +845,19 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                             <p className="font-medium text-foreground text-sm">{item.product?.name}</p>
                             <p className="text-xs text-muted-foreground">SKU: {item.product?.sku}</p>
                           </div>
-                          <p className="font-semibold">{formatCurrency(effectiveUnitCost(item))}/unit</p>
+                          <p className="font-semibold text-right">
+                            {formatCurrency(effectiveUnitCost(item))}/{item.unit_name || 'unit'}
+                            {lineConversion(item) > 1 && (
+                              <span className="block text-[10px] font-normal text-muted-foreground">
+                                = {formatCurrency(baseUnitCost(item))}/{item.product?.unit} in stock
+                              </span>
+                            )}
+                          </p>
                         </div>
                         <div className="flex items-center gap-4">
                           <div className="flex-1">
                             <div className="flex justify-between text-xs text-muted-foreground mb-1">
-                              <span>Ordered: {item.quantity}</span>
+                              <span>Ordered: {item.quantity} {item.unit_name || item.product?.unit}{lineConversion(item) > 1 && ` (= ${(Number(item.quantity) || 0) * lineConversion(item)} ${item.product?.unit})`}</span>
                               <span>Already Received: {item.received_quantity}</span>
                               <span className="font-medium text-blue-600">Remaining: {remaining}</span>
                             </div>
