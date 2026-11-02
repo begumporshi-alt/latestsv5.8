@@ -37,6 +37,7 @@ import {
   type ImportMode,
   type ImportPlan,
   type PlannedProduct,
+  type PriceScale,
   type RawTable,
 } from '@/lib/import/product-import';
 
@@ -323,6 +324,8 @@ export default function InventoryPage() {
       base_unit: p.base_unit,
       enable_multi_unit: (p as any).enable_multi_unit,
       is_active: p.is_active,
+      sale_price: p.sale_price,
+      cost_price: p.cost_price,
     })),
     [products]
   );
@@ -979,7 +982,7 @@ function ImportModal({ categories, brands, warehouses, unitTypes, existingProduc
   brands: Brand[];
   warehouses: WarehouseType[];
   unitTypes: { id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[];
-  existingProducts: { id: string; sku: string; name: string; unit?: string | null; base_unit?: string | null; enable_multi_unit?: boolean | null; is_active?: boolean | null }[];
+  existingProducts: { id: string; sku: string; name: string; unit?: string | null; base_unit?: string | null; enable_multi_unit?: boolean | null; is_active?: boolean | null; sale_price?: number | null; cost_price?: number | null }[];
   onClose: () => void;
   onImported: () => void;
 }) {
@@ -998,11 +1001,56 @@ function ImportModal({ categories, brands, warehouses, unitTypes, existingProduc
   const [dragOver, setDragOver] = useState(false);
 
   const defaultWarehouse = warehouses.find(w => w.is_default)?.id || warehouses[0]?.id;
+  const money = (v: number | null | undefined) => `৳${(Number(v) || 0).toFixed(2)}`;
   const counts = plan ? planCounts(plan) : null;
   // Stock is written to the default warehouse; without one, opening quantities
   // would be dropped silently, so the import is blocked instead.
   const needsWarehouse = !!plan && !defaultWarehouse && plan.products.some(p => p.stockTarget !== undefined);
   const canImport = !!plan && plan.errors.length === 0 && plan.products.length > 0 && !importing && !needsWarehouse;
+
+  // Multi-unit price scaling preview: POS charges a multi-unit product's
+  // sale-unit row price, so a price import rescales those rows. Fetch the
+  // unit rows of affected products so the review shows each old → new price.
+  const [unitPricePreview, setUnitPricePreview] = useState<Record<string, { unit_name: string; is_base_unit: boolean; oldPrice: number | null; newPrice: number | null; oldCost: number | null; newCost: number | null }[]>>({});
+  useEffect(() => {
+    setUnitPricePreview({});
+    if (!plan) return;
+    const ids = plan.products.filter(p => p.priceScale && p.productId).map(p => p.productId!);
+    if (ids.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('product_units')
+        .select('product_id, unit_name, is_base_unit, price, cost_price')
+        .in('product_id', ids)
+        .eq('is_active', true)
+        .order('sort_order');
+      if (cancelled || !data) return;
+      const round2 = (n: number) => Math.round(n * 100) / 100;
+      const info: typeof unitPricePreview = {};
+      for (const item of plan.products) {
+        if (!item.priceScale || !item.productId) continue;
+        const rows = (data as any[]).filter(r => r.product_id === item.productId);
+        if (rows.length === 0) continue;
+        info[item.productId] = rows.map(r => {
+          const oldPrice = r.price ?? null;
+          const oldCost = r.cost_price ?? null;
+          let newPrice = oldPrice;
+          let newCost = oldCost;
+          if (r.is_base_unit) {
+            if (item.priceScale!.saleNew !== undefined) newPrice = item.priceScale!.saleNew!;
+            if (item.priceScale!.costNew !== undefined) newCost = item.priceScale!.costNew!;
+          } else {
+            if (item.priceScale!.sale !== undefined && oldPrice != null) newPrice = round2(oldPrice * item.priceScale!.sale!);
+            if (item.priceScale!.cost !== undefined && oldCost != null) newCost = round2(oldCost * item.priceScale!.cost!);
+          }
+          return { unit_name: r.unit_name, is_base_unit: !!r.is_base_unit, oldPrice, newPrice, oldCost, newCost };
+        });
+      }
+      if (!cancelled) setUnitPricePreview(info);
+    })();
+    return () => { cancelled = true; };
+  }, [plan]);
 
   function planFor(table: RawTable, mode: ImportMode) {
     return buildImportPlan({ table, mode, categories, brands, unitTypes, existing: existingProducts });
@@ -1125,6 +1173,34 @@ function ImportModal({ categories, brands, warehouses, unitTypes, existingProduc
       .eq('warehouse_id', warehouseId);
   }
 
+  /**
+   * POS charges a multi-unit product's sale-unit row price (product_units),
+   * so a price import that only updated products.sale_price would never reach
+   * the counter. The base unit row is set to the imported prices exactly;
+   * every larger unit scales by the same ratio so it derives from the new
+   * base price.
+   */
+  async function scaleUnitPrices(productId: string, scale: PriceScale) {
+    const { data: rows, error } = await supabase
+      .from('product_units')
+      .select('id, is_base_unit, price, cost_price')
+      .eq('product_id', productId);
+    if (error) throw new Error(`units — ${error.message}`);
+    for (const row of rows || []) {
+      const patch: Record<string, unknown> = {};
+      if (row.is_base_unit) {
+        if (scale.saleNew !== undefined) patch.price = scale.saleNew;
+        if (scale.costNew !== undefined) patch.cost_price = scale.costNew;
+      } else {
+        if (scale.sale !== undefined && row.price != null) patch.price = Math.round(row.price * scale.sale * 100) / 100;
+        if (scale.cost !== undefined && row.cost_price != null) patch.cost_price = Math.round(row.cost_price * scale.cost * 100) / 100;
+      }
+      if (Object.keys(patch).length === 0) continue;
+      const { error: updateError } = await supabase.from('product_units').update(patch).eq('id', row.id);
+      if (updateError) throw new Error(`units — ${updateError.message}`);
+    }
+  }
+
   async function importOne(item: PlannedProduct) {
     let productId = item.productId || '';
 
@@ -1143,6 +1219,8 @@ function ImportModal({ categories, brands, warehouses, unitTypes, existingProduc
         .eq('id', productId);
       if (error) throw new Error(error.message);
     }
+
+    if (item.priceScale) await scaleUnitPrices(productId, item.priceScale);
 
     if (item.units.length > 0) {
       const { error } = await supabase.from('product_units').insert(item.units.map((unit, index) => ({
@@ -1384,7 +1462,15 @@ function ImportModal({ categories, brands, warehouses, unitTypes, existingProduc
                                   <span className="block text-[10px] text-amber-700 mt-0.5">{item.warnings[0]}{item.warnings.length > 1 ? ` (+${item.warnings.length - 1})` : ''}</span>
                                 )}
                               </td>
-                              <td className="px-2 py-1.5 text-muted-foreground">{written.join(', ') || '—'}</td>
+                              <td className="px-2 py-1.5 text-muted-foreground">
+                                {written.join(', ') || '—'}
+                                {item.priceScale && unitPricePreview[item.productId!]?.map(u => (
+                                  <span key={u.unit_name} className="block text-[10px] text-blue-700 tabular-nums">
+                                    {u.unit_name}{u.is_base_unit ? ' (base)' : ''}: {money(u.oldPrice)} → {money(u.newPrice)}
+                                    {(u.oldCost ?? 0) !== (u.newCost ?? 0) && <> · cost {money(u.oldCost)} → {money(u.newCost)}</>}
+                                  </span>
+                                ))}
+                              </td>
                               <td className="px-2 py-1.5 text-right tabular-nums">
                                 {item.stockTarget === undefined ? <span className="text-muted-foreground">—</span> : item.stockTarget}
                               </td>
@@ -1597,6 +1683,11 @@ function ImportModal({ categories, brands, warehouses, unitTypes, existingProduc
                     <p className="text-xs font-semibold text-gray-800 mb-1">Update only a price</p>
                     <p className="text-[11px] text-gray-600">Two columns are enough — everything else stays as it is.</p>
                     <pre className="mt-2 text-[11px] bg-white p-2 rounded border overflow-x-auto">{'SKU,Sale Price\nHAM-001,95'}</pre>
+                    <p className="text-[11px] text-blue-700 mt-2">
+                      For a <strong>multi-unit</strong> product, a price change also moves the larger-unit price:
+                      the base unit gets the imported price and box/carton prices scale by the same ratio
+                      (sale ৳150 → ৳180 is ×1.2, so a ৳1,700 box becomes ৳2,040).                       The preview shows each old → new unit price before anything is written.
+                    </p>
                   </div>
                 </div>
               </div>
