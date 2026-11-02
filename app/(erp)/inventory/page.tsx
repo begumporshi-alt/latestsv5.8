@@ -23,6 +23,22 @@ import { readData } from '@/lib/offline/read-result';
 import { enqueueOp } from '@/lib/offline/outbox';
 import ProductModal from '@/components/ProductModal';
 import SearchableSelect from '@/components/ui/SearchableSelect';
+import {
+  COLUMN_BY_KEY,
+  COLUMNS,
+  TEMPLATE_HEADERS,
+  buildImportPlan,
+  downloadTemplateWorkbook,
+  fieldLabel,
+  parseDelimitedText,
+  parseWorkbook,
+  planCounts,
+  toSheetRows,
+  type ImportMode,
+  type ImportPlan,
+  type PlannedProduct,
+  type RawTable,
+} from '@/lib/import/product-import';
 
 function StockByWarehouse({ productId, warehouses, inventoryByWarehouse, unit }: { productId: string; warehouses: WarehouseType[]; inventoryByWarehouse: Record<string, Record<string, number>>; unit?: string }) {
   const stockByWh = inventoryByWarehouse[productId] || {};
@@ -295,6 +311,21 @@ export default function InventoryPage() {
     return rankRows(list, p => [p.name, p.sku || '', p.barcode || ''], tokens);
   }, [products, search, filterCategory, filterBrand, filterWarehouse, filterStatus, filterColor, filterSize, filterUnit, filterNonStockOnly, inventoryByWarehouse]);
   const pagedFiltered = useMemo(() => filtered.slice((page - 1) * pageSize, page * pageSize), [filtered, page, pageSize]);
+
+  // Stable identity for the importer's SKU lookup — a fresh array on every
+  // render would re-plan the preview each time the parent re-renders.
+  const importTargets = useMemo(
+    () => products.map(p => ({
+      id: p.id,
+      sku: p.sku,
+      name: p.name,
+      unit: p.unit,
+      base_unit: p.base_unit,
+      enable_multi_unit: (p as any).enable_multi_unit,
+      is_active: p.is_active,
+    })),
+    [products]
+  );
   // Reset to page 1 when filters change
   useEffect(() => { setPage(1); }, [search, filterCategory, filterBrand, filterStatus, filterWarehouse, filterColor, filterSize, filterUnit, filterNonStockOnly]);
 
@@ -350,25 +381,35 @@ export default function InventoryPage() {
     return <span className="badge-status bg-green-50 text-green-600">In Stock</span>;
   }
 
+  // Export writes the same column contract the importer reads, so a file can
+  // be exported, edited in Excel and imported straight back.
   function exportProducts() {
-    const rows = filtered.map((p, i) => ({
-      '#': i + 1,
-      Name: p.name,
-      SKU: p.sku,
-      Category: (p as any).category?.name || '',
-      Brand: (p as any).brand?.name || '',
-      Unit: p.unit || '',
-      'Cost Price': p.cost_price,
-      'Sale Price': p.sale_price,
-      'Min Stock Level': p.min_stock_level,
-      'Current Stock': p.total_stock || 0,
-      Description: (p as any).description || '',
+    const records = filtered.map(p => ({
+      name: p.name,
+      sku: p.sku,
+      barcode: (p as any).barcode || '',
+      category: (p as any).category?.name || '',
+      brand: (p as any).brand?.name || '',
+      unit: p.base_unit || p.unit || '',
+      cost_price: p.cost_price,
+      sale_price: p.sale_price,
+      mrp: (p as any).mrp ?? '',
+      tax_rate: p.tax_rate,
+      min_stock_level: p.min_stock_level,
+      current_stock: p.total_stock || 0,
+      description: (p as any).description || '',
+      color: (p.product_colors || []).map(c => c.name).join(' | '),
+      size: (p.product_sizes || []).map(s => s.name).join(' | '),
+      warranty_months: (p as any).warranty_months ?? '',
+      track_inventory: (p as any).track_inventory === false ? 'no' : 'yes',
     }));
-    const ws = XLSX.utils.json_to_sheet(rows);
+    const ws = XLSX.utils.json_to_sheet(toSheetRows(records), { header: TEMPLATE_HEADERS });
+    ws['!cols'] = TEMPLATE_HEADERS.map(label => ({ wch: Math.max(14, label.length + 2) }));
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Products');
     XLSX.writeFile(wb, `inventory-${new Date().toISOString().split('T')[0]}.xlsx`);
-    toast({ title: 'Exported', description: `${rows.length} products exported to Excel` });
+    const scope = filterStatus === 'inactive' ? 'inactive products' : 'the current filtered view';
+    toast({ title: 'Exported', description: `${records.length} products from ${scope}. Re-import this file to update them.` });
   }
 
   async function handleDelete() {
@@ -781,7 +822,7 @@ export default function InventoryPage() {
           brands={brands}
           warehouses={warehouses}
           unitTypes={unitTypes}
-          existingSkus={products.map(p => p.sku)}
+          existingProducts={importTargets}
           onClose={() => setShowImportModal(false)}
           onImported={() => { dropPosSnapshots(); loadData(true); }}
         />
@@ -933,441 +974,229 @@ function WriteOffModal({ targets, valueFor, onClose, onDone }: {
   );
 }
 
-function ImportModal({ categories, brands, warehouses, unitTypes, existingSkus, onClose, onImported }: {
+function ImportModal({ categories, brands, warehouses, unitTypes, existingProducts, onClose, onImported }: {
   categories: Category[];
   brands: Brand[];
   warehouses: WarehouseType[];
   unitTypes: { id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[];
-  existingSkus: string[];
+  existingProducts: { id: string; sku: string; name: string; unit?: string | null; base_unit?: string | null; enable_multi_unit?: boolean | null; is_active?: boolean | null }[];
   onClose: () => void;
   onImported: () => void;
 }) {
+  const TENANT = '00000000-0000-0000-0000-000000000001';
   const [activeTab, setActiveTab] = useState<'upload' | 'paste' | 'guide'>('upload');
+  const [importMode, setImportMode] = useState<ImportMode>('simple');
+  const [pasteText, setPasteText] = useState('');
+  // The parsed source is kept so switching mode can re-plan without re-uploading.
+  const [source, setSource] = useState<{ table: RawTable; label: string } | null>(null);
+  const [plan, setPlan] = useState<ImportPlan | null>(null);
+  const [parseError, setParseError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0, stage: '' });
-  const [results, setResults] = useState<{ success: number; skipped: number; errors: string[] } | null>(null);
-  const [pasteText, setPasteText] = useState('');
-  const [importMode, setImportMode] = useState<'simple' | 'variants' | 'multiunit'>('simple');
+  const [result, setResult] = useState<{ created: number; updated: number; skipped: number; errors: string[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
 
-  const demoTemplate = `Name,SKU,Category,Brand,Unit,Cost Price,Sale Price,Min Stock Level,Current Stock,Color,Size,Multi-Unit Name,Multi-Unit Conversion,Multi-Unit Sale Price
-Widget A,WID-001,Electronics,TechCorp,pcs,100,150,10,50,Red,Small,,,
-Widget A,WID-002,Electronics,TechCorp,pcs,100,150,10,30,Blue,Small,,,
-Cable Pack,CAB-010,Electrical,PowerCo,pcs,500,750,5,20,,,,box,100,50000
-Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,800`;
+  const defaultWarehouse = warehouses.find(w => w.is_default)?.id || warehouses[0]?.id;
+  const counts = plan ? planCounts(plan) : null;
+  // Stock is written to the default warehouse; without one, opening quantities
+  // would be dropped silently, so the import is blocked instead.
+  const needsWarehouse = !!plan && !defaultWarehouse && plan.products.some(p => p.stockTarget !== undefined);
+  const canImport = !!plan && plan.errors.length === 0 && plan.products.length > 0 && !importing && !needsWarehouse;
 
-  // Imports are the other way a spelling variant sneaks back in. Match the CSV
-  // value to the catalog — name first, then short code ('sqft', 'kg', 'mtr') —
-  // and store the catalog's own spelling.
-  function canonicalUnit(raw?: string) {
-    const name = String(raw || '').trim() || 'pcs';
-    const lower = name.toLowerCase();
-    const byName = unitTypes.find(u => u.unit_name.toLowerCase() === lower);
-    if (byName) return byName.unit_name;
-    const byShort = unitTypes.find(u => (u.unit_short || '').toLowerCase() === lower);
-    return byShort ? byShort.unit_name : name;
+  function planFor(table: RawTable, mode: ImportMode) {
+    return buildImportPlan({ table, mode, categories, brands, unitTypes, existing: existingProducts });
   }
 
-  function downloadTemplate() {
-    const blob = new Blob([demoTemplate], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = 'product_import_template.csv';
-    link.click();
-    URL.revokeObjectURL(link.href);
+  function review(table: RawTable, label: string) {
+    setParseError(null);
+    setResult(null);
+    setSource({ table, label });
+    setPlan(planFor(table, importMode));
+  }
+
+  function changeMode(next: ImportMode) {
+    setImportMode(next);
+    if (source) setPlan(planFor(source.table, next));
+  }
+
+  function reset() {
+    setSource(null);
+    setPlan(null);
+    setResult(null);
+    setParseError(null);
+    setProgress({ current: 0, total: 0, stage: '' });
   }
 
   async function handleFileUpload(file: File) {
-    setImporting(true);
-    setResults(null);
-    setProgress({ current: 0, total: 0, stage: 'Reading file...' });
-
+    setParseError(null);
     try {
       const data = await file.arrayBuffer();
-      const wb = XLSX.read(data, { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows: any[] = XLSX.utils.sheet_to_json(ws);
-
-      if (rows.length === 0) {
-        setResults({ success: 0, skipped: 0, errors: ['No data rows found in file'] });
-        setImporting(false);
-        return;
-      }
-
-      await processImport(rows);
+      review(parseWorkbook(data), file.name);
     } catch (err: any) {
-      setResults({ success: 0, skipped: 0, errors: [err.message || 'Failed to read file'] });
+      setSource(null);
+      setPlan(null);
+      setParseError(err?.message || 'Could not read that file.');
     }
-    setImporting(false);
   }
 
-  async function handlePasteImport() {
+  function handlePasteReview() {
     if (!pasteText.trim()) return;
-
-    setImporting(true);
-    setResults(null);
-    setProgress({ current: 0, total: 0, stage: 'Parsing pasted data...' });
-
-    try {
-      const lines = pasteText.trim().split('\n');
-      const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-      const rows = lines.slice(1).map(line => {
-        const values = line.split(',');
-        const row: Record<string, string> = {};
-        headers.forEach((h, i) => row[h] = values[i]?.trim() || '');
-        return row;
-      }).filter(r => r['name'] || r['sku']);
-
-      if (rows.length === 0) {
-        setResults({ success: 0, skipped: 0, errors: ['No valid data rows found'] });
-        setImporting(false);
-        return;
-      }
-
-      await processImport(rows);
-    } catch (err: any) {
-      setResults({ success: 0, skipped: 0, errors: [err.message || 'Failed to parse pasted data'] });
-    }
-    setImporting(false);
+    review(parseDelimitedText(pasteText), 'pasted data');
   }
 
-  async function processImport(rows: any[]) {
-    const defaultWarehouse = warehouses.find(w => w.is_default)?.id || warehouses[0]?.id;
-    let success = 0;
-    let skipped = 0;
-    const errors: string[] = [];
+  async function addVariants(table: 'product_colors' | 'product_sizes', productId: string, names: string[]) {
+    const { data: existing } = await supabase.from(table).select('name').eq('product_id', productId);
+    const have = new Set((existing || []).map((row: any) => String(row.name).toLowerCase()));
+    const missing = names.filter(name => !have.has(name.toLowerCase()));
+    if (missing.length === 0) return;
+    let sort = (existing || []).length;
+    const rows = missing.map(name => {
+      const base: Record<string, any> = { product_id: productId, name, is_default: sort === 0, sort_order: sort };
+      sort += 1;
+      return table === 'product_colors' ? { ...base, hex_code: colorNameToHex(name) } : base;
+    });
+    const { error } = await supabase.from(table).insert(rows);
+    if (error) throw new Error(`${table === 'product_colors' ? 'colours' : 'sizes'} — ${error.message}`);
+  }
 
-    if (!defaultWarehouse) {
-      setResults({ success: 0, skipped: rows.length, errors: ['No warehouse found. Please create a warehouse first.'] });
-      setImporting(false);
+  async function applyStock(productId: string, warehouseId: string, target: number, item: PlannedProduct) {
+    const { data: current } = await supabase
+      .from('inventory_items')
+      .select('id, quantity_on_hand')
+      .eq('product_id', productId)
+      .eq('warehouse_id', warehouseId)
+      .maybeSingle();
+
+    const onHand = Number(current?.quantity_on_hand || 0);
+    if (target === onHand) return;
+
+    // Never post a zero-cost movement: if the sheet did not carry a cost, read
+    // the product's own cost instead of defaulting to 0.
+    let unitCost = Number(item.fields.cost_price);
+    if (!Number.isFinite(unitCost)) {
+      const { data: row } = await supabase.from('products').select('cost_price').eq('id', productId).maybeSingle();
+      unitCost = Number(row?.cost_price || 0);
+    }
+
+    if (target > onHand) {
+      const delta = target - onHand;
+      if (!current) {
+        const { error } = await supabase.from('inventory_items').insert({
+          tenant_id: TENANT, product_id: productId, warehouse_id: warehouseId, quantity_on_hand: target,
+        });
+        if (error) throw new Error(error.message);
+      }
+      const reference = item.action === 'create' ? 'import' : 'import_update';
+      const note = item.action === 'create' ? 'Initial stock from import' : 'Stock increased from import';
+      await supabase.from('stock_movements').insert({
+        tenant_id: TENANT, product_id: productId, warehouse_id: warehouseId,
+        movement_type: item.action === 'create' ? 'opening' : 'adjustment',
+        quantity: delta, unit_cost: unitCost, reference_type: reference, notes: note,
+      });
+      const { error } = await supabase.rpc('create_opening_batch', {
+        p_product_id: productId, p_warehouse_id: warehouseId, p_quantity: delta, p_unit_cost: unitCost,
+        p_batch_type: item.action === 'create' ? 'opening' : 'adjustment',
+        p_reference_type: reference, p_notes: note,
+      });
+      if (error) throw new Error(error.message);
       return;
     }
 
-    // Group rows by base product (same Name, different variants)
-    const productGroups = new Map<string, any[]>();
+    const reduce = onHand - target;
+    // Post the ledger and GL first. create_stock_reduction consumes FIFO layers
+    // and never touches inventory_items, so writing the counter first used to
+    // leave stock and the ledger disagreeing whenever the RPC failed.
+    const { error } = await supabase.rpc('create_stock_reduction', {
+      p_product_id: productId, p_warehouse_id: warehouseId, p_quantity: reduce, p_unit_cost: unitCost,
+      p_reference_type: 'import_update', p_reference_id: productId, p_notes: 'Stock decreased from import',
+    });
+    if (error) throw new Error(error.message);
 
-    rows.forEach((row, idx) => {
-      const name = row['Name'] || row['name'] || '';
-      const sku = row['SKU'] || row['sku'] || '';
-
-      if (!name && !sku) {
-        skipped++;
-        errors.push(`Row ${idx + 1}: Missing Name and SKU`);
-        return;
-      }
-
-      // For variant mode, group by Name; for simple mode, each row is separate
-      const groupKey = importMode === 'variants' ? (name || sku) : `${name}_${sku}_${idx}`;
-      if (!productGroups.has(groupKey)) productGroups.set(groupKey, []);
-      productGroups.get(groupKey)!.push({ ...row, _rowIndex: idx + 1 });
+    await supabase.from('stock_movements').insert({
+      tenant_id: TENANT, product_id: productId, warehouse_id: warehouseId,
+      movement_type: 'adjustment', quantity: -reduce, unit_cost: unitCost,
+      reference_type: 'import_update', notes: 'Stock decreased from import',
     });
 
-    setProgress({ current: 0, total: productGroups.size, stage: 'Importing products...' });
+    await supabase.from('inventory_items')
+      .update({ quantity_on_hand: target })
+      .eq('product_id', productId)
+      .eq('warehouse_id', warehouseId);
+  }
 
-    let current = 0;
-    for (const [, groupRows] of productGroups) {
-      current++;
-      setProgress({ current, total: productGroups.size, stage: `Processing ${current}/${productGroups.size}...` });
+  async function importOne(item: PlannedProduct) {
+    let productId = item.productId || '';
 
-      const firstRow = groupRows[0];
-      const name = String(firstRow['Name'] || firstRow['name'] || '').trim();
-      const sku = String(firstRow['SKU'] || firstRow['sku'] || '').trim();
-
-      if (!name || !sku) {
-        skipped += groupRows.length;
-        errors.push(`Row ${firstRow._rowIndex}: Missing Name or SKU`);
-        continue;
-      }
-
-      // Find category and brand
-      const catName = firstRow['Category'] || firstRow['category'];
-      const brandName = firstRow['Brand'] || firstRow['brand'];
-      const category = catName ? categories.find(c => c.name.toLowerCase() === String(catName).toLowerCase()) : null;
-      const brand = brandName ? brands.find(b => b.name.toLowerCase() === String(brandName).toLowerCase()) : null;
-
-      // Parse multi-unit data
-      const baseUnitName = canonicalUnit(firstRow['Unit'] || firstRow['unit']);
-      const multiUnitName = canonicalUnit(firstRow['Multi-Unit Name'] || firstRow['multi_unit_name']);
-      const multiUnitConversion = Number(firstRow['Multi-Unit Conversion'] || firstRow['multi_unit_conversion'] || 1);
-      const multiUnitSalePrice = Number(firstRow['Multi-Unit Sale Price'] || firstRow['multi_unit_sale_price'] || 0);
-
-      const enableMultiUnit = !!multiUnitName && multiUnitName !== baseUnitName && multiUnitConversion > 1;
-      const enableColors = groupRows.some(r => r['Color'] || r['color']);
-      const enableSizes = groupRows.some(r => r['Size'] || r['size']);
-
-      const skuExists = existingSkus.includes(sku);
-      let productId: string;
-
-      if (skuExists) {
-        // Update existing product
-        const { data: existingProduct, error: fetchError } = await supabase
-          .from('products')
-          .select('id')
-          .eq('sku', sku)
-          .single();
-
-        if (fetchError || !existingProduct) {
-          skipped += groupRows.length;
-          errors.push(`Row ${firstRow._rowIndex}: Failed to find existing product with SKU ${sku}`);
-          continue;
-        }
-
-        productId = existingProduct.id;
-
-        // Update product details (but preserve variant settings)
-        await supabase.from('products').update({
-          name,
-          unit: baseUnitName,
-          cost_price: Number(firstRow['Cost Price'] || firstRow['cost_price'] || 0),
-          sale_price: Number(firstRow['Sale Price'] || firstRow['sale_price'] || 0),
-          min_stock_level: Number(firstRow['Min Stock Level'] || firstRow['min_stock_level'] || 0),
-          description: String(firstRow['Description'] || firstRow['description'] || ''),
-          category_id: category?.id || null,
-          brand_id: brand?.id || null,
-          updated_at: new Date().toISOString(),
-        }).eq('id', productId);
-      } else {
-        // Create new product
-        const { data: productData, error: prodError } = await supabase.from('products').insert({
-          tenant_id: '00000000-0000-0000-0000-000000000001',
-          name,
-          sku,
-          unit: baseUnitName,
-          base_unit: baseUnitName,
-          cost_price: Number(firstRow['Cost Price'] || firstRow['cost_price'] || 0),
-          sale_price: Number(firstRow['Sale Price'] || firstRow['sale_price'] || 0),
-          min_stock_level: Number(firstRow['Min Stock Level'] || firstRow['min_stock_level'] || 0),
-          description: String(firstRow['Description'] || firstRow['description'] || ''),
-          category_id: category?.id || null,
-          brand_id: brand?.id || null,
-          enable_multi_unit: enableMultiUnit,
-          enable_colors: enableColors,
-          enable_sizes: enableSizes,
-          is_active: true,
-        }).select('id').single();
-
-        if (prodError || !productData) {
-          skipped += groupRows.length;
-          errors.push(`Row ${firstRow._rowIndex}: ${prodError?.message || 'Failed to create product'}`);
-          continue;
-        }
-
-        productId = productData.id;
-      }
-
-      let productsCreated = skuExists ? 0 : 1;
-      let productsUpdated = skuExists ? 1 : 0;
-
-      // Add colors if enabled (only for new products)
-      if (enableColors && !skuExists) {
-        const uniqueColors = new Map<string, { name: string; hex: string }>();
-        groupRows.forEach(r => {
-          const colorName = String(r['Color'] || r['color'] || '').trim();
-          if (colorName) {
-            const colorKey = colorName.toLowerCase();
-            if (!uniqueColors.has(colorKey)) {
-              uniqueColors.set(colorKey, {
-                name: colorName,
-                hex: colorNameToHex(colorName),
-              });
-            }
-          }
-        });
-
-        let colorSort = 0;
-        for (const [, color] of uniqueColors) {
-          await supabase.from('product_colors').insert({
-            product_id: productId,
-            name: color.name,
-            hex_code: color.hex,
-            is_default: colorSort === 0,
-            sort_order: colorSort++,
-          });
-        }
-      }
-
-      // Add sizes if enabled (only for new products)
-      if (enableSizes && !skuExists) {
-        const uniqueSizes = new Map<string, string>();
-        groupRows.forEach(r => {
-          const sizeName = String(r['Size'] || r['size'] || '').trim();
-          if (sizeName && !uniqueSizes.has(sizeName.toLowerCase())) {
-            uniqueSizes.set(sizeName.toLowerCase(), sizeName);
-          }
-        });
-
-        let sizeSort = 0;
-        for (const [, sizeName] of uniqueSizes) {
-          await supabase.from('product_sizes').insert({
-            product_id: productId,
-            name: sizeName,
-            is_default: sizeSort === 0,
-            sort_order: sizeSort++,
-          });
-        }
-      }
-
-      // Add multi-unit data (only for new products)
-      if (enableMultiUnit && !skuExists) {
-        // Base unit
-        await supabase.from('product_units').insert({
-          product_id: productId,
-          unit_name: baseUnitName,
-          conversion_factor: 1,
-          is_base_unit: true,
-          is_sale_unit: false,
-          price: Number(firstRow['Sale Price'] || firstRow['sale_price'] || 0),
-          cost_price: Number(firstRow['Cost Price'] || firstRow['cost_price'] || 0),
-          sort_order: 0,
-          is_active: true,
-        });
-
-        // Sale unit
-        await supabase.from('product_units').insert({
-          product_id: productId,
-          unit_name: multiUnitName,
-          conversion_factor: multiUnitConversion,
-          is_base_unit: false,
-          is_sale_unit: true,
-          price: multiUnitSalePrice || Number(firstRow['Sale Price'] || 0) * multiUnitConversion,
-          cost_price: Number(firstRow['Cost Price'] || 0) * multiUnitConversion,
-          sort_order: 1,
-          is_active: true,
-        });
-      }
-
-      // Create inventory for each variant row
-      for (const row of groupRows) {
-        const currentStock = Number(row['Current Stock'] || row['current_stock'] || 0);
-        if (currentStock > 0 && defaultWarehouse) {
-          // Check current inventory for existing products
-          if (skuExists) {
-            const { data: existingInv } = await supabase
-              .from('inventory_items')
-              .select('quantity_on_hand')
-              .eq('product_id', productId)
-              .eq('warehouse_id', defaultWarehouse)
-              .single();
-
-            const existingQty = existingInv?.quantity_on_hand || 0;
-            if (currentStock > existingQty) {
-              const addQty = currentStock - existingQty;
-              await supabase.from('inventory_items')
-                .update({ quantity_on_hand: currentStock })
-                .eq('product_id', productId)
-                .eq('warehouse_id', defaultWarehouse);
-
-              await supabase.from('stock_movements').insert({
-                tenant_id: '00000000-0000-0000-0000-000000000001',
-                product_id: productId,
-                warehouse_id: defaultWarehouse,
-                movement_type: 'adjustment',
-                quantity: addQty,
-                unit_cost: Number(firstRow['Cost Price'] || 0),
-                reference_type: 'import_update',
-                notes: 'Stock updated from import',
-              });
-
-              await supabase.rpc('create_opening_batch', {
-                p_product_id: productId,
-                p_warehouse_id: defaultWarehouse,
-                p_quantity: addQty,
-                p_unit_cost: Number(firstRow['Cost Price'] || 0),
-                p_batch_type: 'adjustment',
-                p_reference_type: 'import_update',
-                p_notes: 'Stock updated from import',
-              });
-            } else if (currentStock < existingQty) {
-              // Stock decrease from import: post Dr 3900 / Cr 1200 (equity)
-              const reduceQty = existingQty - currentStock;
-              await supabase.from('inventory_items')
-                .update({ quantity_on_hand: currentStock })
-                .eq('product_id', productId)
-                .eq('warehouse_id', defaultWarehouse);
-
-              await supabase.from('stock_movements').insert({
-                tenant_id: '00000000-0000-0000-0000-000000000001',
-                product_id: productId,
-                warehouse_id: defaultWarehouse,
-                movement_type: 'adjustment',
-                quantity: -reduceQty,
-                unit_cost: Number(firstRow['Cost Price'] || 0),
-                reference_type: 'import_update',
-                notes: 'Stock decreased from import',
-              });
-
-              await supabase.rpc('create_stock_reduction', {
-                p_product_id: productId,
-                p_warehouse_id: defaultWarehouse,
-                p_quantity: reduceQty,
-                p_unit_cost: Number(firstRow['Cost Price'] || 0),
-                p_reference_type: 'import_update',
-                p_reference_id: productId,
-                p_notes: 'Stock decreased from import',
-              });
-            }
-          } else {
-            // Check if inventory already exists
-            const { data: existingInv } = await supabase
-              .from('inventory_items')
-              .select('id')
-              .eq('product_id', productId)
-              .eq('warehouse_id', defaultWarehouse)
-              .maybeSingle();
-
-            let invError;
-            if (existingInv) {
-              // Update existing
-              const { error } = await supabase.from('inventory_items')
-                .update({ quantity_on_hand: currentStock })
-                .eq('id', existingInv.id);
-              invError = error;
-            } else {
-              // Insert new
-              const { error } = await supabase.from('inventory_items').insert({
-                tenant_id: '00000000-0000-0000-0000-000000000001',
-                product_id: productId,
-                warehouse_id: defaultWarehouse,
-                quantity_on_hand: currentStock,
-              });
-              invError = error;
-            }
-
-            if (!invError) {
-              await supabase.from('stock_movements').insert({
-                tenant_id: '00000000-0000-0000-0000-000000000001',
-                product_id: productId,
-                warehouse_id: defaultWarehouse,
-                movement_type: 'opening',
-                quantity: currentStock,
-                unit_cost: Number(firstRow['Cost Price'] || 0),
-                reference_type: 'import',
-                notes: 'Initial stock from import',
-              });
-
-              await supabase.rpc('create_opening_batch', {
-                p_product_id: productId,
-                p_warehouse_id: defaultWarehouse,
-                p_quantity: currentStock,
-                p_unit_cost: Number(firstRow['Cost Price'] || 0),
-                p_batch_type: 'opening',
-                p_reference_type: 'import',
-                p_notes: 'Initial stock from import',
-              });
-            } else {
-              errors.push(`Row ${firstRow._rowIndex}: Failed to set stock - ${invError.message}`);
-            }
-          }
-        }
-      }
-
-      success += productsCreated + productsUpdated;
-      existingSkus.push(sku);
+    if (item.action === 'create') {
+      const { data, error } = await supabase
+        .from('products')
+        .insert({ tenant_id: TENANT, ...item.fields })
+        .select('id')
+        .single();
+      if (error) throw new Error(error.message);
+      productId = data.id;
+    } else {
+      const { error } = await supabase
+        .from('products')
+        .update({ ...item.fields, updated_at: new Date().toISOString() })
+        .eq('id', productId);
+      if (error) throw new Error(error.message);
     }
 
-    setResults({ success, skipped, errors: errors.slice(0, 20) });
-    if (success > 0) onImported();
+    if (item.units.length > 0) {
+      const { error } = await supabase.from('product_units').insert(item.units.map((unit, index) => ({
+        product_id: productId,
+        unit_name: unit.unit_name,
+        conversion_factor: unit.conversion_factor,
+        is_base_unit: unit.is_base_unit,
+        is_sale_unit: unit.is_sale_unit,
+        price: unit.price,
+        cost_price: unit.cost_price,
+        sort_order: index,
+        is_active: true,
+      })));
+      if (error) throw new Error(`units — ${error.message}`);
+    }
+
+    if (item.colors.length > 0) await addVariants('product_colors', productId, item.colors);
+    if (item.sizes.length > 0) await addVariants('product_sizes', productId, item.sizes);
+
+    if (defaultWarehouse && item.stockTarget !== undefined) {
+      await applyStock(productId, defaultWarehouse, item.stockTarget, item);
+    }
+  }
+
+  async function runImport() {
+    if (!plan) return;
+    setImporting(true);
+    setResult(null);
+    setProgress({ current: 0, total: plan.products.length, stage: 'Importing…' });
+
+    let created = 0;
+    let updated = 0;
+    const errors: string[] = [];
+
+    for (let i = 0; i < plan.products.length; i++) {
+      const item = plan.products[i];
+      setProgress({
+        current: i,
+        total: plan.products.length,
+        stage: `${item.action === 'create' ? 'Creating' : 'Updating'} ${item.sku}…`,
+      });
+      try {
+        await importOne(item);
+        if (item.action === 'create') created += 1;
+        else updated += 1;
+      } catch (err: any) {
+        errors.push(`Row ${item.rowNumbers.join(', ')} (${item.sku}) — ${err?.message || 'failed'}`);
+      }
+    }
+
+    setProgress({ current: plan.products.length, total: plan.products.length, stage: 'Done' });
+    setImporting(false);
+    setResult({ created, updated, skipped: plan.skipped.length, errors });
+    if (created + updated > 0) onImported();
   }
 
   function colorNameToHex(name: string): string {
@@ -1380,18 +1209,21 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,8
     return colors[name.toLowerCase()] || '#6b7280';
   }
 
+  const detectedColumns = plan
+    ? Array.from(plan.mapping.present).map(key => COLUMN_BY_KEY[key]?.label || key)
+    : [];
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl w-full max-w-4xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
           <div>
             <h2 className="text-lg font-bold text-foreground">Bulk Import Products</h2>
-            <p className="text-xs text-muted-foreground">Import products from CSV or paste data directly</p>
+            <p className="text-xs text-muted-foreground">Nothing is written until you review the preview</p>
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
         </div>
 
-        {/* Tabs */}
         <div className="flex border-b border-border shrink-0">
           {[
             { key: 'upload', label: 'Upload File', icon: Upload },
@@ -1409,21 +1241,22 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,8
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {results && (
-            <div className={`mb-4 p-4 rounded-lg ${results.success > 0 ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+          {result && (
+            <div className={`mb-4 p-4 rounded-lg border ${result.created + result.updated > 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
               <div className="flex items-center gap-2 mb-2">
-                {results.success > 0 ? (
-                  <><CheckCircle2 className="w-5 h-5 text-green-600" /><span className="font-semibold text-green-800">Import Complete</span></>
+                {result.created + result.updated > 0 ? (
+                  <><CheckCircle2 className="w-5 h-5 text-green-600" /><span className="font-semibold text-green-800">Import complete</span></>
                 ) : (
-                  <><AlertTriangle className="w-5 h-5 text-red-600" /><span className="font-semibold text-red-800">Import Failed</span></>
+                  <><AlertTriangle className="w-5 h-5 text-red-600" /><span className="font-semibold text-red-800">Nothing was imported</span></>
                 )}
               </div>
               <p className="text-sm text-gray-700">
-                <strong>{results.success}</strong> products imported, <strong>{results.skipped}</strong> skipped
+                <strong>{result.created}</strong> created, <strong>{result.updated}</strong> updated, <strong>{result.skipped}</strong> skipped
               </p>
-              {results.errors.length > 0 && (
+              {result.errors.length > 0 && (
                 <div className="mt-2 text-xs text-red-600 space-y-1">
-                  {results.errors.map((e, i) => <p key={i}>{e}</p>)}
+                  {result.errors.slice(0, 20).map((message, i) => <p key={i}>{message}</p>)}
+                  {result.errors.length > 20 && <p>…and {result.errors.length - 20} more</p>}
                 </div>
               )}
             </div>
@@ -1444,20 +1277,168 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,8
             </div>
           )}
 
-          {activeTab === 'upload' && (
+          {parseError && (
+            <div className="mb-4 p-4 rounded-lg bg-red-50 border border-red-200">
+              <div className="flex items-center gap-2 mb-1">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+                <span className="font-semibold text-red-800">Could not read the file</span>
+              </div>
+              <p className="text-xs text-red-700">{parseError}</p>
+            </div>
+          )}
+
+          {/* ------------------------------------------------ preview step */}
+          {plan && !importing && !result && activeTab !== 'guide' && (
             <div className="space-y-4">
-              {/* Import Mode */}
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Review before importing</p>
+                  <p className="text-xs text-muted-foreground">
+                    {source?.label} · {plan.totalRows} data row{plan.totalRows === 1 ? '' : 's'}
+                  </p>
+                </div>
+                <button onClick={reset} className="text-xs font-medium text-blue-600 hover:text-blue-700 shrink-0">
+                  Choose another file
+                </button>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2">
+                <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2">
+                  <p className="text-lg font-bold text-green-700">{counts?.creates ?? 0}</p>
+                  <p className="text-[11px] font-medium text-green-700">New products</p>
+                </div>
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                  <p className="text-lg font-bold text-blue-700">{counts?.updates ?? 0}</p>
+                  <p className="text-[11px] font-medium text-blue-700">Updates</p>
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                  <p className="text-lg font-bold text-gray-700">{counts?.skips ?? 0}</p>
+                  <p className="text-[11px] font-medium text-gray-600">Skipped</p>
+                </div>
+                <div className={`rounded-lg border px-3 py-2 ${(counts?.warnings ?? 0) > 0 ? 'border-amber-200 bg-amber-50' : 'border-gray-200 bg-gray-50'}`}>
+                  <p className={`text-lg font-bold ${(counts?.warnings ?? 0) > 0 ? 'text-amber-700' : 'text-gray-700'}`}>{counts?.warnings ?? 0}</p>
+                  <p className={`text-[11px] font-medium ${(counts?.warnings ?? 0) > 0 ? 'text-amber-700' : 'text-gray-600'}`}>Warnings</p>
+                </div>
+              </div>
+
+              {plan.errors.length > 0 && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 space-y-1">
+                  {plan.errors.map((message, i) => (
+                    <p key={i} className="text-xs text-red-700 flex items-start gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {message}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              {needsWarehouse && (
+                <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 flex items-start gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    No warehouse is available, so the Current Stock column cannot be applied.
+                    Create a warehouse first, or clear that column and import the products on their own.
+                  </span>
+                </div>
+              )}
+
+              <div className="text-xs text-muted-foreground bg-muted/50 rounded-lg px-3 py-2">
+                <span className="font-medium text-foreground">Columns read:</span> {detectedColumns.join(', ') || 'none'}
+                {plan.mapping.unmapped.length > 0 && (
+                  <span className="block mt-1 text-amber-700">
+                    Ignored unknown column{plan.mapping.unmapped.length === 1 ? '' : 's'}: {plan.mapping.unmapped.join(', ')}
+                  </span>
+                )}
+              </div>
+
+              {plan.products.length > 0 && (
+                <div className="border border-border rounded-lg overflow-hidden">
+                  <div className="max-h-72 overflow-y-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-muted sticky top-0">
+                        <tr className="text-left text-muted-foreground">
+                          <th className="px-2 py-1.5 font-medium">Action</th>
+                          <th className="px-2 py-1.5 font-medium">SKU</th>
+                          <th className="px-2 py-1.5 font-medium">Name</th>
+                          <th className="px-2 py-1.5 font-medium">Will write</th>
+                          <th className="px-2 py-1.5 font-medium text-right">Stock</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {plan.products.slice(0, 60).map(item => {
+                          const written = Array.from(new Set(
+                            Object.keys(item.fields)
+                              .filter(key => key !== 'name' && key !== 'sku')
+                              .map(fieldLabel)
+                          ));
+                          return (
+                            <tr key={`${item.sku}-${item.rowNumbers[0]}`} className="border-t border-border align-top">
+                              <td className="px-2 py-1.5">
+                                <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${item.action === 'create' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                                  {item.action === 'create' ? 'New' : 'Update'}
+                                </span>
+                              </td>
+                              <td className="px-2 py-1.5 font-mono">{item.sku}</td>
+                              <td className="px-2 py-1.5">
+                                {item.name || <span className="text-muted-foreground">unchanged</span>}
+                                {item.warnings.length > 0 && (
+                                  <span className="block text-[10px] text-amber-700 mt-0.5">{item.warnings[0]}{item.warnings.length > 1 ? ` (+${item.warnings.length - 1})` : ''}</span>
+                                )}
+                              </td>
+                              <td className="px-2 py-1.5 text-muted-foreground">{written.join(', ') || '—'}</td>
+                              <td className="px-2 py-1.5 text-right tabular-nums">
+                                {item.stockTarget === undefined ? <span className="text-muted-foreground">—</span> : item.stockTarget}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {plan.products.length > 60 && (
+                    <p className="px-2 py-1.5 text-[11px] text-muted-foreground border-t border-border">
+                      …and {plan.products.length - 60} more
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {plan.skipped.length > 0 && (
+                <div className="border border-amber-200 bg-amber-50 rounded-lg p-3">
+                  <p className="text-xs font-semibold text-amber-800 mb-1">
+                    {plan.skipped.length} row{plan.skipped.length === 1 ? '' : 's'} will be skipped
+                  </p>
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {plan.skipped.slice(0, 20).map((row, i) => (
+                      <p key={i} className="text-[11px] text-amber-800">
+                        <span className="font-medium">Row {row.rowNumber}{row.sku ? ` · ${row.sku}` : ''}:</span> {row.reason}
+                      </p>
+                    ))}
+                    {plan.skipped.length > 20 && <p className="text-[11px] text-amber-700">…and {plan.skipped.length - 20} more</p>}
+                  </div>
+                </div>
+              )}
+
+              {plan.errors.length === 0 && plan.products.length === 0 && (
+                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                  There is nothing to import from this file.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ------------------------------------------------ input step */}
+          {!plan && !importing && activeTab === 'upload' && (
+            <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-2">Import Mode</label>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   {[
-                    { key: 'simple', label: 'Simple Products', desc: 'Each row = 1 product' },
-                    { key: 'variants', label: 'Product Variants', desc: 'Same name = 1 product with sizes/colors' },
-                    { key: 'multiunit', label: 'Multi-Unit Products', desc: 'Products with unit conversions' },
+                    { key: 'simple', label: 'Simple Products', desc: 'Each row is its own product' },
+                    { key: 'variants', label: 'Product Variants', desc: 'Rows sharing a Name and SKU become one product with colours/sizes' },
                   ].map(m => (
                     <button
                       key={m.key}
-                      onClick={() => setImportMode(m.key as any)}
+                      onClick={() => changeMode(m.key as ImportMode)}
                       className={`p-3 rounded-lg border text-left transition ${importMode === m.key ? 'border-blue-600 bg-blue-50' : 'border-border hover:border-gray-400'}`}
                     >
                       <p className="text-sm font-medium">{m.label}</p>
@@ -1467,7 +1448,6 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,8
                 </div>
               </div>
 
-              {/* Drop Zone */}
               <div
                 onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                 onDragLeave={() => setDragOver(false)}
@@ -1482,14 +1462,18 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,8
                 className={`border-2 border-dashed rounded-xl p-8 text-center transition ${dragOver ? 'border-blue-500 bg-blue-50' : 'border-gray-300 bg-gray-50'}`}
               >
                 <Upload className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
-                <p className="text-sm text-foreground font-medium">Drag & drop CSV or Excel file here</p>
+                <p className="text-sm text-foreground font-medium">Drag &amp; drop CSV or Excel file here</p>
                 <p className="text-xs text-muted-foreground mt-1">or click to browse</p>
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept=".csv,.xlsx,.xls"
                   className="hidden"
-                  onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleFileUpload(file);
+                    e.target.value = '';
+                  }}
                 />
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -1501,103 +1485,175 @@ Tiles Premium,TIL-050,Flooring,CeramicCo,Square Feet,25,45,100,500,,,Carton,20,8
 
               <div className="flex items-center justify-between">
                 <button
-                  onClick={downloadTemplate}
+                  onClick={() => downloadTemplateWorkbook()}
                   className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-700 font-medium"
                 >
-                  <Download className="w-4 h-4" /> Download Template CSV
+                  <Download className="w-4 h-4" /> Download template (XLSX)
                 </button>
                 <span className="text-xs text-muted-foreground">Supported: CSV, XLSX, XLS</span>
               </div>
             </div>
           )}
 
-          {activeTab === 'paste' && (
+          {!plan && !importing && activeTab === 'paste' && (
             <div className="space-y-4">
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
                 <p className="text-xs text-blue-800">
-                  <strong>Bulk Paste:</strong> Paste data from Excel or Google Sheets. First row should be headers (Name, SKU, Cost Price, Sale Price, etc.).
+                  <strong>Bulk Paste:</strong> copy the cells from Excel or Google Sheets — tabs and commas both work.
+                  The first row must be the header row (Name, SKU, Cost Price, …). You will see a preview before anything is saved.
                 </p>
               </div>
               <textarea
                 value={pasteText}
                 onChange={(e) => setPasteText(e.target.value)}
-                placeholder="Paste CSV data here (tab or comma separated)&#10;&#10;Example:&#10;Name,SKU,Cost Price,Sale Price,Current Stock&#10;Product A,SKU-001,100,150,50&#10;Product B,SKU-002,200,300,25"
+                placeholder={'Name\tSKU\tCost Price\tSale Price\tCurrent Stock\nProduct A\tSKU-001\t100\t150\t50\nProduct B\tSKU-002\t200\t300\t25'}
                 className="w-full h-64 border border-border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 resize-none"
               />
               <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">
-                  {pasteText.split('\n').filter(l => l.trim()).length - 1} rows detected
-                </p>
                 <button
-                  onClick={handlePasteImport}
-                  disabled={importing || !pasteText.trim()}
+                  onClick={() => downloadTemplateWorkbook()}
+                  className="flex items-center gap-2 text-xs text-blue-600 hover:text-blue-700 font-medium"
+                >
+                  <Download className="w-3.5 h-3.5" /> Download template
+                </button>
+                <button
+                  onClick={handlePasteReview}
+                  disabled={!pasteText.trim()}
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition disabled:opacity-60"
                 >
-                  {importing ? 'Importing...' : 'Import Pasted Data'}
+                  Preview
                 </button>
               </div>
             </div>
           )}
 
-          {activeTab === 'guide' && (
-            <div className="space-y-6">
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                <h4 className="text-sm font-semibold text-amber-800 mb-2">Column Reference</h4>
-                <div className="grid grid-cols-2 gap-2 text-xs text-amber-700">
-                  <div><strong>Name</strong> - Product name (required)</div>
-                  <div><strong>SKU</strong> - Unique code (required)</div>
-                  <div><strong>Category</strong> - Existing category name</div>
-                  <div><strong>Brand</strong> - Existing brand name</div>
-                  <div><strong>Unit</strong> - pcs, kg, box, etc.</div>
-                  <div><strong>Cost Price</strong> - Purchase cost</div>
-                  <div><strong>Sale Price</strong> - Selling price</div>
-                  <div><strong>Current Stock</strong> - Opening stock qty</div>
-                  <div><strong>Color</strong> - Color variant name</div>
-                  <div><strong>Size</strong> - Size variant name</div>
-                  <div><strong>Multi-Unit Name</strong> - e.g., Box</div>
-                  <div><strong>Multi-Unit Conversion</strong> - e.g., 100</div>
-                  <div><strong>Multi-Unit Sale Price</strong> - Price per unit</div>
+          {!importing && activeTab === 'guide' && (
+            <div className="space-y-5">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="p-3 rounded-lg border border-green-200 bg-green-50">
+                  <p className="text-xs font-semibold text-green-800 mb-1">Matched by SKU</p>
+                  <p className="text-[11px] text-green-700">A SKU that already exists updates that product. A new SKU creates one. Case and stray spaces are ignored.</p>
+                </div>
+                <div className="p-3 rounded-lg border border-blue-200 bg-blue-50">
+                  <p className="text-xs font-semibold text-blue-800 mb-1">Blank means “leave it”</p>
+                  <p className="text-[11px] text-blue-700">Only columns you include and fill are written. An empty cell never resets a price, unit or category to zero.</p>
+                </div>
+                <div className="p-3 rounded-lg border border-amber-200 bg-amber-50">
+                  <p className="text-xs font-semibold text-amber-800 mb-1">Preview first</p>
+                  <p className="text-[11px] text-amber-700">Every import is planned before it runs. You see what will be created, updated and skipped, and why.</p>
                 </div>
               </div>
 
               <div>
-                <h4 className="text-sm font-semibold mb-3">Import Scenarios</h4>
+                <h4 className="text-sm font-semibold mb-2">Columns</h4>
+                <div className="border border-border rounded-lg overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted">
+                      <tr className="text-left text-muted-foreground">
+                        <th className="px-2 py-1.5 font-medium">Column</th>
+                        <th className="px-2 py-1.5 font-medium">Required</th>
+                        <th className="px-2 py-1.5 font-medium">What it does</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {COLUMNS.map(column => (
+                        <tr key={column.key} className="border-t border-border align-top">
+                          <td className="px-2 py-1.5 font-medium whitespace-nowrap">{column.label}</td>
+                          <td className="px-2 py-1.5 text-muted-foreground">{column.key === 'name' || column.key === 'sku' ? 'Yes' : '—'}</td>
+                          <td className="px-2 py-1.5 text-muted-foreground">{column.help}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div>
+                <h4 className="text-sm font-semibold mb-2">Examples</h4>
                 <div className="space-y-3">
                   <div className="p-3 bg-gray-50 rounded-lg border">
-                    <p className="text-xs font-semibold text-gray-800 mb-1">Simple Products</p>
-                    <p className="text-xs text-gray-600">Each row creates one product. For products without variants.</p>
-                    <pre className="mt-2 text-xs bg-white p-2 rounded border overflow-x-auto">Name,SKU,Cost Price,Sale Price,Current Stock&#10;Hammer,HAM-001,50,80,100</pre>
+                    <p className="text-xs font-semibold text-gray-800 mb-1">Simple product</p>
+                    <p className="text-[11px] text-gray-600">One row, one product.</p>
+                    <pre className="mt-2 text-[11px] bg-white p-2 rounded border overflow-x-auto">{'Name,SKU,Unit,Cost Price,Sale Price,Current Stock\nHammer,HAM-001,pcs,50,80,100'}</pre>
                   </div>
-                  <div className="p-3 bg-green-50 rounded-lg border">
-                    <p className="text-xs font-semibold text-green-800 mb-1">Product with Colors/Sizes</p>
-                    <p className="text-xs text-green-600">Rows with same Name create ONE product with multiple variants. Use &quot;Product Variants&quot; mode.</p>
-                    <pre className="mt-2 text-xs bg-white p-2 rounded border overflow-x-auto">Name,SKU,Cost Price,Sale Price,Color,Current Stock&#10;T-Shirt,TS-RED,100,150,Red,50&#10;T-Shirt,TS-BLU,100,150,Blue,30&#10;T-Shirt,TS-GRN,100,150,Green,20</pre>
+                  <div className="p-3 bg-green-50 rounded-lg border border-green-200">
+                    <p className="text-xs font-semibold text-green-800 mb-1">Variants — one product, several colours and sizes</p>
+                    <p className="text-[11px] text-green-700">
+                      Keep the same Name <em>and</em> the same SKU, and list the colours/sizes in their own columns.
+                      A product has one SKU, so different SKUs on the same name are rejected rather than silently dropped.
+                    </p>
+                    <pre className="mt-2 text-[11px] bg-white p-2 rounded border overflow-x-auto">{'Name,SKU,Color,Size,Current Stock\nT-Shirt,TS-001,Red | Blue | Green,S | M | L,15'}</pre>
                   </div>
-                  <div className="p-3 bg-blue-50 rounded-lg border">
-                    <p className="text-xs font-semibold text-blue-800 mb-1">Multi-Unit Products</p>
-                    <p className="text-xs text-blue-600">For products sold in different packaging (e.g., pieces and boxes).</p>
-                    <pre className="mt-2 text-xs bg-white p-2 rounded border overflow-x-auto">Name,SKU,Unit,Cost Price,Sale Price,Multi-Unit Name,Multi-Unit Conversion,Multi-Unit Sale Price&#10;Tiles,TIL-001,sqft,25,45,Carton,20,800</pre>
+                  <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+                    <p className="text-xs font-semibold text-blue-800 mb-1">Multi-unit product</p>
+                    <p className="text-[11px] text-blue-700">
+                      Set the base unit in <strong>Unit</strong> and the larger selling unit in the Multi-Unit columns.
+                      These only apply when the product is created — changing a conversion factor later would
+                      re-value every past FIFO layer, so edit it on the product instead.
+                    </p>
+                    <pre className="mt-2 text-[11px] bg-white p-2 rounded border overflow-x-auto">{'Name,SKU,Unit,Cost Price,Sale Price,Multi-Unit Name,Multi-Unit Conversion,Multi-Unit Sale Price\nCable,CAB-010,coil,500,750,box,12,8000'}</pre>
+                  </div>
+                  <div className="p-3 bg-gray-50 rounded-lg border">
+                    <p className="text-xs font-semibold text-gray-800 mb-1">Update only a price</p>
+                    <p className="text-[11px] text-gray-600">Two columns are enough — everything else stays as it is.</p>
+                    <pre className="mt-2 text-[11px] bg-white p-2 rounded border overflow-x-auto">{'SKU,Sale Price\nHAM-001,95'}</pre>
                   </div>
                 </div>
               </div>
 
+              <div className="text-[11px] text-muted-foreground border-t border-border pt-3 space-y-1">
+                <p><strong className="text-foreground">Current Stock</strong> is an absolute quantity in the default warehouse, not a delta. Leave it blank to keep stock untouched.</p>
+                <p><strong className="text-foreground">Export</strong> writes this same column set, so you can export, edit in Excel and import the file back.</p>
+                <p><strong className="text-foreground">Category</strong> and <strong className="text-foreground">Brand</strong> must already exist — unknown names are reported and left unchanged.</p>
+              </div>
+
               <button
-                onClick={downloadTemplate}
+                onClick={() => downloadTemplateWorkbook()}
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition"
               >
-                <Download className="w-4 h-4" /> Download Template with Examples
+                <Download className="w-4 h-4" /> Download template with examples
               </button>
             </div>
           )}
         </div>
 
-        <div className="border-t border-border px-6 py-4 flex justify-end gap-3 shrink-0">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition"
-          >
-            {results ? 'Close' : 'Cancel'}
-          </button>
+        <div className="border-t border-border px-6 py-4 flex items-center justify-between gap-3 shrink-0">
+          <div className="text-xs text-muted-foreground">
+            {plan && !result && plan.errors.length === 0 && (
+              <span>
+                {counts?.creates ?? 0} new · {counts?.updates ?? 0} updates · {counts?.skips ?? 0} skipped
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            {plan && !result && (
+              <button
+                onClick={reset}
+                className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition"
+              >
+                Back
+              </button>
+            )}
+            {plan && !result && (
+              <button
+                onClick={runImport}
+                disabled={!canImport}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-60"
+              >
+                {importing
+                  ? 'Importing…'
+                  : `Import ${plan.products.length} product${plan.products.length === 1 ? '' : 's'}`}
+              </button>
+            )}
+            {(!plan || result) && (
+              <button
+                onClick={onClose}
+                className="px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition"
+              >
+                {result ? 'Close' : 'Cancel'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
