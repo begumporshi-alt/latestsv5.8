@@ -506,13 +506,15 @@ export default function PurchasesPage() {
           });
         }
 
-        // Record stock movement
+        // Record stock movement. base_quantity is already in base units; the
+        // PO line's unit_cost is per purchase unit, so divide by the line's
+        // conversion factor to keep the movement's unit cost per base unit.
         await supabase.from('stock_movements').insert({
           product_id: item.product_id,
           warehouse_id: warehouseId,
           movement_type: 'purchase',
           quantity: qtyToAdd,
-          unit_cost: item.unit_cost,
+          unit_cost: Number(item.unit_cost) / (Number(item.unit_conversion_factor) || 1),
           reference_type: 'purchase_order',
           reference_id: order.id,
           reference_number: order.po_number,
