@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { fetchAll } from '@/lib/fetch-all';
@@ -2061,16 +2061,15 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
             </div>
             {items.length > 0 && (
             <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full">
+              <table className="w-full table-fixed">
                 <thead className="bg-muted/40">
                   <tr>
-                    <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
                     <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-36">Warehouse</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Price</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Price</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc %</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Net Rate</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Total</th>
                     <th className="w-8"></th>
                   </tr>
                 </thead>
@@ -2078,50 +2077,64 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                   {items.map((item, index) => {
                     const lineTotal = item.quantity * item.unit_price * (1 - (item.discount_percent || 0) / 100);
                     return (
-                      <tr key={index}>
-                        <td className="px-3 py-2">
-                          <p className="text-sm font-medium text-foreground hover:text-blue-600 hover:underline cursor-pointer" onClick={() => router.push(`/inventory/${item.product_id}`)}>{item.product_name}</p>
-                          <p className="text-[10px] text-muted-foreground">{item.product_sku}</p>
-                          {item.stock_qty !== null && (
-                            <p className={`text-[10px] font-medium ${item.stock_qty > 0 ? (item.base_quantity > item.stock_qty ? 'text-red-500' : 'text-green-600') : 'text-red-500'}`}>
-                              {item.stock_qty > 0 ? `${item.stock_qty} ${item.product_base_unit || 'units'} in stock` : 'Out of stock'}
-                              {item.base_quantity > item.stock_qty && item.stock_qty > 0 && ' (over limit!)'}
-                            </p>
-                          )}
-                          {ledgerStock && item.base_quantity - Math.max(
-                            ledgerQtyFor({
-                              product_id: item.product_id,
-                              warehouse_id: item.warehouse_id,
-                              warehouse_ids: lineWarehouseIds(item),
-                            }, ledgerStock), 0
-                          ) > 0 && (
-                            <p className="mt-1 flex items-center gap-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 w-fit">
-                              <AlertTriangle className="w-3 h-3 shrink-0" />
-                              Ledger stock {ledgerQtyFor({
-                                product_id: item.product_id,
-                                warehouse_id: item.warehouse_id,
-                                warehouse_ids: lineWarehouseIds(item),
-                              }, ledgerStock)} of {item.base_quantity} — needs confirmation
-                            </p>
-                          )}
-                          {item.available_units && item.selected_unit && (
-                            <div className="mt-1">
-                              <select
-                                value={item.selected_unit.id}
-                                onChange={e => {
-                                  const unit = item.available_units?.find(u => u.id === e.target.value);
-                                  if (unit) updateItem(index, 'selected_unit', unit);
-                                }}
-                                className="w-full border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                      <Fragment key={index}>
+                        {/* Row 1 — product identity: full-width, name on a single line */}
+                        <tr className="bg-muted/30">
+                          <td colSpan={7} className="px-3 py-1.5">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <p
+                                className="text-sm font-medium text-foreground truncate min-w-0 hover:text-blue-600 hover:underline cursor-pointer"
+                                title={item.product_name}
+                                onClick={() => router.push(`/inventory/${item.product_id}`)}
                               >
-                                {item.available_units.map(u => (
-                                  <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>
-                                ))}
-                              </select>
-                              <p className="text-[10px] text-muted-foreground mt-0.5">1 {item.selected_unit.unit_name} = {item.selected_unit.conversion_factor} {item.product_base_unit || 'base'}</p>
+                                {item.product_name}
+                              </p>
+                              <span className="text-[10px] text-muted-foreground shrink-0">{item.product_sku}</span>
+                              {ledgerStock && item.base_quantity - Math.max(
+                                ledgerQtyFor({
+                                  product_id: item.product_id,
+                                  warehouse_id: item.warehouse_id,
+                                  warehouse_ids: lineWarehouseIds(item),
+                                }, ledgerStock), 0
+                              ) > 0 && (
+                                <span className="hidden md:inline-flex items-center gap-1.5 text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 whitespace-nowrap shrink-0">
+                                  <AlertTriangle className="w-3 h-3 shrink-0" />
+                                  Ledger stock {ledgerQtyFor({
+                                    product_id: item.product_id,
+                                    warehouse_id: item.warehouse_id,
+                                    warehouse_ids: lineWarehouseIds(item),
+                                  }, ledgerStock)} of {item.base_quantity} — needs confirmation
+                                </span>
+                              )}
+                              <span className="ml-auto flex items-center gap-2 shrink-0">
+                                {item.available_units && item.selected_unit && (
+                                  <>
+                                    <span className="hidden lg:inline text-[10px] text-muted-foreground whitespace-nowrap">1 {item.selected_unit.unit_name} = {item.selected_unit.conversion_factor} {item.product_base_unit || 'base'}</span>
+                                    <select
+                                      value={item.selected_unit.id}
+                                      onChange={e => {
+                                        const unit = item.available_units?.find(u => u.id === e.target.value);
+                                        if (unit) updateItem(index, 'selected_unit', unit);
+                                      }}
+                                      className="w-36 border border-blue-200 bg-blue-50 text-blue-700 rounded px-2 py-1 text-xs focus:outline-none"
+                                    >
+                                      {item.available_units.map(u => (
+                                        <option key={u.id} value={u.id}>{u.unit_name} - {formatCurrency(u.price)}</option>
+                                      ))}
+                                    </select>
+                                  </>
+                                )}
+                                {item.stock_qty !== null && (
+                                  <span className={`text-[10px] font-medium rounded px-1.5 py-0.5 whitespace-nowrap ${item.stock_qty > 0 ? (item.base_quantity > item.stock_qty ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700') : 'bg-red-50 text-red-600'}`}>
+                                    {item.stock_qty > 0 ? `${item.stock_qty} ${item.product_base_unit || 'units'} in stock${item.base_quantity > item.stock_qty ? ' (over limit!)' : ''}` : 'Out of stock'}
+                                  </span>
+                                )}
+                              </span>
                             </div>
-                          )}
-                        </td>
+                          </td>
+                        </tr>
+                        {/* Row 2 — editable line fields */}
+                        <tr>
                         <td className="px-3 py-2 align-top">
                           {item.available_warehouses && item.available_warehouses.length > 1 ? (
                             (() => {
@@ -2158,13 +2171,13 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
+                          <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity} onChange={e => updateItem(index, 'quantity', e.target.value)} className="w-full border border-border rounded px-2 py-1.5 text-sm text-right tabular-nums focus:outline-none" />
                           {item.available_units && item.selected_unit && (
                             <p className="text-[10px] text-muted-foreground text-center mt-0.5">= {item.base_quantity} {item.product_base_unit || 'base'}</p>
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none" />
+                          <input type="number" min="0" step="0.01" value={item.unit_price} onChange={e => updateItem(index, 'unit_price', parseFloat(e.target.value) || 0)} className="w-full border border-border rounded px-2 py-1.5 text-sm text-right tabular-nums focus:outline-none" />
                         </td>
                         <td className="px-3 py-2">
                           <input type="number" min="0" max="100" step="0.5" value={item.discount_percent || 0} onChange={e => updateItem(index, 'discount_percent', e.target.value)} className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:border-amber-400" placeholder="0" />
@@ -2182,7 +2195,8 @@ function CreateInvoiceModal({ customers, products, warehouses, onClose, onSaved 
                         <td className="px-2 py-2">
                           <button type="button" onClick={() => removeItem(index)} className="text-red-500 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                         </td>
-                      </tr>
+                        </tr>
+                      </Fragment>
                     );
                   })}
                 </tbody>

@@ -440,14 +440,14 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
               <div className="p-8 text-center text-sm text-muted-foreground">Loading items...</div>
             ) : items.length > 0 ? (
               <div className="border border-border rounded-lg overflow-hidden">
-                <table className="w-full">
+                <table className="w-full table-fixed">
                   <thead className="bg-muted/40">
                     <tr>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
                       <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Warranty</th>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Batch/Expiry</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Qty</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Price</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Price</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc %</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-28">Total</th>
                       <th className="w-8"></th>
@@ -509,12 +509,12 @@ export default function EditInvoiceModal({ invoice, customers, products, onClose
                         <td className="px-3 py-2">
                           <input type="number" min="1" step={item.allow_decimal ? '0.001' : '1'} value={item.quantity}
                             onChange={e => updateItem(index, 'quantity', e.target.value)}
-                            className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                            className="w-full border border-border rounded px-2 py-1.5 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                         </td>
                         <td className="px-3 py-2">
                           <input type="number" min="0" step="0.01" value={item.unit_price}
                             onChange={e => updateItem(index, 'unit_price', e.target.value)}
-                            className="w-full border border-border rounded px-2 py-1 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
+                            className="w-full border border-border rounded px-2 py-1.5 text-sm text-right tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/20" />
                         </td>
                         <td className="px-3 py-2">
                           <input type="number" min="0" max="100" step="0.5" value={item.discount_percent || 0}
