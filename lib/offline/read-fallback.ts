@@ -45,8 +45,14 @@ const MUTATION_METHODS = new Set(['insert', 'update', 'delete', 'upsert'])
  * Read-only RPCs whose last successful result may be served offline. Writes
  * (create_*, post_*, receive_*, cancel_*, transfer_*, sync_apply, …) never
  * match, so they are never cached and never fall back.
+ *
+ * `sales_` covers the sales-report aggregates (sales_report_summary,
+ * sales_report_breakdown, sales_report_detail, sales_monthly, …). They are
+ * pure reads; without the prefix they were classified as writes — never
+ * cached, and thrown at the caller when offline, which left the report page
+ * on a permanent spinner instead of showing its last copy.
  */
-const READ_RPC_PREFIXES = ['get_', 'period_net_', 'list_', 'search_', 'fetch_']
+const READ_RPC_PREFIXES = ['get_', 'period_net_', 'list_', 'search_', 'fetch_', 'sales_']
 
 /** Results larger than this are not cached (they would just bloat IndexedDB). */
 const MAX_CACHED_RESULT_BYTES = 2_000_000

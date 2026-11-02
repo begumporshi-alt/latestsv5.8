@@ -10,6 +10,7 @@ import RoleRouteGuard from '@/components/layout/RoleRouteGuard';
 import SessionGate from '@/components/layout/SessionGate';
 import { Toaster } from '@/components/ui/toaster';
 import { OfflineProvider } from '@/lib/offline/provider';
+import QueryProvider from '@/components/providers/QueryProvider';
 import OfflineBanner from '@/components/offline/OfflineBanner';
 import OfflineDataNotice from '@/components/offline/OfflineDataNotice';
 import { getLastUser, rememberUser } from '@/lib/offline/session';
@@ -180,6 +181,7 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
+    <QueryProvider>
     <OfflineProvider>
     <div className="flex min-h-screen bg-background">
       {/* Mobile sidebar overlay */}
@@ -253,5 +255,6 @@ export default function ERPLayout({ children }: { children: React.ReactNode }) {
       <Toaster />
     </div>
     </OfflineProvider>
+    </QueryProvider>
   );
 }
