@@ -9,6 +9,9 @@ interface PaginationProps {
   onPageChange: (page: number) => void;
   onPageSizeChange?: (size: number) => void;
   pageSizeOptions?: number[];
+  /** True while the first page is still in flight. `total` is 0 then, and
+   *  "No results" would be a claim about the data rather than the request. */
+  loading?: boolean;
 }
 
 export default function Pagination({
@@ -18,6 +21,7 @@ export default function Pagination({
   onPageChange,
   onPageSizeChange,
   pageSizeOptions = [25, 50, 100, 200],
+  loading = false,
 }: PaginationProps) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -42,7 +46,7 @@ export default function Pagination({
     <div className="flex items-center justify-between px-4 py-3 border-t border-border">
       <div className="flex items-center gap-3">
         <span className="text-xs text-muted-foreground">
-          {total === 0 ? 'No results' : `${start}–${end} of ${total}`}
+          {total === 0 ? (loading ? 'Loading…' : 'No results') : `${start}–${end} of ${total}`}
         </span>
         {onPageSizeChange && (
           <div className="flex items-center gap-1.5">
