@@ -166,6 +166,48 @@
   animation: progress 0.8s ease-out forwards;
 }
 
+/* KPI value placeholder — a filled pill with a band of light travelling
+   through it, shown while a figure's first fetch is in flight.
+
+   The sweep runs 0→70% of the cycle and then rests, so the grid pulses on a
+   relaxed beat instead of strobing; callers offset it per card (see
+   `LoadingWave`) so the bars don't move in lockstep. */
+@keyframes loadingWaveSweep {
+  0%   { transform: translateX(-160%); }
+  70%  { transform: translateX(380%); }
+  100% { transform: translateX(380%); }
+}
+
+.loading-wave {
+  position: relative;
+  background-color: #e8eef7;
+}
+
+.loading-wave-sheen {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 34%;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.55) 40%,
+    rgba(255, 255, 255, 0.95) 55%,
+    rgba(255, 255, 255, 0.55) 70%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  filter: blur(1.5px);
+  animation: loadingWaveSweep 2.4s cubic-bezier(0.45, 0, 0.4, 1) infinite;
+}
+
+.dark .loading-wave {
+  background-color: hsl(var(--muted));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-wave-sheen { animation: none; opacity: 0; }
+}
+
 /* Print styles */
 @media print {
   body * { visibility: hidden !important; }
