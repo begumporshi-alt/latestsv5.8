@@ -8,6 +8,7 @@ import {
   Printer,
   Receipt,
   RefreshCw,
+  TrendingDown,
   TrendingUp,
   TriangleAlert as AlertTriangle,
   Wallet,
@@ -16,9 +17,9 @@ import {
 import { supabase } from '@/lib/supabase';
 import { formatCurrency, formatCurrencyWith, getCurrencyFormat } from '@/lib/format';
 import {
-  buildQuickComparison,
-  buildQuickSummary,
-  type QuickSummary,
+  buildQuickStatement,
+  type LineAmounts,
+  type StatementLine,
 } from '@/lib/quick-balance-sheet';
 import { formatRangeLabel, previousDayISO, rangeDayCount } from '@/lib/date-range';
 import { AsOfDatePicker } from '@/components/AsOfDatePicker';
@@ -27,20 +28,10 @@ import { useStatementScope, type StatementMode } from '@/hooks/use-statement-sco
 import { cn } from '@/lib/utils';
 
 interface QuickRow {
-  line_key: string;
+  section: string;
+  code: string;
   label: string;
-  code: string;
   balance: number | string;
-}
-
-type SummaryKey = keyof QuickSummary;
-
-interface StatementLine {
-  code: string;
-  name: string;
-  opening: number;
-  closing: number;
-  change: number;
 }
 
 const MODES: Array<{ id: StatementMode; label: string; hint: string }> = [
@@ -71,7 +62,7 @@ function StatCard({
   label: string;
   value: string;
   caption: string;
-  delta?: number | null;
+  delta?: number;
   icon: typeof Building2;
   tone?: 'default' | 'negative';
 }) {
@@ -92,7 +83,7 @@ function StatCard({
       </p>
       <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
         <p className="text-[11px] text-muted-foreground">{caption}</p>
-        {delta !== null && delta !== undefined && Math.abs(delta) >= 0.005 && (
+        {delta !== undefined && Math.abs(delta) >= 0.005 && (
           <span
             className={cn(
               'rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
@@ -138,8 +129,8 @@ export default function QuickBalanceSheetPage() {
     if (mode === 'range') {
       // Opening is the close of the day *before* `from`; see previousDayISO().
       const [openRes, closeRes] = await Promise.all([
-        supabase.rpc('get_quick_balance_sheet', { p_as_of: previousDayISO(range.from) }),
-        supabase.rpc('get_quick_balance_sheet', { p_as_of: range.to }),
+        supabase.rpc('get_quick_statement', { p_as_of: previousDayISO(range.from) }),
+        supabase.rpc('get_quick_statement', { p_as_of: range.to }),
       ]);
       if (seq !== requestRef.current) return;
       const rpcError = openRes.error ?? closeRes.error;
@@ -155,7 +146,7 @@ export default function QuickBalanceSheetPage() {
       return;
     }
 
-    const { data, error: rpcError } = await supabase.rpc('get_quick_balance_sheet', { p_as_of: asOf });
+    const { data, error: rpcError } = await supabase.rpc('get_quick_statement', { p_as_of: asOf });
     // A newer request is already in flight; its response is the one that counts.
     if (seq !== requestRef.current) return;
     if (rpcError) {
@@ -170,12 +161,15 @@ export default function QuickBalanceSheetPage() {
 
   useEffect(() => { if (ready) load(); }, [ready, load]);
 
-  const summary = useMemo(() => buildQuickSummary(rows), [rows]);
-  const comparison = useMemo(() => buildQuickComparison(openRows, rows), [openRows, rows]);
-
-  /** Whichever snapshot the statement is describing — the closing one in range mode. */
-  const view = isRange ? comparison.closing : summary;
-  const delta = isRange ? comparison.change : null;
+  /**
+   * One model for both modes: in single-date mode the same rows are passed as
+   * both ends, so every change is zero and the change column is simply not
+   * rendered. See buildQuickStatement().
+   */
+  const statement = useMemo(
+    () => buildQuickStatement(isRange ? openRows : rows, rows),
+    [isRange, openRows, rows]
+  );
 
   const openingISO = previousDayISO(range.from);
   const openingDate = parseISO(openingISO);
@@ -190,7 +184,9 @@ export default function QuickBalanceSheetPage() {
 
   const subtitle = isRange
     ? `${rangeLabel} · ${rangeDayCount(range)} days · opening at ${openingLabel}`
-    : 'Fixed assets, inventory, receivables, payables and revenue — cash, bank and expenses excluded';
+    : 'Fixed assets, inventory, receivables, payables, revenue and expenses — cash and bank excluded';
+
+  const periodLabel = isRange ? rangeLabel : `to ${asOfLabel}`;
 
   function exportCsv() {
     const lines: string[] = ['QUICK BALANCE SHEET'];
@@ -202,27 +198,29 @@ export default function QuickBalanceSheetPage() {
     }
     lines.push('');
 
-    const row = (label: string, line: StatementLine) => {
-      const name = line.code ? `${line.code} ${label}` : label;
-      return isRange
-        ? `${name},${line.opening.toFixed(2)},${line.closing.toFixed(2)},${line.change.toFixed(2)}`
-        : `${name},${line.closing.toFixed(2)}`;
+    const line = (row: StatementLine) =>
+      isRange
+        ? `${row.code} ${row.label},${row.opening.toFixed(2)},${row.closing.toFixed(2)},${row.change.toFixed(2)}`
+        : `${row.code} ${row.label},${row.closing.toFixed(2)}`;
+
+    const total = (label: string, amount: LineAmounts) =>
+      isRange
+        ? `${label},${amount.opening.toFixed(2)},${amount.closing.toFixed(2)},${amount.change.toFixed(2)}`
+        : `${label},${amount.closing.toFixed(2)}`;
+
+    const section = (title: string, list: StatementLine[], totalLabel: string, amount: LineAmounts) => {
+      lines.push(title);
+      list.forEach(row => lines.push(line(row)));
+      lines.push(total(totalLabel, amount));
+      lines.push('');
     };
 
-    lines.push('ASSETS');
-    lines.push(row('Fixed Assets', lineFor('1004', 'Fixed Assets', 'fixedAssets')));
-    lines.push(row('Inventory', lineFor('1200', 'Inventory', 'inventory')));
-    lines.push(row('Accounts Receivable', lineFor('1100', 'Accounts Receivable', 'receivables')));
-    lines.push(row('Total Assets', totalFor('Total Assets', 'totalAssets')));
-    lines.push('');
-    lines.push('LIABILITIES');
-    lines.push(row('Accounts Payable', lineFor('2000', 'Accounts Payable', 'payables')));
-    lines.push(row('Total Liabilities', totalFor('Total Liabilities', 'totalLiabilities')));
-    lines.push('');
-    lines.push(isRange ? 'REVENUE (EARNED IN PERIOD)' : 'REVENUE (CUMULATIVE TO DATE)');
-    lines.push(row('Sales Revenue', lineFor('4000', 'Sales Revenue', 'revenue')));
-    lines.push('');
-    lines.push(row('Net position (Assets - Liabilities)', totalFor('Net position', 'netPosition')));
+    section('ASSETS', statement.assets, 'Total Assets', statement.totalAssets);
+    section('LIABILITIES', statement.liabilities, 'Total Liabilities', statement.totalLiabilities);
+    section('REVENUE', statement.revenues, 'Total Revenue', statement.totalRevenue);
+    section('EXPENSES', statement.expenses, 'Total Expenses', statement.totalExpenses);
+    lines.push(total('Net position (Assets - Liabilities)', statement.netPosition));
+    lines.push(total('Net profit (Revenue - Expenses)', statement.netProfit));
 
     const csv = '\uFEFF' + lines.join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
@@ -234,26 +232,6 @@ export default function QuickBalanceSheetPage() {
       : `quick_balance_sheet_${asOf}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }
-
-  function lineFor(code: string, name: string, key: SummaryKey): StatementLine {
-    return {
-      code,
-      name,
-      opening: comparison.opening[key],
-      closing: view[key],
-      change: comparison.change[key],
-    };
-  }
-
-  function totalFor(name: string, key: SummaryKey): StatementLine {
-    return {
-      code: '',
-      name,
-      opening: comparison.opening[key],
-      closing: view[key],
-      change: comparison.change[key],
-    };
   }
 
   const sectionHead = (label: string, note?: string) => (
@@ -279,10 +257,10 @@ export default function QuickBalanceSheetPage() {
   };
 
   const lineRow = (line: StatementLine) => (
-    <tr key={`${line.code}-${line.name}`} className="border-b border-gray-100">
+    <tr key={`${line.section}-${line.code}`} className="border-b border-gray-100">
       <td className="py-2.5 pl-4 text-sm text-gray-700">
-        {line.code && <span className="mr-2 font-mono text-xs text-gray-400">{line.code}</span>}
-        {line.name}
+        <span className="mr-2 font-mono text-xs text-gray-400">{line.code}</span>
+        {line.label}
       </td>
       {isRange && (
         <td className="py-2.5 pl-3 pr-4 text-right text-sm tabular-nums text-gray-500">
@@ -296,18 +274,18 @@ export default function QuickBalanceSheetPage() {
     </tr>
   );
 
-  const totalRow = (line: StatementLine) => (
-    <tr key={line.name} className="border-b border-gray-200 bg-blue-50">
-      <td className="py-2.5 pl-4 font-semibold text-gray-800">{line.name}</td>
+  const totalRow = (label: string, amount: LineAmounts) => (
+    <tr className="border-b border-gray-200 bg-blue-50">
+      <td className="py-2.5 pl-4 font-semibold text-gray-800">{label}</td>
       {isRange && (
         <td className="py-2.5 pl-3 pr-4 text-right text-sm font-semibold tabular-nums text-blue-700/70">
-          {money(line.opening)}
+          {money(amount.opening)}
         </td>
       )}
       <td className="py-2.5 pl-3 pr-4 text-right font-bold tabular-nums text-blue-800">
-        {money(line.closing)}
+        {money(amount.closing)}
       </td>
-      {isRange && changeCell(line.change, true)}
+      {isRange && changeCell(amount.change, true)}
     </tr>
   );
 
@@ -341,6 +319,39 @@ export default function QuickBalanceSheetPage() {
       </tr>
     </thead>
   );
+
+  const renderSection = (
+    title: string,
+    note: string | undefined,
+    list: StatementLine[],
+    totalLabel: string,
+    amount: LineAmounts
+  ) => (
+    <div>
+      {sectionHead(title, note)}
+      <table className="w-full text-sm">
+        {tableHead}
+        <tbody>
+          {list.length === 0 ? (
+            <tr className="border-b border-gray-100">
+              <td
+                colSpan={isRange ? 4 : 2}
+                className="px-4 py-3 text-center text-xs text-gray-400"
+              >
+                No account with a balance
+              </td>
+            </tr>
+          ) : (
+            list.map(line => lineRow(line))
+          )}
+          {totalRow(totalLabel, amount)}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const netProfit = statement.netProfit;
+  const netPosition = statement.netPosition;
 
   return (
     <div className="space-y-5 animate-fade-in print-modal">
@@ -415,35 +426,42 @@ export default function QuickBalanceSheetPage() {
         </div>
       )}
 
-      <div className={`grid grid-cols-2 gap-3 lg:grid-cols-4 transition-opacity ${loading ? 'opacity-60' : ''}`}>
+      <div className={`grid grid-cols-2 gap-3 lg:grid-cols-5 transition-opacity ${loading ? 'opacity-60' : ''}`}>
         <StatCard
           label="Total Assets"
-          value={formatCurrency(view.totalAssets)}
+          value={formatCurrency(statement.totalAssets.closing)}
           caption={isRange ? `Closing at ${closingLabel}` : 'Fixed + Inventory + Receivable'}
-          delta={delta?.totalAssets}
+          delta={isRange ? statement.totalAssets.change : undefined}
           icon={Building2}
         />
         <StatCard
-          label="Accounts Payable"
-          value={formatCurrency(view.payables)}
-          caption={isRange ? `Closing at ${closingLabel}` : 'Owed to suppliers'}
-          delta={delta?.payables}
-          icon={Receipt}
-        />
-        <StatCard
-          label="Net Position"
-          value={formatCurrency(view.netPosition)}
-          caption="Assets − Payables"
-          delta={delta?.netPosition}
-          icon={Wallet}
-          tone={view.netPosition < 0 ? 'negative' : 'default'}
-        />
-        <StatCard
-          label="Sales Revenue"
-          value={formatCurrency(view.revenue)}
+          label="Total Revenue"
+          value={formatCurrency(statement.totalRevenue.closing)}
           caption={isRange ? `Earned in ${rangeLabel}` : 'Cumulative to date'}
-          delta={delta?.revenue}
+          delta={isRange ? statement.totalRevenue.change : undefined}
           icon={TrendingUp}
+        />
+        <StatCard
+          label="Total Expenses"
+          value={formatCurrency(statement.totalExpenses.closing)}
+          caption={isRange ? `Incurred in ${rangeLabel}` : 'Cumulative to date'}
+          delta={isRange ? statement.totalExpenses.change : undefined}
+          icon={TrendingDown}
+        />
+        <StatCard
+          label={netProfit.closing < 0 ? 'Net Loss' : 'Net Profit'}
+          value={formatCurrency(Math.abs(netProfit.closing))}
+          caption="Revenue − Expenses"
+          delta={isRange ? netProfit.change : undefined}
+          icon={Wallet}
+          tone={netProfit.closing < 0 ? 'negative' : 'default'}
+        />
+        <StatCard
+          label="Accounts Payable"
+          value={formatCurrency(statement.totalLiabilities.closing)}
+          caption="Owed to suppliers"
+          delta={isRange ? statement.totalLiabilities.change : undefined}
+          icon={Receipt}
         />
       </div>
 
@@ -468,81 +486,82 @@ export default function QuickBalanceSheetPage() {
           <div className="px-8 py-12 text-center text-gray-400">Loading balances…</div>
         ) : (
           <div className={`space-y-6 px-6 py-4 transition-opacity ${loading ? 'opacity-60' : ''}`}>
-            <div>
-              {sectionHead('ASSETS')}
-              <table className="w-full text-sm">
-                {tableHead}
-                <tbody>
-                  {lineRow(lineFor('1004', 'Fixed Assets', 'fixedAssets'))}
-                  {lineRow(lineFor('1200', 'Inventory', 'inventory'))}
-                  {lineRow(lineFor('1100', 'Accounts Receivable', 'receivables'))}
-                  {totalRow(totalFor('Total Assets', 'totalAssets'))}
-                </tbody>
-              </table>
-            </div>
+            {renderSection('ASSETS', undefined, statement.assets, 'Total Assets', statement.totalAssets)}
+            {renderSection('LIABILITIES', undefined, statement.liabilities, 'Total Liabilities', statement.totalLiabilities)}
+            {renderSection(
+              'REVENUE',
+              isRange ? 'Change = revenue earned in this window' : undefined,
+              statement.revenues,
+              'Total Revenue',
+              statement.totalRevenue
+            )}
+            {renderSection(
+              'EXPENSES',
+              isRange ? 'Change = expenses incurred in this window' : undefined,
+              statement.expenses,
+              'Total Expenses',
+              statement.totalExpenses
+            )}
 
-            <div>
-              {sectionHead('LIABILITIES')}
-              <table className="w-full text-sm">
-                {tableHead}
-                <tbody>
-                  {lineRow(lineFor('2000', 'Accounts Payable', 'payables'))}
-                  {totalRow(totalFor('Total Liabilities', 'totalLiabilities'))}
-                </tbody>
-              </table>
-            </div>
-
-            <div>
-              {sectionHead(
-                isRange ? 'REVENUE (EARNED IN PERIOD)' : 'REVENUE (CUMULATIVE TO DATE)',
-                isRange ? 'Change = revenue earned in this window' : undefined
-              )}
-              <table className="w-full text-sm">
-                {tableHead}
-                <tbody>{lineRow(lineFor('4000', 'Sales Revenue', 'revenue'))}</tbody>
-              </table>
-            </div>
-
-            {isRange && !comparison.hasMovement && (
+            {isRange && !statement.hasMovement && (
               <p className="rounded-lg bg-slate-50 px-4 py-3 text-center text-xs text-slate-500">
                 Nothing was posted between {openingLabel} and {closingLabel} — every line is
                 unchanged.
               </p>
             )}
 
-            <div className="mt-4 flex items-center justify-between rounded-lg bg-slate-800 px-4 py-4">
-              <div>
-                <span className="text-sm font-bold tracking-wide text-white">NET POSITION</span>
-                {isRange && (
-                  <span className="ml-2 text-[11px] font-medium text-slate-300">
-                    {delta && Math.abs(delta.netPosition) >= 0.005
-                      ? `${delta.netPosition > 0 ? '+' : '−'}${money(Math.abs(delta.netPosition))} over ${rangeDayCount(range)} days`
-                      : 'unchanged over the period'}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between rounded-lg bg-slate-100 px-4 py-3">
+                <div>
+                  <span className="text-xs font-bold tracking-wide text-slate-700">
+                    NET POSITION
                   </span>
-                )}
+                  <span className="ml-2 text-[11px] text-slate-500">Assets − Liabilities</span>
+                </div>
+                <span className="text-base font-bold tabular-nums text-slate-800">
+                  {money(netPosition.closing)}
+                </span>
               </div>
-              <span className="text-xl font-bold tabular-nums text-white">{money(view.netPosition)}</span>
+
+              <div className="flex items-center justify-between rounded-lg bg-slate-800 px-4 py-4">
+                <div>
+                  <span className="text-sm font-bold tracking-wide text-white">
+                    {netProfit.closing < 0 ? 'NET LOSS' : 'NET PROFIT'}
+                  </span>
+                  <span className="ml-2 text-[11px] font-medium text-slate-300">
+                    Revenue − Expenses{isRange ? ` · ${periodLabel}` : ''}
+                  </span>
+                  {isRange && Math.abs(netProfit.change) >= 0.005 && (
+                    <span className="ml-2 text-[11px] font-medium text-slate-400" suppressHydrationWarning>
+                      ({netProfit.change > 0 ? '+' : '−'}{money(Math.abs(netProfit.change))} in period)
+                    </span>
+                  )}
+                </div>
+                <span className="text-xl font-bold tabular-nums text-white">
+                  {money(Math.abs(netProfit.closing))}
+                </span>
+              </div>
             </div>
           </div>
         )}
       </div>
 
       <p className="mx-auto max-w-3xl text-xs leading-relaxed text-muted-foreground">
-        A snapshot of five key accounts, not a complete statement. Cash, bank and expense accounts are
+        A summary of selected accounts, not a complete statement. Cash and bank accounts are
         excluded by design, so this will not balance and must not be read as a trial balance.
         {isRange ? (
           <>
-            {' '}Fixed assets, inventory, receivables and payables are positions, so a period can only
-            report them as opening, closing and the movement between; the closing column is the one
-            that answers “where do we stand on {closingLabel}”. Sales revenue is the only flow line,
-            and its change column is revenue earned inside the window rather than a running total.
+            {' '}Assets, liabilities, revenue and expenses all appear as opening, closing and the
+            movement between; the closing column is the one that answers “where do we stand on{' '}
+            {closingLabel}”, while each change column is what happened inside the window.
           </>
         ) : (
           <>
-            {' '}Sales revenue is an income account shown for context — it is cumulative to the as-of
-            date, not a balance-sheet item.
+            {' '}Revenue and expense balances are cumulative to the as-of date, since the ledger
+            began — they are not period figures. Switch to Date range to read them per period.
           </>
-        )}
+        )}{' '}
+        Net profit covers every revenue and expense account listed above and nothing else.
       </p>
     </div>
   );
