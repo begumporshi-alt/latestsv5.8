@@ -15,6 +15,7 @@ import { Package, PackageMinus, Plus, Search, CreditCard as Edit, Trash2, Rotate
 import type { Product, Category, Brand, Warehouse as WarehouseType } from '@/lib/types';
 import { LABEL_SIZES, resolveLabelConfig, fitNameFontSize } from '@/lib/label-sizes';
 import Pagination from '@/components/ui/AppPagination';
+import { LoadingWave } from '@/components/ui/loading-wave';
 import { ProductBatchesModal } from '@/components/product-batches-modal';
 import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheDelete } from '@/lib/offline/cache';
@@ -56,6 +57,67 @@ function StockByWarehouse({ productId, warehouses, inventoryByWarehouse, unit }:
         );
       })}
     </div>
+  );
+}
+
+/**
+ * Table skeleton shaped like a real product row.
+ *
+ * Two things must match or the page jumps when data lands:
+ *
+ *  - **Height.** A real row measures 61.8px because the product cell carries a
+ *    36px avatar beside a 20px name and a 16px unit line. The old placeholder
+ *    was a bare 16px bar in that cell — 46px per row — so eight of them came to
+ *    368px against 3,090px of real rows: a 2,722px collapse, paid twice (once
+ *    when data lands, once on every refresh).
+ *  - **Row count.** `rows` is the page size, not a hardcoded 8, so the footer
+ *    does not move.
+ *
+ * Only the first `animated` rows carry the travelling-light sheen. A 50-row
+ * page would otherwise mount 450 blurred layers for rows nobody has scrolled
+ * to yet; the rest are static bars, which read identically off-screen.
+ */
+function ProductRowsSkeleton({ rows, animated = 10 }: { rows: number; animated?: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, i) => {
+        const live = i < animated;
+        const delay = (i % animated) * 70;
+        const bar = (w: string, h = 'h-3.5') =>
+          live ? (
+            <LoadingWave width={w} delayMs={delay} className={h} />
+          ) : (
+            <span className={`block rounded-full bg-muted ${h}`} style={{ width: w }} />
+          );
+        return (
+          <tr key={i} aria-hidden="true">
+            <td className="px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 bg-muted rounded-lg shrink-0" />
+                <div className="flex flex-col justify-center gap-1">
+                  {bar('110px')}
+                  {bar('48px', 'h-2.5')}
+                </div>
+              </div>
+            </td>
+            <td className="px-4 py-3">{bar('64px')}</td>
+            <td className="px-4 py-3">{bar('68px')}</td>
+            <td className="px-4 py-3">{bar('56px')}</td>
+            <td className="px-4 py-3"><div className="flex justify-end">{bar('28px')}</div></td>
+            <td className="px-4 py-3"><div className="flex justify-end">{bar('72px')}</div></td>
+            <td className="px-4 py-3"><div className="flex justify-end">{bar('72px')}</div></td>
+            <td className="px-4 py-3">{bar('60px', 'h-5')}</td>
+            <td className="px-4 py-3">
+              <div className="flex items-center justify-end gap-1">
+                <span className="w-7 h-7 rounded-lg bg-muted" />
+                <span className="w-7 h-7 rounded-lg bg-muted" />
+                <span className="w-7 h-7 rounded-lg bg-muted" />
+              </div>
+            </td>
+          </tr>
+        );
+      })}
+    </>
   );
 }
 
@@ -117,6 +179,12 @@ export default function InventoryPage() {
   const [fifoValueMap, setFifoValueMap] = useState<Record<string, number>>({});
   const [unitTypes, setUnitTypes] = useState<{ id: string; unit_name: string; unit_short: string; allow_decimal?: boolean }[]>([]);
   const [dataStale, setDataStale] = useState(false);
+  // A successful load has landed at least once. `loading` alone cannot tell
+  // "nothing on screen yet" from "a refetch is in flight", and those two need
+  // opposite treatment: the first needs a skeleton, the second must not blank
+  // rows the user is already reading.
+  const [hasData, setHasData] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => { loadData(); }, []);
 
@@ -130,11 +198,20 @@ export default function InventoryPage() {
     try {
       const res = await cachedQuery<InventoryPageData>(CACHE_KEYS.inventoryPage, 60_000, fetchInventoryData);
       applyInventoryData(res.data, res.offline || !res.fresh);
+      setHasData(true);
+      setLoadFailed(false);
     } catch {
-      setProducts([]);
+      // Clearing `products` unconditionally used to drop the table through to
+      // the success-empty state — "No products found" — on a failed request.
+      // A failed refresh must keep the rows already on screen; only a failed
+      // *first* load has nothing to keep.
+      if (!hasData) setProducts([]);
+      setLoadFailed(true);
       toast({
-        title: 'Offline — no cached inventory data',
-        description: 'Open this page once while online so this device builds its offline copy.',
+        title: hasData ? 'Refresh failed — showing the previous load' : 'Offline — no cached inventory data',
+        description: hasData
+          ? 'The stock figures below are from the last successful load.'
+          : 'Open this page once while online so this device builds its offline copy.',
         variant: 'destructive',
       });
     } finally {
@@ -384,6 +461,20 @@ export default function InventoryPage() {
     return <span className="badge-status bg-green-50 text-green-600">In Stock</span>;
   }
 
+  // A filtered-to-nothing result is not an empty catalogue, so the empty row
+  // offers a way back instead of just stating a fact about the business.
+  function clearFilters() {
+    setSearch('');
+    setFilterCategory('');
+    setFilterBrand('');
+    setFilterWarehouse('');
+    setFilterStatus('');
+    setFilterColor('');
+    setFilterSize('');
+    setFilterUnit('');
+    setFilterNonStockOnly(false);
+  }
+
   // Export writes the same column contract the importer reads, so a file can
   // be exported, edited in Excel and imported straight back.
   function exportProducts() {
@@ -473,12 +564,27 @@ export default function InventoryPage() {
     }
   }
 
+  // "Nothing on screen yet" is a different condition from "a fetch is running".
+  // Only the first needs a skeleton; the second must leave the rows alone.
+  const firstLoad = loading && !hasData;
+  const pagedStart = filtered.length === 0 ? 0 : (page - 1) * pageSize + 1;
+  const pagedEnd = Math.min(page * pageSize, filtered.length);
+
   return (
     <div className="space-y-5 animate-fade-in">
       {dataStale && (
         <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-2 text-xs font-medium">
           <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
           Showing cached data — stock levels and stats are from the last online session. Changes made here are queued and will sync automatically.
+        </div>
+      )}
+      {/* A failed refresh keeps the previous rows on screen. The toast is
+          transient, so without this the page would show stale figures with no
+          indication that the reload did not land. */}
+      {loadFailed && hasData && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-800 rounded-lg px-4 py-2 text-xs font-medium">
+          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+          Refresh failed — the figures below are from the last successful load.
         </div>
       )}
       <div className="flex items-center justify-between">
@@ -520,18 +626,28 @@ export default function InventoryPage() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { label: 'Total Products', value: stats.total, icon: Boxes, color: 'text-blue-500 bg-blue-50' },
-          { label: 'Low Stock', value: stats.lowStock, icon: AlertTriangle, color: 'text-amber-500 bg-amber-50' },
-          { label: 'Out of Stock', value: stats.outOfStock, icon: TrendingDown, color: 'text-red-500 bg-red-50' },
-          { label: 'Inventory Value', value: formatCurrency(stats.value), icon: BarChart3, color: 'text-green-500 bg-green-50' },
-        ].map((s) => (
+          { label: 'Total Products', value: stats.total, waveWidth: '46px', icon: Boxes, color: 'text-blue-500 bg-blue-50' },
+          { label: 'Low Stock', value: stats.lowStock, waveWidth: '26px', icon: AlertTriangle, color: 'text-amber-500 bg-amber-50' },
+          { label: 'Out of Stock', value: stats.outOfStock, waveWidth: '26px', icon: TrendingDown, color: 'text-red-500 bg-red-50' },
+          { label: 'Inventory Value', value: formatCurrency(stats.value), waveWidth: '118px', icon: BarChart3, color: 'text-green-500 bg-green-50' },
+        ].map((s, i) => (
           <div key={s.label} className="stat-card flex items-center gap-3">
             <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color}`}>
               <s.icon className="w-5 h-5" />
             </div>
-            <div>
+            <div className="min-w-0">
               <p className="text-xs text-muted-foreground">{s.label}</p>
-              <p className="text-lg font-bold text-foreground">{s.value}</p>
+              {/* Same 28px line box as `text-lg`, so the card measures 84px in
+                  all three states and the row never shifts. */}
+              <div className="flex h-7 items-center">
+                {hasData ? (
+                  <p className="text-lg font-bold text-foreground">{s.value}</p>
+                ) : firstLoad ? (
+                  <LoadingWave width={s.waveWidth} delayMs={i * 110} />
+                ) : (
+                  <p className="text-lg font-bold text-muted-foreground" title="This figure could not be loaded">—</p>
+                )}
+              </div>
             </div>
           </div>
         ))}
@@ -615,36 +731,41 @@ export default function InventoryPage() {
             options={[{ value: '', label: 'All Units' }, ...unitTypes.map(u => ({ value: u.unit_name, label: u.unit_name }))]}
           />
         )}
-        <button onClick={() => loadData(true)} className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 text-sm hover:bg-muted transition">
-          <RefreshCw className="w-3.5 h-3.5" />
-          Refresh
+        <button
+          onClick={() => loadData(true)}
+          disabled={loading}
+          className="flex items-center gap-2 border border-border rounded-lg px-3 py-2 text-sm hover:bg-muted transition disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          {firstLoad ? 'Loading…' : loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
 
-      {!loading && (
-        <div className="flex items-center gap-4 flex-wrap text-sm">
-          <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg font-medium">
-            <Boxes className="w-4 h-4" />
-            Showing {Math.min((page-1)*pageSize+1, filtered.length)}–{Math.min(page*pageSize, filtered.length)} of {filtered.length} products
-          </span>
-          <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-lg font-medium">
-            <Package className="w-4 h-4" />
-            Total stock: {filteredStock.toLocaleString()} items
-          </span>
-          <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-medium">
-            <AlertTriangle className="w-4 h-4" />
-            Low stock: {filtered.filter(p => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length}
-          </span>
-          <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-red-50 text-red-700 rounded-lg font-medium">
-            <TrendingDown className="w-4 h-4" />
-            Out of stock: {filtered.filter(p => (p.total_stock || 0) === 0).length}
-          </span>
-          <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-muted text-muted-foreground rounded-lg font-medium">
-            <BarChart3 className="w-4 h-4" />
-            Filtered value: {formatCurrency(filteredValue)}
-          </span>
-        </div>
-      )}
+      {/* Rendered before the data lands, with a dash where each number goes:
+          hiding the row would drop the table by its own height when it
+          appears, and printing zeros would claim an empty catalogue. */}
+      <div className="flex items-center gap-4 flex-wrap text-sm">
+        <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg font-medium">
+          <Boxes className="w-4 h-4" />
+          {hasData ? `Showing ${pagedStart}–${pagedEnd} of ${filtered.length} products` : 'Showing — products'}
+        </span>
+        <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-lg font-medium">
+          <Package className="w-4 h-4" />
+          Total stock: {hasData ? `${filteredStock.toLocaleString()} items` : '—'}
+        </span>
+        <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-50 text-amber-700 rounded-lg font-medium">
+          <AlertTriangle className="w-4 h-4" />
+          Low stock: {hasData ? filtered.filter(p => (p.total_stock || 0) > 0 && (p.total_stock || 0) <= p.min_stock_level).length : '—'}
+        </span>
+        <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-red-50 text-red-700 rounded-lg font-medium">
+          <TrendingDown className="w-4 h-4" />
+          Out of stock: {hasData ? filtered.filter(p => (p.total_stock || 0) === 0).length : '—'}
+        </span>
+        <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-muted text-muted-foreground rounded-lg font-medium">
+          <BarChart3 className="w-4 h-4" />
+          Filtered value: {hasData ? formatCurrency(filteredValue) : '—'}
+        </span>
+      </div>
 
       {filterStatus === 'inactive' && orphanedInactive.length > 0 && (
         <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
@@ -684,17 +805,36 @@ export default function InventoryPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {loading ? (
-                Array.from({ length: 8 }).map((_, i) => (
-                  <tr key={i}>
-                    {Array.from({ length: 9 }).map((_, j) => (
-                      <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>
-                    ))}
-                  </tr>
-                ))
+              {firstLoad ? (
+                <ProductRowsSkeleton rows={pageSize} />
+              ) : !hasData ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-12 text-center">
+                    <p className="text-sm font-semibold text-foreground">{"Couldn't load products"}</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      The inventory request did not come back. Nothing in the catalogue was changed.
+                    </p>
+                    <button
+                      onClick={() => loadData(true)}
+                      className="mt-3 inline-flex items-center gap-1.5 border border-border rounded-lg px-3 py-1.5 text-xs font-semibold hover:bg-muted transition"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Try again
+                    </button>
+                  </td>
+                </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-muted-foreground text-sm">No products found</td>
+                  <td colSpan={9} className="px-4 py-12 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      {products.length === 0 ? 'No products to show' : 'No products match these filters'}
+                    </p>
+                    {products.length > 0 && (
+                      <button onClick={clearFilters} className="mt-2 text-xs text-blue-600 font-medium hover:underline">
+                        Clear filters
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ) : (
                 pagedFiltered.map((p) => (
@@ -787,6 +927,7 @@ export default function InventoryPage() {
           page={page}
           pageSize={pageSize}
           total={filtered.length}
+          loading={firstLoad}
           onPageChange={setPage}
           onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
           pageSizeOptions={[25, 50, 100, 200]}
