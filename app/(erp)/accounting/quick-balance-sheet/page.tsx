@@ -32,6 +32,7 @@ interface QuickRow {
   code: string;
   label: string;
   balance: number | string;
+  sub_amount?: number | string | null;
 }
 
 const MODES: Array<{ id: StatementMode; label: string; hint: string }> = [
@@ -218,6 +219,22 @@ export default function QuickBalanceSheetPage() {
     section('ASSETS', statement.assets, 'Total Assets', statement.totalAssets);
     section('LIABILITIES', statement.liabilities, 'Total Liabilities', statement.totalLiabilities);
     section('REVENUE', statement.revenues, 'Total Revenue', statement.totalRevenue);
+
+    // The Quick Sell slice of 4000 is a breakdown, not a separate amount, so it
+    // is written as an "of which" line rather than added to the total.
+    const quickLine = statement.revenues.find(
+      row => Math.abs(isRange ? row.sub.change : row.sub.closing) >= 0.005
+    );
+    if (quickLine) {
+      lines.pop(); // the blank line the section helper just appended
+      lines.push(
+        isRange
+          ? `  of which Quick Sell,${quickLine.sub.opening.toFixed(2)},${quickLine.sub.closing.toFixed(2)},${quickLine.sub.change.toFixed(2)}`
+          : `  of which Quick Sell,${quickLine.sub.closing.toFixed(2)}`
+      );
+      lines.push('');
+    }
+
     section('EXPENSES', statement.expenses, 'Total Expenses', statement.totalExpenses);
     lines.push(total('Net position (Assets - Liabilities)', statement.netPosition));
     lines.push(total('Net profit (Revenue - Expenses)', statement.netProfit));
@@ -256,23 +273,44 @@ export default function QuickBalanceSheetPage() {
     );
   };
 
-  const lineRow = (line: StatementLine) => (
-    <tr key={`${line.section}-${line.code}`} className="border-b border-gray-100">
-      <td className="py-2.5 pl-4 text-sm text-gray-700">
-        <span className="mr-2 font-mono text-xs text-gray-400">{line.code}</span>
-        {line.label}
-      </td>
-      {isRange && (
-        <td className="py-2.5 pl-3 pr-4 text-right text-sm tabular-nums text-gray-500">
-          {money(line.opening)}
+  /**
+   * 4000 Sales Revenue mixes counter, invoiced and Quick Sell revenue. When the
+   * RPC reports a breakdown, show it inline rather than as another row — it is a
+   * slice of the line above it, not an amount to be added.
+   */
+  const breakdownNote = (line: StatementLine): string | null => {
+    const value = isRange ? line.sub.change : line.sub.closing;
+    if (Math.abs(value) < 0.005) return null;
+    return isRange
+      ? `incl. ${money(value)} quick sales in period`
+      : `incl. ${money(value)} quick sales`;
+  };
+
+  const lineRow = (line: StatementLine) => {
+    const note = breakdownNote(line);
+    return (
+      <tr key={`${line.section}-${line.code}`} className="border-b border-gray-100">
+        <td className="py-2.5 pl-4 text-sm text-gray-700">
+          <span className="mr-2 font-mono text-xs text-gray-400">{line.code}</span>
+          {line.label}
+          {note && (
+            <span className="ml-1.5 text-[11px] text-gray-500" suppressHydrationWarning>
+              ({note})
+            </span>
+          )}
         </td>
-      )}
-      <td className="py-2.5 pl-3 pr-4 text-right text-sm font-medium tabular-nums text-gray-800">
-        {money(line.closing)}
-      </td>
-      {isRange && changeCell(line.change)}
-    </tr>
-  );
+        {isRange && (
+          <td className="py-2.5 pl-3 pr-4 text-right text-sm tabular-nums text-gray-500">
+            {money(line.opening)}
+          </td>
+        )}
+        <td className="py-2.5 pl-3 pr-4 text-right text-sm font-medium tabular-nums text-gray-800">
+          {money(line.closing)}
+        </td>
+        {isRange && changeCell(line.change)}
+      </tr>
+    );
+  };
 
   const totalRow = (label: string, amount: LineAmounts) => (
     <tr className="border-b border-gray-200 bg-blue-50">
@@ -561,7 +599,9 @@ export default function QuickBalanceSheetPage() {
             began — they are not period figures. Switch to Date range to read them per period.
           </>
         )}{' '}
-        Net profit covers every revenue and expense account listed above and nothing else.
+        Net profit covers every revenue and expense account listed above and nothing else. 4001
+        Sales Revenue — Manual is excluded from this statement by request, so net profit is lower
+        than the ledger by whatever that account holds.
       </p>
     </div>
   );
