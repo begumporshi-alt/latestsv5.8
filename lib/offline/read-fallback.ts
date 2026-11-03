@@ -37,6 +37,7 @@ import { networkMonitor } from './network'
 import { getDB } from './db'
 import { runReplicaQuery } from './replica-query'
 import { noteServerWrite } from './write-refresh'
+import { hasStoredSessionUser } from './stored-session'
 
 /** Builder methods that turn a chain into a write — never intercepted. */
 const MUTATION_METHODS = new Set(['insert', 'update', 'delete', 'upsert'])
@@ -228,19 +229,53 @@ function isReadRpc(name: string): boolean {
   return READ_RPC_PREFIXES.some((prefix) => lower.startsWith(prefix))
 }
 
+/**
+ * A read failed because the access token is expired/unusable — PostgREST
+ * answers 401 "JWT expired" (code PGRST301). postgrest-js returns that as a
+ * normal resolved error, not a network fault: the transport is fine, so the
+ * network monitor must not flip. But the page should still get its last good
+ * copy instead of a hard failure — the token refresh recovers the moment
+ * connectivity (or the auth service) returns, and until then the offline
+ * shell is exactly the state the user is in.
+ */
+function isAuthExpiredError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const e = err as { code?: unknown; message?: unknown }
+  if (e.code === 'PGRST301') return true
+  if (typeof e.message === 'string' && /jwt expired|invalid jwt/i.test(e.message)) return true
+  return false
+}
+
+/**
+ * Serve a read from the last good copy: per-query cache, then the local
+ * replica, then the offline-miss notice. Never called for writes.
+ */
+async function serveFromFallback(
+  key: string,
+  state: BuilderState,
+  target: string,
+): Promise<any> {
+  const cached = await cacheGet<any>(key)
+  if (cached) return { ...cached, offline: true }
+  const fromReplica = await replicaFallback(state)
+  if (fromReplica) return fromReplica
+  emitOfflineMiss(target)
+  return offlineNoCache(target)
+}
+
 async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
   const target = state.kind === 'rpc' ? `rpc ${state.name}` : state.name
   const key = await buildKey(state)
   const fallbackAllowed = !state.mutation
 
-  // Offline: never touch the network for a read — serve the last copy now.
-  if (fallbackAllowed && !networkMonitor.getState().online) {
-    const cached = await cacheGet<any>(key)
-    if (cached) return { ...cached, offline: true }
-    const fromReplica = await replicaFallback(state)
-    if (fromReplica) return fromReplica
-    emitOfflineMiss(target)
-    return offlineNoCache(target)
+  // Offline, or no usable session record on disk: never touch the network for
+  // a read — serve the last copy now. The no-session guard matters even while
+  // the network is up: after auth-js has removed an unrefreshable session, a
+  // request would leave unauthenticated and PostgREST would answer with an
+  // anon-role, RLS-filtered (usually empty) 200 — caching that would silently
+  // overwrite the last real copy of the data.
+  if (fallbackAllowed && (!networkMonitor.getState().online || !hasStoredSessionUser())) {
+    return serveFromFallback(key, state, target)
   }
 
   try {
@@ -252,13 +287,10 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
     }
 
     if (res && res.error) {
-      if (isNetworkError(res.error)) {
-        networkMonitor.markOffline()
-        const cached = await cacheGet<any>(key)
-        if (cached) return { ...cached, offline: true }
-        const fromReplica = await replicaFallback(state)
-        if (fromReplica) return fromReplica
-        emitOfflineMiss(target)
+      const expired = isAuthExpiredError(res.error)
+      if (expired || isNetworkError(res.error)) {
+        if (!expired) networkMonitor.markOffline()
+        return serveFromFallback(key, state, target)
       }
       return res
     }
@@ -268,12 +300,7 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
   } catch (err) {
     if (fallbackAllowed && isNetworkError(err)) {
       networkMonitor.markOffline()
-      const cached = await cacheGet<any>(key)
-      if (cached) return { ...cached, offline: true }
-      const fromReplica = await replicaFallback(state)
-      if (fromReplica) return fromReplica
-      emitOfflineMiss(target)
-      return offlineNoCache(target)
+      return serveFromFallback(key, state, target)
     }
     throw err
   }
