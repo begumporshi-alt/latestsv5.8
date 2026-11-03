@@ -16,7 +16,7 @@
  */
 import { getMeta, setMeta } from './db'
 import { supabaseRaw } from '../supabase-raw'
-import { getSupabaseConfig } from '../runtime-config'
+import { readStoredSessionUser } from './stored-session'
 
 export interface LastKnownUser {
   id: string
@@ -118,36 +118,4 @@ export async function resolveUserId(): Promise<string | null> {
     // fall through to the remembered user
   }
   return (await getLastUser())?.id ?? null
-}
-
-/**
- * Read the session auth-js still has on disk (offline, the access token may be
- * expired while the session itself is preserved). Handles the chunked storage
- * variant too.
- */
-function readStoredSessionUser(): LastKnownUser | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const url = getSupabaseConfig().url
-    const ref = new URL(url).hostname.split('.')[0]
-    if (!ref) return null
-    const key = `sb-${ref}-auth-token`
-    let raw = window.localStorage.getItem(key)
-    if (!raw) {
-      const parts: string[] = []
-      for (let i = 0; i < 8; i++) {
-        const part = window.localStorage.getItem(`${key}.${i}`)
-        if (!part) break
-        parts.push(part)
-      }
-      if (parts.length > 0) raw = parts.join('')
-    }
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as { user?: { id?: string; email?: string | null } }
-    const id = parsed?.user?.id
-    if (!id) return null
-    return { id, email: parsed.user?.email ?? null, at: Date.now() }
-  } catch {
-    return null
-  }
 }
