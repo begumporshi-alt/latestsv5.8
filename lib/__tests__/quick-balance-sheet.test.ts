@@ -1,191 +1,275 @@
-import { buildQuickComparison, buildQuickSummary, type QuickLine } from '../quick-balance-sheet';
+import {
+  buildQuickStatement,
+  type StatementRow,
+  type StatementSection,
+} from '../quick-balance-sheet';
 
-const rows = (values: Record<string, number | string>): QuickLine[] =>
-  Object.entries(values).map(([line_key, balance]) => ({ line_key, balance }));
+const row = (
+  section: StatementSection,
+  code: string,
+  label: string,
+  balance: number | string,
+  sub_amount?: number | string | null
+): StatementRow => ({ section, code, label, balance, sub_amount });
 
-describe('buildQuickSummary', () => {
-  it('reads the five live balances', () => {
-    const summary = buildQuickSummary(
-      rows({
-        fixed_assets: 1,
-        inventory: 11263279.39,
-        receivables: 2849911.66,
-        payables: 3294487.27,
-        revenue: 10416295.02,
-      })
-    );
+/**
+ * The live chart at 2026-11-04, trimmed to what the page actually renders.
+ * 4001 Sales Revenue — Manual is excluded by the RPC, so it is absent here too.
+ */
+const liveRows: StatementRow[] = [
+  row('asset', '1004', 'Fixed Assets', 1),
+  row('asset', '1200', 'Inventory', '11257763.33'),
+  row('asset', '1100', 'Accounts Receivable', '2905177.76'),
+  row('liability', '2000', 'Accounts Payable', '3309584.27'),
+  row('revenue', '4000', 'Sales Revenue', '10470430.62', '673181.00'),
+  row('revenue', '4020', 'Shipping Income', '12845.21'),
+  row('expense', '4050', 'Sales Returns & Allowances', '49294.40'),
+  row('expense', '5000', 'Cost of Goods Sold', '9225828.58'),
+  row('expense', '5100', 'Salaries & Wages', '182030.00'),
+  row('expense', '5200', 'Rent Expense', '33000.00'),
+  row('expense', '5300', 'Utilities', '37000.00'),
+  row('expense', '5500', 'Transport & Delivery', '24350.00'),
+  row('expense', '5600', 'Bad Debt Expense', '6701.29'),
+  row('expense', '5900', 'Inventory Adjustment', '33450.00'),
+  row('expense', '6000', 'Operating Expenses', '56198.00'),
+  row('expense', '6327', 'Nasta And Lunch', '36333.00'),
+  // Inactive but still carrying a balance: excluding it would stop the total
+  // reconciling to the chart.
+  row('expense', '6331', 'Hubaib', '1000.00'),
+  row('expense', '6676', 'Investment in', '222965.00'),
+  row('expense', '6760', 'return expense', '1920.00'),
+];
 
-    expect(summary.fixedAssets).toBe(1);
-    expect(summary.inventory).toBe(11263279.39);
-    expect(summary.receivables).toBe(2849911.66);
-    expect(summary.payables).toBe(3294487.27);
-    expect(summary.revenue).toBe(10416295.02);
+describe('buildQuickStatement — single snapshot', () => {
+  // Same rows twice is how the page renders "as of a date": no change column.
+  const statement = buildQuickStatement(liveRows, liveRows);
+
+  it('splits the rows into the four sections', () => {
+    expect(statement.assets).toHaveLength(3);
+    expect(statement.liabilities).toHaveLength(1);
+    expect(statement.revenues).toHaveLength(2);
+    expect(statement.expenses).toHaveLength(13);
   });
 
-  it('totals assets from the three asset accounts only', () => {
-    const summary = buildQuickSummary(
-      rows({ fixed_assets: 100, inventory: 200, receivables: 300, payables: 999, revenue: 999 })
-    );
-
-    expect(summary.totalAssets).toBe(600);
-    expect(summary.totalLiabilities).toBe(999);
+  it('totals assets', () => {
+    expect(statement.totalAssets.closing).toBeCloseTo(14162942.09, 2);
   });
 
-  it('computes net position as assets less payables', () => {
-    const summary = buildQuickSummary(rows({ fixed_assets: 100, inventory: 200, receivables: 300, payables: 250 }));
-
-    expect(summary.netPosition).toBe(350);
+  it('totals the revenue accounts the RPC returns', () => {
+    // 4000 + 4020. 4001 is excluded by the function, so it is not in the total.
+    expect(statement.totalRevenue.closing).toBeCloseTo(10483275.83, 2);
   });
 
-  it('reports a negative net position rather than clamping at zero', () => {
-    const summary = buildQuickSummary(rows({ inventory: 100, payables: 400 }));
-
-    expect(summary.netPosition).toBe(-300);
+  it('totals expenses across all expense accounts', () => {
+    expect(statement.totalExpenses.closing).toBeCloseTo(9910070.27, 2);
   });
 
-  it('accepts numeric strings, which is how Postgres returns numeric', () => {
-    const summary = buildQuickSummary(
-      rows({ fixed_assets: '1', inventory: '11263279.39', receivables: '2849911.66', payables: '3294487.27' })
-    );
-
-    expect(summary.totalAssets).toBeCloseTo(14113192.05, 2);
-    expect(summary.netPosition).toBeCloseTo(10818704.78, 2);
+  it('derives net position as assets less liabilities', () => {
+    expect(statement.netPosition.closing).toBeCloseTo(10853357.82, 2);
   });
 
-  it('treats a missing line as zero instead of NaN', () => {
-    const summary = buildQuickSummary(rows({ inventory: 500 }));
-
-    expect(summary.fixedAssets).toBe(0);
-    expect(summary.receivables).toBe(0);
-    expect(summary.payables).toBe(0);
-    expect(summary.totalAssets).toBe(500);
-    expect(summary.netPosition).toBe(500);
+  it('derives net profit as revenue less expenses', () => {
+    expect(statement.netProfit.closing).toBeCloseTo(573205.56, 2);
   });
 
-  it('treats unparseable balances as zero', () => {
-    const summary = buildQuickSummary(rows({ inventory: 'not-a-number', receivables: 100 }));
+  it('carries the Quick Sell breakdown on 4000', () => {
+    const sales = statement.revenues.find(line => line.code === '4000')!;
 
-    expect(summary.inventory).toBe(0);
-    expect(summary.totalAssets).toBe(100);
+    expect(sales.sub.closing).toBeCloseTo(673181, 2);
+    expect(sales.sub.change).toBe(0);
   });
 
-  it('returns all zeros for an empty result', () => {
-    const summary = buildQuickSummary([]);
+  it('leaves the breakdown empty on accounts that have none', () => {
+    const shipping = statement.revenues.find(line => line.code === '4020')!;
 
-    expect(summary).toEqual({
-      fixedAssets: 0,
-      inventory: 0,
-      receivables: 0,
-      payables: 0,
-      revenue: 0,
-      totalAssets: 0,
-      totalLiabilities: 0,
-      netPosition: 0,
-    });
+    expect(shipping.sub).toEqual({ opening: 0, closing: 0, change: 0 });
   });
 
-  it('does not leak floating point noise into the totals', () => {
-    const summary = buildQuickSummary(rows({ fixed_assets: 0.1, inventory: 0.2, receivables: 0 }));
+  it('does not add the breakdown into the revenue total', () => {
+    const statement2 = buildQuickStatement(liveRows, liveRows);
+    const sales = statement2.revenues.find(line => line.code === '4000')!;
 
-    expect(summary.totalAssets).toBeCloseTo(0.3, 10);
+    // sub is a slice of `closing`, never an extra amount.
+    expect(sales.sub.closing).toBeLessThan(sales.closing);
+    expect(statement2.totalRevenue.closing).toBeCloseTo(10483275.83, 2);
+  });
+
+  it('reports no movement when both snapshots are the same', () => {
+    expect(statement.hasMovement).toBe(false);
+    expect(statement.netProfit.change).toBe(0);
+  });
+
+  it('reports every change as zero in single-date mode', () => {
+    const allZero = [
+      ...statement.assets,
+      ...statement.liabilities,
+      ...statement.revenues,
+      ...statement.expenses,
+    ].every(line => line.change === 0);
+
+    expect(allZero).toBe(true);
+  });
+
+  it('orders lines by account code', () => {
+    expect(statement.expenses.map(line => line.code)).toEqual([
+      '4050', '5000', '5100', '5200', '5300', '5500',
+      '5600', '5900', '6000', '6327', '6331', '6676', '6760',
+    ]);
+  });
+
+  it('knows the chart has income accounts', () => {
+    expect(statement.hasIncome).toBe(true);
   });
 });
 
-describe('buildQuickComparison', () => {
-  // Real figures from the live database for 9 Oct 2026 (opening) and
-  // 20 Oct 2026 (closing) — the 10–20 Oct window.
-  const opening = rows({
-    fixed_assets: 0,
-    inventory: '10292134.81052',
-    receivables: '3136118.1122',
-    payables: '3236304.9400',
-    revenue: '8024890.53691',
+describe('buildQuickStatement — window', () => {
+  const opening = [
+    row('asset', '1200', 'Inventory', 1000),
+    row('liability', '2000', 'Accounts Payable', 400),
+    row('revenue', '4000', 'Sales Revenue', 5000),
+    row('expense', '5000', 'Cost of Goods Sold', 3000),
+  ];
+  const closing = [
+    row('asset', '1200', 'Inventory', 1200),
+    row('liability', '2000', 'Accounts Payable', 450),
+    row('revenue', '4000', 'Sales Revenue', 5600),
+    row('expense', '5000', 'Cost of Goods Sold', 3200),
+  ];
+
+  it('computes opening, closing and change per line', () => {
+    const statement = buildQuickStatement(opening, closing);
+    const inventory = statement.assets[0];
+
+    expect(inventory.opening).toBe(1000);
+    expect(inventory.closing).toBe(1200);
+    expect(inventory.change).toBe(200);
   });
 
-  const closing = rows({
-    fixed_assets: 0,
-    inventory: '11440855.72052',
-    receivables: '2426211.15874',
-    payables: '3249364.2900',
-    revenue: '8972398.37465',
+  it('computes the period revenue and expense movement', () => {
+    const statement = buildQuickStatement(opening, closing);
+
+    expect(statement.totalRevenue.change).toBe(600);
+    expect(statement.totalExpenses.change).toBe(200);
+    expect(statement.netProfit.change).toBe(400);
   });
 
-  it('reports both snapshots unchanged', () => {
-    const comparison = buildQuickComparison(opening, closing);
-
-    expect(comparison.opening.inventory).toBeCloseTo(10292134.81, 2);
-    expect(comparison.closing.inventory).toBeCloseTo(11440855.72, 2);
-  });
-
-  it('computes the movement for each line', () => {
-    const comparison = buildQuickComparison(opening, closing);
-
-    expect(comparison.change.inventory).toBeCloseTo(1148720.91, 2);
-    expect(comparison.change.payables).toBeCloseTo(13059.35, 2);
-    expect(comparison.change.receivables).toBeCloseTo(-709906.95, 2);
-    expect(comparison.change.revenue).toBeCloseTo(947507.84, 2);
-    expect(comparison.change.fixedAssets).toBe(0);
-  });
-
-  it('derives revenue change as the period figure, not a running total', () => {
-    const comparison = buildQuickComparison(opening, closing);
-
-    // The closing revenue is ~8.97m cumulative; the window earned 947,507.84.
-    expect(comparison.closing.revenue).toBeGreaterThan(8000000);
-    expect(comparison.change.revenue).toBeCloseTo(947507.84, 2);
-  });
-
-  it('keeps the change subtotals consistent with their components', () => {
-    const comparison = buildQuickComparison(opening, closing);
-
-    expect(comparison.change.totalAssets).toBeCloseTo(
-      comparison.change.fixedAssets + comparison.change.inventory + comparison.change.receivables,
-      2
+  it('tracks the breakdown movement across the window', () => {
+    const statement = buildQuickStatement(
+      [row('revenue', '4000', 'Sales Revenue', 1000, 400)],
+      [row('revenue', '4000', 'Sales Revenue', 1300, 520)]
     );
-    expect(comparison.change.netPosition).toBeCloseTo(
-      comparison.change.totalAssets - comparison.change.payables,
-      2
+
+    const sales = statement.revenues[0];
+    expect(sales.sub.opening).toBe(400);
+    expect(sales.sub.closing).toBe(520);
+    expect(sales.sub.change).toBe(120);
+    // The line's own change is 300; the quick-sale slice is 120 of it.
+    expect(sales.change).toBe(300);
+  });
+
+  it('carries an account that exists only at the end', () => {
+    const statement = buildQuickStatement(
+      [row('expense', '5100', 'Salaries & Wages', 0)],
+      [row('expense', '5100', 'Salaries & Wages', 0), row('expense', '5200', 'Rent Expense', 900)]
     );
+
+    expect(statement.expenses).toHaveLength(2);
+    const rent = statement.expenses.find(line => line.code === '5200')!;
+    expect(rent.opening).toBe(0);
+    expect(rent.closing).toBe(900);
+    expect(rent.change).toBe(900);
   });
 
-  it('matches the difference of the two totals', () => {
-    const comparison = buildQuickComparison(opening, closing);
-
-    expect(comparison.change.netPosition).toBeCloseTo(
-      comparison.closing.netPosition - comparison.opening.netPosition,
-      2
+  it('keeps an account that disappeared from the closing chart', () => {
+    const statement = buildQuickStatement(
+      [row('revenue', '4020', 'Shipping Income', 500)],
+      [row('revenue', '4000', 'Sales Revenue', 100)]
     );
+
+    const shipping = statement.revenues.find(line => line.code === '4020')!;
+    expect(shipping.opening).toBe(500);
+    expect(shipping.closing).toBe(0);
+    expect(shipping.change).toBe(-500);
   });
 
-  it('flags a window with no postings', () => {
-    const comparison = buildQuickComparison(opening, opening);
-
-    expect(comparison.hasMovement).toBe(false);
-    expect(comparison.change.netPosition).toBe(0);
+  it('flags movement when anything changed', () => {
+    expect(buildQuickStatement(opening, closing).hasMovement).toBe(true);
   });
 
-  it('flags a window with movement', () => {
-    expect(buildQuickComparison(opening, closing).hasMovement).toBe(true);
+  it('does not treat float noise as movement', () => {
+    const statement = buildQuickStatement(
+      [row('asset', '1200', 'Inventory', 100.1)],
+      [row('asset', '1200', 'Inventory', 100.1)]
+    );
+
+    expect(statement.hasMovement).toBe(false);
+  });
+});
+
+describe('buildQuickStatement — robustness', () => {
+  it('ignores rows from an unknown section', () => {
+    const rows = [
+      row('asset', '1004', 'Fixed Assets', 10),
+      row('equity' as StatementSection, '3900', 'Equity', 99),
+    ];
+    const statement = buildQuickStatement(rows, rows);
+
+    expect(statement.assets).toHaveLength(1);
+    expect(statement.totalAssets.closing).toBe(10);
   });
 
-  it('treats a line missing from one side as zero on that side', () => {
-    const comparison = buildQuickComparison(rows({ inventory: 100 }), rows({ inventory: 250, payables: 40 }));
+  it('coerces numeric strings, which is how Postgres returns numeric', () => {
+    const rows = [row('asset', '1200', 'Inventory', '1234.56')];
 
-    expect(comparison.opening.payables).toBe(0);
-    expect(comparison.change.inventory).toBe(150);
-    expect(comparison.change.payables).toBe(40);
+    expect(buildQuickStatement(rows, rows).totalAssets.closing).toBe(1234.56);
   });
 
-  it('returns zeros for two empty snapshots', () => {
-    const comparison = buildQuickComparison([], []);
+  it('treats an unparseable balance as zero', () => {
+    const rows = [
+      row('asset', '1200', 'Inventory', 'not-a-number'),
+      row('asset', '1100', 'AR', 100),
+    ];
 
-    expect(comparison.hasMovement).toBe(false);
-    expect(comparison.closing).toEqual(comparison.opening);
+    expect(buildQuickStatement(rows, rows).totalAssets.closing).toBe(100);
   });
 
-  it('does not let float noise register as movement', () => {
-    const comparison = buildQuickComparison(rows({ inventory: 100.1 }), rows({ inventory: 100.1 }));
+  it('returns zeros and no income for an empty result', () => {
+    const statement = buildQuickStatement([], []);
 
-    expect(comparison.hasMovement).toBe(false);
+    expect(statement.assets).toEqual([]);
+    expect(statement.totalAssets).toEqual({ opening: 0, closing: 0, change: 0 });
+    expect(statement.netProfit).toEqual({ opening: 0, closing: 0, change: 0 });
+    expect(statement.hasIncome).toBe(false);
+    expect(statement.hasMovement).toBe(false);
+  });
+
+  it('reports a net loss without clamping it at zero', () => {
+    const rows = [
+      row('revenue', '4000', 'Sales Revenue', 100),
+      row('expense', '5000', 'COGS', 400),
+    ];
+
+    expect(buildQuickStatement(rows, rows).netProfit.closing).toBe(-300);
+  });
+
+  it('keeps each subtotal equal to the sum of its printed lines', () => {
+    const statement = buildQuickStatement(liveRows, liveRows);
+    const sumOf = (lines: Array<{ closing: number }>) =>
+      Math.round(lines.reduce((total, line) => total + line.closing, 0) * 100) / 100;
+
+    expect(statement.totalAssets.closing).toBe(sumOf(statement.assets));
+    expect(statement.totalRevenue.closing).toBe(sumOf(statement.revenues));
+    expect(statement.totalExpenses.closing).toBe(sumOf(statement.expenses));
+  });
+
+  it('rounds every amount to currency precision', () => {
+    const statement = buildQuickStatement(
+      [row('asset', '1200', 'Inventory', '10.004')],
+      [row('asset', '1200', 'Inventory', '10.126')]
+    );
+
+    expect(statement.assets[0].opening).toBe(10);
+    expect(statement.assets[0].closing).toBe(10.13);
+    expect(statement.assets[0].change).toBe(0.13);
   });
 });
