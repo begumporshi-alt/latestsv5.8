@@ -432,6 +432,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
     lines: { name: string; qty: number; cost: number }[];
     saleUpdates: { name: string; before: number; after: number }[];
     costUpdates: { name: string; before: number; after: number; forced?: boolean }[];
+    unitUpdates: { product_id: string; unit_name: string; cost_before: number; cost_after: number; price_before: number; price_after: number }[];
   } | null>(null);
 
   async function selectPO(po: PurchaseOrder) {
@@ -598,6 +599,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         cost_updates?: { name: string; before: number; after: number; forced?: boolean }[];
         sale_price_updates?: { name: string; before: number; after: number }[];
         items?: { product_id: string; quantity_base: number; unit_cost_base: number }[];
+        unit_updates?: { product_id: string; unit_name: string; cost_before: number; cost_after: number; price_before: number; price_after: number }[];
       };
 
       const receivedLines = itemsToReceive.map(([itemId, qty], lineIdx) => {
@@ -621,6 +623,7 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
         lines: receivedLines,
         saleUpdates: result.sale_price_updates || [],
         costUpdates: result.cost_updates || [],
+        unitUpdates: result.unit_updates || [],
       });
       onSaved();
       setSaving(false);
@@ -712,7 +715,26 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
                   </ul>
                 </div>
               )}
-              {savedResult.saleUpdates.length === 0 && savedResult.costUpdates.length === 0 && (
+              {savedResult.unitUpdates.length > 0 && (
+                <div className="p-3 bg-violet-50 rounded-lg">
+                  <p className="text-xs font-semibold text-violet-700 mb-1">Larger-unit prices synced</p>
+                  <ul className="text-sm text-violet-900 space-y-0.5">
+                    {savedResult.unitUpdates.map((u, i) => (
+                      <li key={i}>
+                        <span className="font-medium">
+                          {items.find(it => it.product_id === u.product_id)?.product?.name || 'Product'}
+                        </span>
+                        {' — '}{u.unit_name}: {formatCurrency(Number(u.cost_before))} → {formatCurrency(Number(u.cost_after))} cost
+                        {Number(u.price_before) !== Number(u.price_after) && (
+                          <> · {formatCurrency(Number(u.price_before))} → {formatCurrency(Number(u.price_after))} sale</>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-[11px] text-violet-700/80 mt-1">POS and purchasing read these unit prices, so they stay in step with the product.</p>
+                </div>
+              )}
+              {savedResult.saleUpdates.length === 0 && savedResult.costUpdates.length === 0 && savedResult.unitUpdates.length === 0 && (
                 <p className="text-xs text-muted-foreground text-center">No product prices changed.</p>
               )}
 
