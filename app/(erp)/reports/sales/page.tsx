@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
 import {
   BarChart3,
   Calendar,
@@ -967,9 +966,7 @@ export default function SalesReportPage() {
       </div>
 
       <div className="hidden print:block text-center text-xs text-muted-foreground mt-4">
-        <Link href="/reports" className="no-underline text-muted-foreground">
-          Reports &amp; analytics
-        </Link>
+        Sales report
       </div>
     </>
   );
