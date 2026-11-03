@@ -81,7 +81,7 @@ const quickActions: QuickAction[] = [
   { label: 'New Project', href: '/projects', icon: FolderKanban, bg: 'bg-pink-500', ring: 'ring-pink-200', description: 'Start project', category: 'Projects' },
 
   // Reports
-  { label: 'Reports', href: '/reports', icon: FileBarChart, bg: 'bg-gray-600', ring: 'ring-gray-200', description: 'View reports', category: 'Reports' },
+  { label: 'Sales Report', href: '/reports/sales', icon: FileBarChart, bg: 'bg-gray-600', ring: 'ring-gray-200', description: 'View the sales report', category: 'Reports' },
 
   // Settings
   { label: 'Settings', href: '/settings', icon: Settings, bg: 'bg-neutral-500', ring: 'ring-neutral-200', description: 'System settings', category: 'Settings' },
