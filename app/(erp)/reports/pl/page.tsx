@@ -7,6 +7,8 @@ import { Calendar, Download, Printer, RefreshCw, Building2 } from 'lucide-react'
 
 interface PnLData {
   salesRevenue: number;
+  /** Memo only: the Quick Sell slice already inside salesRevenue. */
+  quickSaleRevenue: number;
   salesReturns: number;
   netSalesRevenue: number;
   otherRevenue: { name: string; amount: number }[];
@@ -33,6 +35,7 @@ export default function PLPage() {
 
   const [data, setData] = useState<PnLData>({
     salesRevenue: 0,
+    quickSaleRevenue: 0,
     salesReturns: 0,
     netSalesRevenue: 0,
     otherRevenue: [],
@@ -109,7 +112,7 @@ export default function PLPage() {
 
     const [invoicesRes, accountsRes] = await Promise.all([
       // Drafts post no journal entries, so they are not revenue yet
-      supabase.from('invoices').select('total_amount, tax_amount, shipping_cost').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled').neq('status', 'draft'),
+      supabase.from('invoices').select('total_amount, tax_amount, shipping_cost, is_quick_sell').gte('invoice_date', startDate).lte('invoice_date', endDate).neq('status', 'cancelled').neq('status', 'draft'),
       supabase.from('accounts').select('id, code, name, account_type'),
     ]);
 
@@ -117,6 +120,14 @@ export default function PLPage() {
     // the GL posts goods sales to 4000, VAT to 2100 and shipping to 4020 (which
     // appears below as its own revenue row), so this matches the ledger.
     const salesRevenue = (invoicesRes.data || []).reduce((s, inv) => s + Number(inv.total_amount) - Number(inv.tax_amount || 0) - Number(inv.shipping_cost || 0), 0);
+
+    // Quick Sell invoices are ordinary invoices, so they were always part of the
+    // figure above — this is a memo slice of it, on the same basis, never an
+    // addition. Reported so the number is visible instead of buried.
+    const quickSaleRevenue = (invoicesRes.data || []).reduce((s, inv) => {
+      if (!inv.is_quick_sell) return s;
+      return s + Number(inv.total_amount) - Number(inv.tax_amount || 0) - Number(inv.shipping_cost || 0);
+    }, 0);
 
     // Helper: sum journal lines for an account within period (DB-side filtering via RPC)
     async function periodNetDebit(accountId: string): Promise<number> {
@@ -205,6 +216,7 @@ export default function PLPage() {
 
     setData({
       salesRevenue,
+      quickSaleRevenue,
       salesReturns,
       netSalesRevenue,
       otherRevenue,
@@ -232,6 +244,7 @@ export default function PLPage() {
       [''],
       ['REVENUE'],
       ['Gross Sales Revenue', data.salesRevenue],
+      ...(data.quickSaleRevenue > 0 ? [['  of which: Quick Sale', data.quickSaleRevenue]] : []),
       ['Less: Sales Returns & Allowances', -data.salesReturns],
       ['Net Sales Revenue', data.netSalesRevenue],
       ...data.otherRevenue.map(r => [r.name, r.amount]),
@@ -278,7 +291,9 @@ export default function PLPage() {
               <div className="space-y-2">
                 <div>
                   <span className="font-semibold block">Sales Revenue</span>
-                  Sum of all non-cancelled invoices in the period (by invoice date).
+                  Sum of all non-cancelled invoices in the period (by invoice date). Quick Sell
+                  invoices are ordinary invoices and are already inside this figure — the
+                  &ldquo;of which: Quick Sale&rdquo; line only breaks them out, it is not added again.
                 </div>
                 <div>
                   <span className="font-semibold block">Sales Returns &amp; Allowances</span>
@@ -365,6 +380,9 @@ export default function PLPage() {
             <table className="w-full text-sm">
               <tbody>
                 <StatementRow label="Gross Sales Revenue" amount={data.salesRevenue} />
+                {data.quickSaleRevenue > 0 && (
+                  <MemoRow label="of which: Quick Sale" amount={data.quickSaleRevenue} />
+                )}
                 {data.salesReturns > 0 && (
                   <StatementRow label="Less: Sales Returns &amp; Allowances" amount={-data.salesReturns} isDeduction />
                 )}
@@ -447,6 +465,21 @@ function StatementRow({ label, amount, isDeduction = false, isBold = false }: { 
         ) : (
           <span className={isBold ? 'text-gray-900 font-bold' : 'text-gray-800'}>{formatCurrency(abs)}</span>
         )}
+      </td>
+    </tr>
+  );
+}
+
+/**
+ * An indent memo line. Visually subordinate and never summed — it breaks down
+ * the row above it rather than adding to the statement.
+ */
+function MemoRow({ label, amount }: { label: string; amount: number }) {
+  return (
+    <tr className="border-b border-gray-100">
+      <td className="py-1.5 pl-8 text-xs italic text-gray-500">{label}</td>
+      <td className="py-1.5 pr-4 text-right text-xs tabular-nums text-gray-500">
+        {formatCurrency(amount)}
       </td>
     </tr>
   );
