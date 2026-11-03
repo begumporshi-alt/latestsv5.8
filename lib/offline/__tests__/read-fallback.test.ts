@@ -39,9 +39,14 @@ jest.mock('../replica-query', () => ({
   runReplicaQuery: jest.fn(),
 }));
 
+jest.mock('../stored-session', () => ({
+  hasStoredSessionUser: jest.fn((): boolean => true),
+}));
+
 import { withOfflineReads, subscribeOfflineMiss } from '../read-fallback';
 import { runReplicaQuery } from '../replica-query';
 import { networkMonitor } from '../network';
+import { hasStoredSessionUser } from '../stored-session';
 
 interface FakeResult {
   data: unknown;
@@ -153,12 +158,14 @@ const OFFLINE = { online: false, lastChangeAt: 0, lastProbeAt: null };
 let getStateSpy: jest.SpyInstance;
 let markOfflineSpy: jest.SpyInstance;
 const mockedReplica = runReplicaQuery as jest.Mock;
+const mockedHasSession = hasStoredSessionUser as jest.Mock;
 
 beforeEach(() => {
   mockedCache.__store.clear();
   mockedCache.cacheGet.mockClear();
   mockedCache.cachePut.mockClear();
   mockedReplica.mockReset(); // default: engine declines → offline notice
+  mockedHasSession.mockReturnValue(true);
   getStateSpy = jest.spyOn(networkMonitor, 'getState');
   markOfflineSpy = jest.spyOn(networkMonitor, 'markOffline').mockImplementation(() => {});
   getStateSpy.mockReturnValue(ONLINE);
@@ -325,6 +332,52 @@ describe('read fallback — offline', () => {
     await (wrapped as any).from('products').insert({ id: 'p9', name: 'New' });
 
     expect(mockedReplica).not.toHaveBeenCalled();
+  });
+
+  test('an expired-JWT error falls back to the cached copy without marking the network offline', async () => {
+    const client = makeFakeClient();
+    const wrapped = withOfflineReads(client as never) as unknown as typeof client;
+
+    // 1) online read caches the result
+    client.stats.next = { data: [{ id: 'c1' }], error: null, count: null, status: 200, statusText: 'OK' };
+    await (wrapped as any).from('customers').select('*');
+
+    // 2) the token has expired and the refresh is failing — PostgREST 401
+    client.stats.next = {
+      data: null,
+      error: { message: 'JWT expired', code: 'PGRST301', details: '', hint: '' },
+      count: null,
+      status: 401,
+      statusText: 'Unauthorized',
+    };
+    const res: any = await (wrapped as any).from('customers').select('*');
+
+    expect(res.data).toEqual([{ id: 'c1' }]);
+    expect(res.offline).toBe(true);
+    expect(markOfflineSpy).not.toHaveBeenCalled(); // transport is fine — auth isn't
+  });
+
+  test('with no usable session record, an online read never goes out anonymous — the cache answers', async () => {
+    const client = makeFakeClient();
+    const wrapped = withOfflineReads(client as never) as unknown as typeof client;
+
+    // 1) online read caches the result
+    client.stats.next = { data: [{ id: 'v1' }], error: null, count: null, status: 200, statusText: 'OK' };
+    await (wrapped as any).from('products').select('*');
+    expect(client.stats.executed).toBe(1);
+
+    // 2) auth-js has since removed the unrefreshable session. The network is
+    // up, but a request now would leave unauthenticated and PostgREST would
+    // answer with an anon-role, RLS-filtered EMPTY 200 — which must never
+    // overwrite the last real copy of the data.
+    mockedHasSession.mockReturnValue(false);
+    client.stats.next = { data: [], error: null, count: 0, status: 200, statusText: 'OK' };
+    const res: any = await (wrapped as any).from('products').select('*');
+
+    expect(client.stats.executed).toBe(1); // only the warm call — nothing went out
+    expect(res.data).toEqual([{ id: 'v1' }]); // cache, not the anon empty set
+    expect(res.offline).toBe(true);
+    expect(mockedCache.cachePut).toHaveBeenCalledTimes(1); // cache not overwritten
   });
 });
 
