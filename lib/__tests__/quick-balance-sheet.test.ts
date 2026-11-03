@@ -8,17 +8,20 @@ const row = (
   section: StatementSection,
   code: string,
   label: string,
-  balance: number | string
-): StatementRow => ({ section, code, label, balance });
+  balance: number | string,
+  sub_amount?: number | string | null
+): StatementRow => ({ section, code, label, balance, sub_amount });
 
-/** The live chart at 2026-11-04, trimmed to what the page actually renders. */
+/**
+ * The live chart at 2026-11-04, trimmed to what the page actually renders.
+ * 4001 Sales Revenue — Manual is excluded by the RPC, so it is absent here too.
+ */
 const liveRows: StatementRow[] = [
   row('asset', '1004', 'Fixed Assets', 1),
   row('asset', '1200', 'Inventory', '11257763.33'),
   row('asset', '1100', 'Accounts Receivable', '2905177.76'),
   row('liability', '2000', 'Accounts Payable', '3309584.27'),
-  row('revenue', '4000', 'Sales Revenue', '10470430.62'),
-  row('revenue', '4001', 'Sales Revenue — Manual (no COGS)', '836883.00'),
+  row('revenue', '4000', 'Sales Revenue', '10470430.62', '673181.00'),
   row('revenue', '4020', 'Shipping Income', '12845.21'),
   row('expense', '4050', 'Sales Returns & Allowances', '49294.40'),
   row('expense', '5000', 'Cost of Goods Sold', '9225828.58'),
@@ -44,7 +47,7 @@ describe('buildQuickStatement — single snapshot', () => {
   it('splits the rows into the four sections', () => {
     expect(statement.assets).toHaveLength(3);
     expect(statement.liabilities).toHaveLength(1);
-    expect(statement.revenues).toHaveLength(3);
+    expect(statement.revenues).toHaveLength(2);
     expect(statement.expenses).toHaveLength(13);
   });
 
@@ -52,9 +55,9 @@ describe('buildQuickStatement — single snapshot', () => {
     expect(statement.totalAssets.closing).toBeCloseTo(14162942.09, 2);
   });
 
-  it('totals every revenue account, not just 4000', () => {
-    // 4000 alone would be 10,470,430.62; 4001 and 4020 add 849,728.21.
-    expect(statement.totalRevenue.closing).toBeCloseTo(11320158.83, 2);
+  it('totals the revenue accounts the RPC returns', () => {
+    // 4000 + 4020. 4001 is excluded by the function, so it is not in the total.
+    expect(statement.totalRevenue.closing).toBeCloseTo(10483275.83, 2);
   });
 
   it('totals expenses across all expense accounts', () => {
@@ -66,7 +69,29 @@ describe('buildQuickStatement — single snapshot', () => {
   });
 
   it('derives net profit as revenue less expenses', () => {
-    expect(statement.netProfit.closing).toBeCloseTo(1410088.56, 2);
+    expect(statement.netProfit.closing).toBeCloseTo(573205.56, 2);
+  });
+
+  it('carries the Quick Sell breakdown on 4000', () => {
+    const sales = statement.revenues.find(line => line.code === '4000')!;
+
+    expect(sales.sub.closing).toBeCloseTo(673181, 2);
+    expect(sales.sub.change).toBe(0);
+  });
+
+  it('leaves the breakdown empty on accounts that have none', () => {
+    const shipping = statement.revenues.find(line => line.code === '4020')!;
+
+    expect(shipping.sub).toEqual({ opening: 0, closing: 0, change: 0 });
+  });
+
+  it('does not add the breakdown into the revenue total', () => {
+    const statement2 = buildQuickStatement(liveRows, liveRows);
+    const sales = statement2.revenues.find(line => line.code === '4000')!;
+
+    // sub is a slice of `closing`, never an extra amount.
+    expect(sales.sub.closing).toBeLessThan(sales.closing);
+    expect(statement2.totalRevenue.closing).toBeCloseTo(10483275.83, 2);
   });
 
   it('reports no movement when both snapshots are the same', () => {
@@ -126,6 +151,20 @@ describe('buildQuickStatement — window', () => {
     expect(statement.totalRevenue.change).toBe(600);
     expect(statement.totalExpenses.change).toBe(200);
     expect(statement.netProfit.change).toBe(400);
+  });
+
+  it('tracks the breakdown movement across the window', () => {
+    const statement = buildQuickStatement(
+      [row('revenue', '4000', 'Sales Revenue', 1000, 400)],
+      [row('revenue', '4000', 'Sales Revenue', 1300, 520)]
+    );
+
+    const sales = statement.revenues[0];
+    expect(sales.sub.opening).toBe(400);
+    expect(sales.sub.closing).toBe(520);
+    expect(sales.sub.change).toBe(120);
+    // The line's own change is 300; the quick-sale slice is 120 of it.
+    expect(sales.change).toBe(300);
   });
 
   it('carries an account that exists only at the end', () => {

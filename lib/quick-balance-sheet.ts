@@ -7,6 +7,8 @@ export interface StatementRow {
   code: string;
   label: string;
   balance: number | string;
+  /** Optional breakdown of `balance` — on 4000 it carries the Quick Sell share. */
+  sub_amount?: number | string | null;
 }
 
 /** A single amount, or the same amount at both ends of a window. */
@@ -20,6 +22,8 @@ export interface StatementLine extends LineAmounts {
   section: StatementSection;
   code: string;
   label: string;
+  /** Same three figures for the breakdown inside `balance`, when the row has one. */
+  sub: LineAmounts;
 }
 
 export interface QuickStatement {
@@ -91,16 +95,30 @@ export function buildQuickStatement(
   openRows: StatementRow[],
   closeRows: StatementRow[]
 ): QuickStatement {
-  const opening = new Map<string, { row: StatementRow; amount: number }>();
-  const closing = new Map<string, { row: StatementRow; amount: number }>();
+  const opening = new Map<string, { row: StatementRow; amount: number; sub: number }>();
+  const closing = new Map<string, { row: StatementRow; amount: number; sub: number }>();
+
+  const subOf = (row: StatementRow): number => {
+    const raw = row.sub_amount;
+    if (raw === null || raw === undefined) return 0;
+    return round2(num(raw));
+  };
 
   for (const row of openRows) {
     if (!isSection(row.section)) continue;
-    opening.set(`${row.section}:${row.code}`, { row, amount: round2(num(row.balance)) });
+    opening.set(`${row.section}:${row.code}`, {
+      row,
+      amount: round2(num(row.balance)),
+      sub: subOf(row),
+    });
   }
   for (const row of closeRows) {
     if (!isSection(row.section)) continue;
-    closing.set(`${row.section}:${row.code}`, { row, amount: round2(num(row.balance)) });
+    closing.set(`${row.section}:${row.code}`, {
+      row,
+      amount: round2(num(row.balance)),
+      sub: subOf(row),
+    });
   }
 
   const keys = new Set([...opening.keys(), ...closing.keys()]);
@@ -113,6 +131,8 @@ export function buildQuickStatement(
     const source = close?.row ?? open!.row;
     const openingAmount = open?.amount ?? 0;
     const closingAmount = close?.amount ?? 0;
+    const openingSub = open?.sub ?? 0;
+    const closingSub = close?.sub ?? 0;
 
     lines.push({
       section: source.section as StatementSection,
@@ -121,6 +141,11 @@ export function buildQuickStatement(
       opening: openingAmount,
       closing: closingAmount,
       change: round2(closingAmount - openingAmount),
+      sub: {
+        opening: openingSub,
+        closing: closingSub,
+        change: round2(closingSub - openingSub),
+      },
     });
   }
 
