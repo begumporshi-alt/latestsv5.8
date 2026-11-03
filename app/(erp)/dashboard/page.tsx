@@ -19,6 +19,7 @@ import {
 } from 'recharts';
 import { ShoppingCart, TrendingUp, Package, Truck, Receipt, CreditCard, ArrowUpRight, Clock, CircleCheck as CheckCircle2, Circle as XCircle, Users, ShoppingBag, Wallet, Plus, Banknote, X, Search, ChevronDown, RefreshCw, TriangleAlert as AlertTriangle } from 'lucide-react';
 import AppPagination from '@/components/ui/AppPagination';
+import { LoadingWave, StatValueSlot, LoadingRows, LoadingChart, LoadingDonut } from '@/components/ui/loading-wave';
 
 const deliveryStatusConfig = {
   pending: { label: 'Pending', color: 'text-orange-500', bg: 'bg-orange-50', icon: Clock },
@@ -73,20 +74,42 @@ export default function DashboardPage() {
     }
   }
 
-  // A KPI whose source has not resolved yet shows an em dash rather than
-  // ৳0.00 — a zero is a claim about the business, a dash is a claim about the
-  // request. `isSuccess` (not `isLoading`) so a background refetch never
-  // blanks a figure that is already on screen.
-  const ready = overview.isSuccess;
-  const kpis = [
-    { label: "Today's Sales", value: ready ? formatCurrency(stats.todaySales) : '—', icon: ShoppingCart, bg: 'bg-blue-50', color: 'text-blue-500' },
-    { label: "Today's Collection", value: ready ? formatCurrency(stats.todayCollection) : '—', icon: Banknote, bg: 'bg-emerald-50', color: 'text-emerald-500' },
-    { label: 'Monthly Revenue', value: ready ? formatCurrency(stats.monthlySales) : '—', icon: TrendingUp, bg: 'bg-green-50', color: 'text-green-500' },
-    { label: 'Inventory Value', value: inventoryValue != null ? formatCurrency(inventoryValue) : '—', icon: Package, bg: 'bg-purple-50', color: 'text-purple-500' },
-    { label: 'Pending Deliveries', value: ready ? String(stats.deliveryPending + stats.deliveryInTransit) : '—', icon: Truck, bg: 'bg-orange-50', color: 'text-orange-500' },
-    { label: 'Receivables', value: ready ? formatCurrency(stats.receivables) : '—', icon: Receipt, bg: 'bg-red-50', color: 'text-red-500', clickable: true, modal: 'receivables' as const },
-    { label: 'Payables', value: ready ? formatCurrency(stats.payables) : '—', icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500', clickable: true, modal: 'payables' as const },
-    { label: 'Total Expenses', value: ready ? formatCurrency(stats.totalExpenses) : '—', icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500', clickable: true, modal: 'expenses' as const },
+  // A KPI whose source has not resolved yet shows a moving placeholder rather
+  // than ৳0.00 — a zero is a claim about the business, a placeholder is a claim
+  // about the request. `isSuccess` (not `isLoading`) so a background refetch
+  // never blanks a figure that is already on screen, and `isPending` drives the
+  // animation only while there is genuinely nothing to show: once a query has
+  // settled without a figure (error, or a valuation that failed) the card falls
+  // back to an em dash, because a wave that never stops would be a lie.
+  const overviewPending = overview.isPending;
+  const overviewReady = overview.isSuccess;
+  const inventoryPending = inventory.isPending;
+  const chartsPending = charts.isPending;
+  // Distinguishes "the query came back empty" from "the query never came back".
+  // Printing "No outstanding invoice dues" over a failed request is the same
+  // false claim as printing ৳0.00 over one.
+  const overviewFailed = overview.isError;
+  const chartsFailed = charts.isError;
+
+  const kpis: {
+    label: string;
+    value: string;
+    loading: boolean;
+    waveWidth: string;
+    icon: React.ElementType;
+    bg: string;
+    color: string;
+    clickable?: boolean;
+    modal?: 'receivables' | 'payables' | 'expenses';
+  }[] = [
+    { label: "Today's Sales", value: overviewReady ? formatCurrency(stats.todaySales) : '—', loading: overviewPending, waveWidth: '52%', icon: ShoppingCart, bg: 'bg-blue-50', color: 'text-blue-500' },
+    { label: "Today's Collection", value: overviewReady ? formatCurrency(stats.todayCollection) : '—', loading: overviewPending, waveWidth: '46%', icon: Banknote, bg: 'bg-emerald-50', color: 'text-emerald-500' },
+    { label: 'Monthly Revenue', value: overviewReady ? formatCurrency(stats.monthlySales) : '—', loading: overviewPending, waveWidth: '66%', icon: TrendingUp, bg: 'bg-green-50', color: 'text-green-500' },
+    { label: 'Inventory Value', value: inventoryValue != null ? formatCurrency(inventoryValue) : '—', loading: inventoryPending, waveWidth: '58%', icon: Package, bg: 'bg-purple-50', color: 'text-purple-500' },
+    { label: 'Pending Deliveries', value: overviewReady ? String(stats.deliveryPending + stats.deliveryInTransit) : '—', loading: overviewPending, waveWidth: '18%', icon: Truck, bg: 'bg-orange-50', color: 'text-orange-500' },
+    { label: 'Receivables', value: overviewReady ? formatCurrency(stats.receivables) : '—', loading: overviewPending, waveWidth: '56%', icon: Receipt, bg: 'bg-red-50', color: 'text-red-500', clickable: true, modal: 'receivables' },
+    { label: 'Payables', value: overviewReady ? formatCurrency(stats.payables) : '—', loading: overviewPending, waveWidth: '52%', icon: CreditCard, bg: 'bg-amber-50', color: 'text-amber-500', clickable: true, modal: 'payables' },
+    { label: 'Total Expenses', value: overviewReady ? formatCurrency(stats.totalExpenses) : '—', loading: overviewPending, waveWidth: '60%', icon: Wallet, bg: 'bg-rose-50', color: 'text-rose-500', clickable: true, modal: 'expenses' },
   ];
 
   return (
@@ -122,16 +145,26 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {kpis.map((kpi) => (
+        {kpis.map((kpi, i) => (
           <div
             key={kpi.label}
-            onClick={(kpi as any).clickable ? () => (kpi as any).modal === 'receivables' ? setShowReceivablesModal(true) : (kpi as any).modal === 'payables' ? setShowPayablesModal(true) : setShowExpensesModal(true) : undefined}
-            className={`stat-card group ${(kpi as any).clickable ? 'cursor-pointer hover:ring-2 hover:ring-blue-500/20 hover:shadow-md transition-all' : 'cursor-default'}`}
+            aria-busy={kpi.loading || undefined}
+            onClick={kpi.clickable ? () => kpi.modal === 'receivables' ? setShowReceivablesModal(true) : kpi.modal === 'payables' ? setShowPayablesModal(true) : setShowExpensesModal(true) : undefined}
+            className={`stat-card group ${kpi.clickable ? 'cursor-pointer hover:ring-2 hover:ring-blue-500/20 hover:shadow-md transition-all' : 'cursor-default'}`}
           >
             <div className="flex items-start justify-between mb-2">
-              <div>
+              <div className="min-w-0 flex-1">
                 <p className="text-xs text-muted-foreground font-medium">{kpi.label}</p>
-                <p className="text-xl font-bold text-foreground mt-0.5">{kpi.value}</p>
+                <StatValueSlot>
+                  {kpi.loading ? (
+                    <>
+                      <LoadingWave width={kpi.waveWidth} delayMs={i * 110} />
+                      <span className="sr-only">Loading</span>
+                    </>
+                  ) : (
+                    <p className="text-xl font-bold text-foreground">{kpi.value}</p>
+                  )}
+                </StatValueSlot>
               </div>
               <div className={`w-10 h-10 ${kpi.bg} rounded-full flex items-center justify-center shrink-0`}>
                 <kpi.icon className={`w-5 h-5 ${kpi.color}`} />
@@ -177,22 +210,30 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold text-foreground">Sales Overview</h3>
           </div>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={salesChartData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
-              <YAxis width={78} tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => formatAxisCurrency(Number(v))} />
-              <Legend verticalAlign="top" height={24} iconType="circle" wrapperStyle={{ fontSize: 11 }} />
-              <Tooltip contentStyle={{ fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8 }} formatter={(v: number, name: string) => [formatCurrency(v), name]} />
-              <Line type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2.5} dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }} name="Sales" />
-              <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} dot={{ r: 3, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }} name="Gross Profit" />
-            </LineChart>
-          </ResponsiveContainer>
+          {chartsPending ? (
+            <LoadingChart height={240} />
+          ) : chartsFailed ? (
+            <div className="flex h-[240px] items-center justify-center text-sm text-muted-foreground">{"Couldn't load sales"}</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <LineChart data={salesChartData} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                <YAxis width={78} tick={{ fontSize: 10, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={(v) => formatAxisCurrency(Number(v))} />
+                <Legend verticalAlign="top" height={24} iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                <Tooltip contentStyle={{ fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8 }} formatter={(v: number, name: string) => [formatCurrency(v), name]} />
+                <Line type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2.5} dot={{ r: 4, fill: '#3b82f6', strokeWidth: 2, stroke: '#fff' }} name="Sales" />
+                <Line type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={2} dot={{ r: 3, fill: '#10b981', strokeWidth: 2, stroke: '#fff' }} name="Gross Profit" />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         <div className="lg:col-span-2 bg-white rounded-xl border border-border p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-foreground mb-4">Inventory by Category</h3>
-          {categoryData.length > 0 ? (
+          {chartsPending ? (
+            <LoadingDonut delayMs={60} />
+          ) : categoryData.length > 0 ? (
             <div className="flex items-center gap-4">
               <ResponsiveContainer width={140} height={140}>
                 <PieChart>
@@ -215,7 +256,9 @@ export default function DashboardPage() {
               </div>
             </div>
           ) : (
-            <div className="text-center text-muted-foreground py-8">No category data</div>
+            <div className="text-center text-muted-foreground py-8">
+              {chartsFailed ? "Couldn't load categories" : 'No category data'}
+            </div>
           )}
         </div>
       </div>
@@ -227,7 +270,7 @@ export default function DashboardPage() {
             <Link href="/delivery" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-2.5">
-            {Object.entries(deliveryStatusConfig).map(([key, cfg]) => (
+            {Object.entries(deliveryStatusConfig).map(([key, cfg], i) => (
               <div key={key} className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
                   <div className={`w-7 h-7 ${cfg.bg} rounded-lg flex items-center justify-center`}>
@@ -235,9 +278,13 @@ export default function DashboardPage() {
                   </div>
                   <span className="text-sm text-foreground">{cfg.label}</span>
                 </div>
-                <span className={`text-sm font-bold ${cfg.color}`}>
-                  {stats[`delivery${key.charAt(0).toUpperCase() + key.slice(1)}` as keyof typeof stats] || 0}
-                </span>
+                {overviewPending ? (
+                  <LoadingWave width="26px" delayMs={i * 90} />
+                ) : (
+                  <span className={`text-sm font-bold ${cfg.color}`}>
+                    {overviewFailed ? '—' : stats[`delivery${key.charAt(0).toUpperCase() + key.slice(1)}` as keyof typeof stats] || 0}
+                  </span>
+                )}
               </div>
             ))}
           </div>
@@ -249,17 +296,23 @@ export default function DashboardPage() {
             <Link href="/crm" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-2.5">
-            {(topCustomers.length > 0 ? topCustomers : []).slice(0, 5).map((c) => (
-              <div key={c.id} className="flex items-center justify-between">
-                <Link href={`/crm/${c.id}`} className="flex items-center gap-2 hover:opacity-80 transition">
-                  <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 text-xs font-bold">
-                    {c.name[0]}
-                  </div>
-                  <span className="text-sm text-foreground truncate max-w-[110px]">{c.name}</span>
-                </Link>
-                <span className="text-sm font-semibold text-foreground">{formatCurrency(c.total_purchases)}</span>
-              </div>
-            ))}
+            {overviewPending ? (
+              <LoadingRows rows={5} leading="avatar" trailing startDelay={40} />
+            ) : overviewFailed ? (
+              <p className="text-xs text-muted-foreground py-2">{"Couldn't load customers"}</p>
+            ) : (
+              topCustomers.slice(0, 5).map((c) => (
+                <div key={c.id} className="flex items-center justify-between">
+                  <Link href={`/crm/${c.id}`} className="flex items-center gap-2 hover:opacity-80 transition">
+                    <div className="w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center text-blue-600 text-xs font-bold">
+                      {c.name[0]}
+                    </div>
+                    <span className="text-sm text-foreground truncate max-w-[110px]">{c.name}</span>
+                  </Link>
+                  <span className="text-sm font-semibold text-foreground">{formatCurrency(c.total_purchases)}</span>
+                </div>
+              ))
+            )}
           </div>
         </div>
 
@@ -269,13 +322,17 @@ export default function DashboardPage() {
             <Link href="/sales" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-2.5">
-            {invoiceDues.length > 0 ? invoiceDues.map((c) => (
+            {overviewPending ? (
+              <LoadingRows rows={4} trailing startDelay={80} />
+            ) : invoiceDues.length > 0 ? invoiceDues.map((c) => (
               <div key={c.id} className="flex items-center justify-between">
                 <Link href={`/crm/${c.id}`} className="text-sm text-foreground truncate max-w-[130px] hover:text-blue-600 transition">{c.name}</Link>
                 <span className="text-sm font-semibold text-red-600">{formatCurrency(c.due)}</span>
               </div>
             )) : (
-              <p className="text-xs text-muted-foreground py-2">No outstanding invoice dues</p>
+              <p className="text-xs text-muted-foreground py-2">
+                {overviewFailed ? "Couldn't load invoice dues" : 'No outstanding invoice dues'}
+              </p>
             )}
           </div>
         </div>
@@ -288,21 +345,27 @@ export default function DashboardPage() {
             <Link href="/inventory" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-3">
-            {(lowStockItems.length > 0 ? lowStockItems : []).map((item: any, i: number) => (
-              <div key={i} className="flex items-center gap-3">
-                <div className="w-9 h-9 bg-slate-100 rounded-lg flex items-center justify-center shrink-0">
-                  <Package className="w-4 h-4 text-slate-400" />
+            {overviewPending ? (
+              <LoadingRows rows={3} leading="thumb" lines={2} trailing startDelay={120} />
+            ) : overviewFailed ? (
+              <p className="text-xs text-muted-foreground py-2">{"Couldn't load stock alerts"}</p>
+            ) : (
+              lowStockItems.map((item: any, i: number) => (
+                <div key={i} className="flex items-center gap-3">
+                  <div className="w-9 h-9 bg-slate-100 rounded-lg flex items-center justify-center shrink-0">
+                    <Package className="w-4 h-4 text-slate-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-foreground leading-snug break-words">{item.product?.name}</p>
+                    <p className="text-[10px] text-muted-foreground">SKU: {item.product?.sku}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-xs font-bold text-red-500">{item.quantity_on_hand} pcs</p>
+                    <p className="text-[10px] text-muted-foreground">Min: {item.product?.min_stock_level}</p>
+                  </div>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-foreground leading-snug break-words">{item.product?.name}</p>
-                  <p className="text-[10px] text-muted-foreground">SKU: {item.product?.sku}</p>
-                </div>
-                <div className="text-right shrink-0">
-                  <p className="text-xs font-bold text-red-500">{item.quantity_on_hand} pcs</p>
-                  <p className="text-[10px] text-muted-foreground">Min: {item.product?.min_stock_level}</p>
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
 
@@ -312,13 +375,19 @@ export default function DashboardPage() {
             <Link href="/reports/activity" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-3">
-            {recentActivities.length === 0 ? (
+            {overviewPending ? (
+              <LoadingRows rows={4} leading="icon" lines={2} startDelay={160} />
+            ) : recentActivities.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-6 text-center">
                 <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center mb-2">
                   <Clock className="w-4 h-4 text-muted-foreground" />
                 </div>
-                <p className="text-xs text-muted-foreground">No recent activity yet</p>
-                <p className="text-[10px] text-muted-foreground/70 mt-0.5">Activity will appear as you use the system</p>
+                <p className="text-xs text-muted-foreground">
+                  {overviewFailed ? "Couldn't load activity" : 'No recent activity yet'}
+                </p>
+                {!overviewFailed && (
+                  <p className="text-[10px] text-muted-foreground/70 mt-0.5">Activity will appear as you use the system</p>
+                )}
               </div>
             ) : recentActivities.slice(0, 5).map((log: any, i: number) => {
               const cfg = activityIcons[log.entity_type] || activityIcons.invoice;
@@ -343,13 +412,17 @@ export default function DashboardPage() {
             <Link href="/accounting" className="text-xs text-blue-600 hover:underline font-medium">View all</Link>
           </div>
           <div className="space-y-2.5">
-            {manualDues.length > 0 ? manualDues.map((c) => (
+            {overviewPending ? (
+              <LoadingRows rows={4} trailing startDelay={200} />
+            ) : manualDues.length > 0 ? manualDues.map((c) => (
               <div key={c.id} className="flex items-center justify-between">
                 <Link href={`/crm/${c.id}`} className="text-sm text-foreground truncate max-w-[130px] hover:text-blue-600 transition">{c.name}</Link>
                 <span className="text-sm font-semibold text-red-600">{formatCurrency(c.due)}</span>
               </div>
             )) : (
-              <p className="text-xs text-muted-foreground py-2">No outstanding manual dues</p>
+              <p className="text-xs text-muted-foreground py-2">
+                {overviewFailed ? "Couldn't load manual dues" : 'No outstanding manual dues'}
+              </p>
             )}
           </div>
         </div>
@@ -361,22 +434,28 @@ export default function DashboardPage() {
           <Link href="/online-store" className="text-xs text-blue-600 hover:underline font-medium">View Dashboard</Link>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="bg-muted/40 rounded-xl p-4 text-center">
-            <p className="text-xs text-muted-foreground mb-1">Orders This Month</p>
-            <p className="text-lg font-bold text-foreground">{stats.onlineOrders}</p>
-          </div>
-          <div className="bg-muted/40 rounded-xl p-4 text-center">
-            <p className="text-xs text-muted-foreground mb-1">Revenue This Month</p>
-            <p className="text-lg font-bold text-foreground">{formatCurrency(stats.onlineRevenue)}</p>
-          </div>
-          <div className="bg-muted/40 rounded-xl p-4 text-center">
-            <p className="text-xs text-muted-foreground mb-1">Pending Deliveries</p>
-            <p className="text-lg font-bold text-foreground">{stats.deliveryPending + stats.deliveryInTransit}</p>
-          </div>
-          <div className="bg-muted/40 rounded-xl p-4 text-center">
-            <p className="text-xs text-muted-foreground mb-1">Monthly Expenses</p>
-            <p className="text-lg font-bold text-foreground">{formatCurrency(stats.totalExpenses)}</p>
-          </div>
+          {[
+            { label: 'Orders This Month', value: String(stats.onlineOrders), width: '16%' },
+            { label: 'Revenue This Month', value: formatCurrency(stats.onlineRevenue), width: '46%' },
+            { label: 'Pending Deliveries', value: String(stats.deliveryPending + stats.deliveryInTransit), width: '18%' },
+            { label: 'Monthly Expenses', value: formatCurrency(stats.totalExpenses), width: '44%' },
+          ].map((cell, i) => (
+            <div
+              key={cell.label}
+              aria-busy={overviewPending || undefined}
+              className="bg-muted/40 rounded-xl p-4 text-center"
+            >
+              <p className="text-xs text-muted-foreground mb-1">{cell.label}</p>
+              {overviewPending ? (
+                <div className="flex h-7 items-center justify-center">
+                  <LoadingWave width={cell.width} delayMs={i * 130} />
+                  <span className="sr-only">Loading</span>
+                </div>
+              ) : (
+                <p className="text-lg font-bold text-foreground">{cell.value}</p>
+              )}
+            </div>
+          ))}
         </div>
       </div>
 
