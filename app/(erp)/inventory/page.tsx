@@ -23,6 +23,8 @@ import { CACHE_KEYS } from '@/lib/offline/keys';
 import { readData } from '@/lib/offline/read-result';
 import { enqueueOp } from '@/lib/offline/outbox';
 import ProductModal from '@/components/ProductModal';
+import ProductBreakdown from '@/components/ProductBreakdown';
+import { matchesProductGroup, STOCK_STATUS_LABELS, UNASSIGNED_GROUP, type BreakdownSelection } from '@/lib/product-breakdown';
 import { StockAdjustmentModal } from '@/components/StockAdjustmentModal';
 import SearchableSelect from '@/components/ui/SearchableSelect';
 import {
@@ -159,6 +161,7 @@ export default function InventoryPage() {
   const [filterBrand, setFilterBrand] = useState('');
   const [filterWarehouse, setFilterWarehouse] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [breakdownSelection, setBreakdownSelection] = useState<BreakdownSelection | null>(null);
   const [filterColor, setFilterColor] = useState('');
   const [filterSize, setFilterSize] = useState('');
   const [filterUnit, setFilterUnit] = useState('');
@@ -370,16 +373,13 @@ export default function InventoryPage() {
       // total matches the "Total Products" card, which counts active only. The
       // Status filter's "Inactive" option is the single way back to them.
       const matchActive = filterStatus === 'inactive' ? p.is_active === false : p.is_active !== false;
-      const matchCat = !filterCategory || p.category_id === filterCategory;
-      const matchBrand = !filterBrand || p.brand_id === filterBrand;
-      const matchWarehouse = !filterWarehouse || (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0) > 0;
+      const matchCat = matchesProductGroup(p, 'category', filterCategory, inventoryByWarehouse);
+      const matchBrand = matchesProductGroup(p, 'brand', filterBrand, inventoryByWarehouse);
+      const matchWarehouse = matchesProductGroup(p, 'warehouse', filterWarehouse, inventoryByWarehouse);
       const matchStockTracking = !filterNonStockOnly ? true : (p as any).track_inventory === false;
       const matchStatus = !filterStatus || (
-        filterStatus === 'negative' ? (p.total_stock || 0) < 0 :
-        filterStatus === 'low' ? (p.total_stock || 0) <= p.min_stock_level && (p.total_stock || 0) > 0 :
-        filterStatus === 'out' ? (p.total_stock || 0) === 0 :
+        Object.hasOwn(STOCK_STATUS_LABELS, filterStatus) ? matchesProductGroup(p, 'status', filterStatus, inventoryByWarehouse) :
         filterStatus === 'sold_out' ? (p.total_stock || 0) === 0 && (p.total_sold || 0) > 0 :
-        filterStatus === 'ok' ? (p.total_stock || 0) > p.min_stock_level :
         filterStatus === 'has_stock' ? (p.total_stock || 0) > 0 : true
       );
       const matchColor = !filterColor || p.product_colors?.some(c => c.name === filterColor);
@@ -421,11 +421,12 @@ export default function InventoryPage() {
   };
   // Warehouse-scoped readouts: with a warehouse filter active, count only that
   // warehouse's stock and FIFO value, not the product's all-warehouse totals.
-  const filteredStock = useMemo(() => filterWarehouse
-    ? filtered.reduce((sum, p) => sum + (inventoryByWarehouse[p.id]?.[filterWarehouse] || 0), 0)
-    : filtered.reduce((sum, p) => sum + (p.total_stock || 0), 0), [filtered, filterWarehouse, inventoryByWarehouse]);
-  const filteredValue = useMemo(() => filterWarehouse
-    ? filtered.reduce((sum, p) => sum + pairFifoValue(p.id, filterWarehouse, Number(p.cost_price || 0)), 0)
+  const scopedWarehouse = filterWarehouse === UNASSIGNED_GROUP ? '' : filterWarehouse;
+  const filteredStock = useMemo(() => scopedWarehouse
+    ? filtered.reduce((sum, p) => sum + (inventoryByWarehouse[p.id]?.[scopedWarehouse] || 0), 0)
+    : filtered.reduce((sum, p) => sum + (p.total_stock || 0), 0), [filtered, scopedWarehouse, inventoryByWarehouse]);
+  const filteredValue = useMemo(() => scopedWarehouse
+    ? filtered.reduce((sum, p) => sum + pairFifoValue(p.id, scopedWarehouse, Number(p.cost_price || 0)), 0)
     : filtered.reduce((sum, p) => {
         let value = fifoValueMap[p.id] || 0;
         for (const wid of Object.keys(inventoryByWarehouse[p.id] || {})) {
@@ -434,7 +435,7 @@ export default function InventoryPage() {
           }
         }
         return sum + value;
-      }, 0), [filtered, filterWarehouse, fifoValueMap, inventoryByWarehouse]);
+      }, 0), [filtered, scopedWarehouse, fifoValueMap, inventoryByWarehouse]);
 
   // Value carried by one product: product-level FIFO layers plus qty × cost_price
   // for pairs with no layer. Same formula as the "Filtered value" chip, so a
@@ -463,9 +464,18 @@ export default function InventoryPage() {
     return <span className="badge-status bg-green-50 text-green-600">In Stock</span>;
   }
 
-  // A filtered-to-nothing result is not an empty catalogue, so the empty row
-  // offers a way back instead of just stating a fact about the business.
+  function selectBreakdown(selection: BreakdownSelection) {
+    clearFilters();
+    setBreakdownSelection(selection);
+    if (selection.dimension === 'category') setFilterCategory(selection.key);
+    if (selection.dimension === 'brand') setFilterBrand(selection.key);
+    if (selection.dimension === 'status') setFilterStatus(selection.key);
+    if (selection.dimension === 'warehouse') setFilterWarehouse(selection.key);
+    setPage(1);
+  }
+
   function clearFilters() {
+    setBreakdownSelection(null);
     setSearch('');
     setFilterCategory('');
     setFilterBrand('');
@@ -566,8 +576,20 @@ export default function InventoryPage() {
     }
   }
 
-  // "Nothing on screen yet" is a different condition from "a fetch is running".
-  // Only the first needs a skeleton; the second must leave the rows alone.
+  const categoryOptions = [
+    { value: '', label: 'All Categories' },
+    { value: UNASSIGNED_GROUP, label: 'Uncategorized' },
+    ...categories.filter(c => !c.parent_id).flatMap(c => [
+      { value: c.id, label: c.name, group: c.name },
+      ...categories.filter(sc => sc.parent_id === c.id).map(sc => ({ value: sc.id, label: `  ${sc.name}`, group: c.name })),
+    ]),
+  ];
+  if (breakdownSelection?.dimension === 'category' && !categoryOptions.some(option => option.value === breakdownSelection.key)) {
+    categoryOptions.push({ value: breakdownSelection.key, label: breakdownSelection.label });
+  }
+  const selectedBreakdownVisible = breakdownSelection && ({
+    category: filterCategory, brand: filterBrand, status: filterStatus, warehouse: filterWarehouse,
+  })[breakdownSelection.dimension] === breakdownSelection.key;
   const firstLoad = loading && !hasData;
   const pagedStart = filtered.length === 0 ? 0 : (page - 1) * pageSize + 1;
   const pagedEnd = Math.min(page * pageSize, filtered.length);
@@ -632,15 +654,13 @@ export default function InventoryPage() {
           { label: 'Low Stock', value: stats.lowStock, waveWidth: '26px', icon: AlertTriangle, color: 'text-amber-500 bg-amber-50' },
           { label: 'Out of Stock', value: stats.outOfStock, waveWidth: '26px', icon: TrendingDown, color: 'text-red-500 bg-red-50' },
           { label: 'Inventory Value', value: formatCurrency(stats.value), waveWidth: '118px', icon: BarChart3, color: 'text-green-500 bg-green-50' },
-        ].map((s, i) => (
-          <div key={s.label} className="stat-card flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${s.color}`}>
-              <s.icon className="w-5 h-5" />
+        ].map((s, i) => {
+          const content = <>
+            <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center ${s.color}`}>
+              <s.icon className="w-5 h-5" aria-hidden="true" />
             </div>
             <div className="min-w-0">
               <p className="text-xs text-muted-foreground">{s.label}</p>
-              {/* Same 28px line box as `text-lg`, so the card measures 84px in
-                  all three states and the row never shifts. */}
               <div className="flex h-7 items-center">
                 {hasData ? (
                   <p className="text-lg font-bold text-foreground">{s.value}</p>
@@ -651,8 +671,16 @@ export default function InventoryPage() {
                 )}
               </div>
             </div>
-          </div>
-        ))}
+          </>;
+          return i === 0 ? (
+            <ProductBreakdown key={s.label} products={products} stock={inventoryByWarehouse} warehouses={warehouses} categories={categories} brands={brands} stale={dataStale || loadFailed} onSelect={selectBreakdown}>
+              <button type="button" disabled={!hasData} aria-label={`Total Products: ${hasData ? stats.total : 'unavailable'}. View breakdown`} className="stat-card group flex items-center gap-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60">
+                {content}
+                <ChevronRight aria-hidden="true" className="ml-auto h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary" />
+              </button>
+            </ProductBreakdown>
+          ) : <div key={s.label} className="stat-card flex items-center gap-3">{content}</div>;
+        })}
       </div>
 
       <div className="bg-white rounded-xl border border-border p-4 shadow-sm flex flex-wrap gap-3">
@@ -670,24 +698,28 @@ export default function InventoryPage() {
           onChange={setFilterCategory}
           placeholder="All Categories"
           className="min-w-[150px]"
-          options={[
-            { value: '', label: 'All Categories' },
-            ...categories.filter(c => !c.parent_id).flatMap(c => [
-              { value: c.id, label: c.name, group: c.name },
-              ...categories.filter(sc => sc.parent_id === c.id).map(sc => ({ value: sc.id, label: `  ${sc.name}`, group: c.name })),
-            ]),
-          ]}
+          options={categoryOptions}
         />
         <SearchableSelect
           value={filterBrand}
           onChange={setFilterBrand}
           placeholder="All Brands"
           className="min-w-[130px]"
-          options={[{ value: '', label: 'All Brands' }, ...brands.map(b => ({ value: b.id, label: b.name }))]}
+          options={[
+            { value: '', label: 'All Brands' },
+            { value: UNASSIGNED_GROUP, label: 'No brand' },
+            ...brands.map(b => ({ value: b.id, label: b.name })),
+            ...(breakdownSelection?.dimension === 'brand' && breakdownSelection.key !== UNASSIGNED_GROUP && !brands.some(b => b.id === breakdownSelection.key)
+              ? [{ value: breakdownSelection.key, label: breakdownSelection.label }] : []),
+          ]}
         />
         <select value={filterWarehouse} onChange={e => setFilterWarehouse(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
           <option value="">All Warehouses</option>
+          <option value={UNASSIGNED_GROUP}>No positive warehouse stock</option>
           {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+          {breakdownSelection?.dimension === 'warehouse' && breakdownSelection.key !== UNASSIGNED_GROUP && !warehouses.some(w => w.id === breakdownSelection.key) && (
+            <option value={breakdownSelection.key}>{breakdownSelection.label}</option>
+          )}
         </select>
         <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20">
           <option value="">All Status</option>
@@ -743,9 +775,13 @@ export default function InventoryPage() {
         </button>
       </div>
 
-      {/* Rendered before the data lands, with a dash where each number goes:
-          hiding the row would drop the table by its own height when it
-          appears, and printing zeros would claim an empty catalogue. */}
+      {selectedBreakdownVisible && breakdownSelection && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm" role="status">
+          <span className="capitalize text-muted-foreground">{breakdownSelection.dimension}:</span>
+          <span className="font-medium">{breakdownSelection.label}</span>
+          <button type="button" onClick={clearFilters} className="ml-auto inline-flex min-h-9 items-center gap-1 rounded-md px-2 text-primary hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><X className="h-3.5 w-3.5" aria-hidden="true" /> Clear filters</button>
+        </div>
+      )}
       <div className="flex items-center gap-4 flex-wrap text-sm">
         <span className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg font-medium">
           <Boxes className="w-4 h-4" />
