@@ -23,6 +23,7 @@ import { CACHE_KEYS } from '@/lib/offline/keys';
 import { readData } from '@/lib/offline/read-result';
 import { enqueueOp } from '@/lib/offline/outbox';
 import ProductModal from '@/components/ProductModal';
+import { StockAdjustmentModal } from '@/components/StockAdjustmentModal';
 import SearchableSelect from '@/components/ui/SearchableSelect';
 import {
   COLUMN_BY_KEY,
@@ -169,8 +170,9 @@ export default function InventoryPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState<ProductWithStock | null>(null);
   const [deletingProduct, setDeletingProduct] = useState<ProductWithStock | null>(null);
-  // One or many products whose remaining stock is being written off.
-  const [writeOffTargets, setWriteOffTargets] = useState<ProductWithStock[] | null>(null);
+  // One product whose stock is being corrected or written off (typed reason,
+  // per-warehouse partial quantities).
+  const [adjustmentProduct, setAdjustmentProduct] = useState<ProductWithStock | null>(null);
   const [barcodeProduct, setBarcodeProduct] = useState<ProductWithStock | null>(null);
   const [batchesProduct, setBatchesProduct] = useState<ProductWithStock | null>(null);
   const [showManageModal, setShowManageModal] = useState(false);
@@ -775,16 +777,9 @@ export default function InventoryPage() {
               {orphanedInactive.length} deleted product{orphanedInactive.length === 1 ? '' : 's'} still hold stock worth {formatCurrency(orphanedInactive.reduce((s, p) => s + productValue(p), 0))}
             </p>
             <p className="text-xs text-amber-800 mt-0.5">
-              Their value is excluded from the inventory totals, but the stock and its journal entries are still on the books. Write it off if the goods are gone, or restore the product if the deletion was a mistake.
+              Their value is excluded from the inventory totals, but the stock and its journal entries are still on the books. Adjust each product&apos;s stock from its row (reason: Damaged, Stolen, Expired, Destroyed or Obsolete) to write it off, or restore the product if the deletion was a mistake.
             </p>
           </div>
-          <button
-            onClick={() => setWriteOffTargets(orphanedInactive)}
-            className="shrink-0 flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition"
-          >
-            <PackageMinus className="w-3.5 h-3.5" />
-            Write off all
-          </button>
         </div>
       )}
 
@@ -898,11 +893,12 @@ export default function InventoryPage() {
                         <button onClick={() => setEditingProduct(p)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-muted-foreground hover:text-blue-600 transition">
                           <Edit className="w-3.5 h-3.5" />
                         </button>
-                        {/* Write-off is a cleanup action for deleted products
-                            holding stock, not a per-row control on the 1,400
-                            live rows — it would bury the other actions. */}
-                        {!p.is_active && ((p.total_stock || 0) !== 0 || (fifoValueMap[p.id] || 0) > 0) && (
-                          <button onClick={() => setWriteOffTargets([p])} title="Write off remaining stock" className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-muted-foreground hover:text-amber-600 transition">
+                        {/* Stock adjustments (corrections and typed-reason
+                            write-offs) apply to every stock-tracked product —
+                            active or inactive. Non-stock quick-sell items are
+                            excluded; the server rejects them too. */}
+                        {(p as any).track_inventory !== false && (
+                          <button onClick={() => setAdjustmentProduct(p)} title="Adjust stock" className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-muted-foreground hover:text-amber-600 transition">
                             <PackageMinus className="w-3.5 h-3.5" />
                           </button>
                         )}
@@ -943,12 +939,14 @@ export default function InventoryPage() {
       {deletingProduct && (
         <DeleteConfirmModal product={deletingProduct} stockValue={productValue(deletingProduct)} onClose={() => setDeletingProduct(null)} onConfirm={handleDelete} />
       )}
-      {writeOffTargets && (
-        <WriteOffModal
-          targets={writeOffTargets}
-          valueFor={productValue}
-          onClose={() => setWriteOffTargets(null)}
-          onDone={() => { setWriteOffTargets(null); loadData(true); }}
+      {adjustmentProduct && (
+        <StockAdjustmentModal
+          product={adjustmentProduct}
+          warehouses={warehouses}
+          inventoryByWarehouse={inventoryByWarehouse}
+          pairValueFor={(wid) => pairFifoValue(adjustmentProduct.id, wid, Number(adjustmentProduct.cost_price || 0))}
+          onClose={() => setAdjustmentProduct(null)}
+          onDone={() => { setAdjustmentProduct(null); dropPosSnapshots(); loadData(true); }}
         />
       )}
       {barcodeProduct && (
@@ -995,122 +993,13 @@ function DeleteConfirmModal({ product, stockValue = 0, onClose, onConfirm }: { p
               <p className="text-xs text-amber-800">
                 This product still holds <span className="font-semibold">{qty} unit{qty === 1 ? '' : 's'}</span>
                 {stockValue > 0 && <> worth <span className="font-semibold">{formatCurrency(stockValue)}</span></>}
-                {' '}across your warehouses. Deleting hides the product but keeps that stock on the books — use Write off stock on the row if the goods are gone.
+                {' '}across your warehouses. Deleting hides the product but keeps that stock on the books — use Adjust stock on the row if the goods are gone.
               </p>
             </div>
           )}
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition">Cancel</button>
             <button onClick={onConfirm} className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold transition">Delete</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WriteOffModal({ targets, valueFor, onClose, onDone }: {
-  targets: ProductWithStock[];
-  valueFor: (p: ProductWithStock) => number;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const totalUnits = targets.reduce((s, p) => s + (p.total_stock || 0), 0);
-  const totalValue = targets.reduce((s, p) => s + valueFor(p), 0);
-
-  async function handleConfirm() {
-    // Financial write: the RPC consumes FIFO layers and posts a journal entry,
-    // so it must run against the server rather than the offline outbox.
-    if (!networkMonitor.getState().online) {
-      toast({ title: 'Offline', description: 'Writing off stock posts a journal entry, so it needs a connection.', variant: 'destructive' });
-      return;
-    }
-    setBusy(true);
-    const failures: string[] = [];
-    let units = 0;
-    for (const p of targets) {
-      const { data, error } = await supabase.rpc('write_off_product_stock', {
-        p_product_id: p.id,
-        p_reason: reason.trim() || null,
-      });
-      if (error) failures.push(`${p.name}: ${error.message}`);
-      else units += Number((data as any)?.quantity || 0);
-    }
-    setBusy(false);
-    if (failures.length > 0) {
-      toast({
-        title: `${failures.length} of ${targets.length} write-offs failed`,
-        description: failures.slice(0, 3).join(' · '),
-        variant: 'destructive',
-      });
-    } else {
-      toast({
-        title: 'Stock written off',
-        description: `${units} unit${units === 1 ? '' : 's'} removed from ${targets.length} product${targets.length === 1 ? '' : 's'}.`,
-      });
-    }
-    onDone();
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] flex flex-col">
-        <div className="p-6 overflow-y-auto">
-          <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <PackageMinus className="w-6 h-6 text-amber-600" />
-          </div>
-          <h2 className="text-lg font-bold text-center mb-2">
-            Write off stock{targets.length > 1 ? ` for ${targets.length} products` : ''}?
-          </h2>
-          <p className="text-sm text-muted-foreground text-center mb-4">
-            The remaining quantity is removed from inventory, its FIFO layers are consumed and a journal entry is posted. This cannot be undone.
-          </p>
-
-          <div className="border border-border rounded-lg divide-y divide-border max-h-52 overflow-y-auto mb-4">
-            {targets.map(p => {
-              const qty = p.total_stock || 0;
-              const value = valueFor(p);
-              return (
-                <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{p.name}</p>
-                    <p className="text-xs text-muted-foreground font-mono">{p.sku}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-semibold text-foreground">{qty} unit{qty === 1 ? '' : 's'}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatCurrency(value)}
-                      {qty === 0 && value > 0 && ' · ledger only'}
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="flex items-center justify-between bg-muted/50 rounded-lg px-3 py-2 mb-4 text-sm">
-            <span className="font-medium text-foreground">Total</span>
-            <span className="font-semibold text-foreground">
-              {totalUnits} unit{totalUnits === 1 ? '' : 's'} · {formatCurrency(totalValue)}
-            </span>
-          </div>
-
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Reason (optional)</label>
-          <input
-            value={reason}
-            onChange={e => setReason(e.target.value)}
-            placeholder="e.g. damaged, obsolete, deleted product"
-            className="w-full border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 mb-6"
-          />
-
-          <div className="flex gap-3">
-            <button onClick={onClose} disabled={busy} className="flex-1 px-4 py-2 border border-border rounded-lg text-sm hover:bg-muted transition disabled:opacity-50">Cancel</button>
-            <button onClick={handleConfirm} disabled={busy} className="flex-1 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-semibold transition disabled:opacity-50">
-              {busy ? 'Writing off…' : 'Write off'}
-            </button>
           </div>
         </div>
       </div>

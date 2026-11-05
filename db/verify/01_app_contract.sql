@@ -3,7 +3,7 @@
 --
 -- Asserts that every table and RPC the Next.js application references exists.
 -- Generated from a static scan of app/, components/, lib/ and hooks/.
--- 53 tables, 68 RPCs.
+-- 53 tables, 69 RPCs.
 -- ============================================================================
 DO $$
 DECLARE
@@ -127,6 +127,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sales_breakdown_detail') THEN missing := missing || 'rpc sales_breakdown_detail'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sales_monthly') THEN missing := missing || 'rpc sales_monthly'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sync_apply') THEN missing := missing || 'rpc sync_apply'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sync_stock_adjustment') THEN missing := missing || 'rpc sync_stock_adjustment'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='sync_stock_transfer_create') THEN missing := missing || 'rpc sync_stock_transfer_create'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='toggle_bank_reconciliation_item') THEN missing := missing || 'rpc toggle_bank_reconciliation_item'; END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='write_off_product_stock') THEN missing := missing || 'rpc write_off_product_stock'; END IF;
@@ -134,5 +135,5 @@ BEGIN
   IF array_length(missing,1) > 0 THEN
     RAISE EXCEPTION 'app contract broken, missing: %', array_to_string(missing, ', ');
   END IF;
-  RAISE NOTICE 'app contract satisfied: 53 tables, 68 RPCs present';
+  RAISE NOTICE 'app contract satisfied: 53 tables, 69 RPCs present';
 END $$;
