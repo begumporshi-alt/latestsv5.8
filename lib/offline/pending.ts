@@ -93,6 +93,7 @@ export const OP_TABLES: Record<string, string[]> = {
   'customer_note.create': ['customer_notes'],
   'customer_note.delete': ['customer_notes'],
   'stock_transfer.create': ['stock_movements'],
+  'stock.adjust': ['stock_movements'],
   'attendance.mark': ['attendance'],
   'attendance.details': ['attendance'],
   'quick_sell.create': ['invoices', 'invoice_items', 'products', 'payments'],
@@ -197,6 +198,15 @@ export const OP_CACHE_KEYS: Record<string, string[]> = {
   // Warehouses feed the quotation form's warehouse picker (refs aggregate)
   'warehouse.create': ['quotations:refs'],
   'warehouse.update': ['quotations:refs'],
+  // A stock adjustment rewrites FIFO layers, counters and the GL at replay
+  // time — the overlay only surfaces the movement rows so the product's
+  // history shows the queued change.
+  'stock.adjust': [
+    'inventory:page-data',
+    'products:all',
+    'gate:stock',
+    'dashboard:page-data',
+  ],
   // Expenses/transfers move dashboard numbers
   'expense.create': ['dashboard:page-data'],
   'expense.update': ['dashboard:page-data'],
@@ -1288,6 +1298,31 @@ export function deriveEffects(op: string, p: Record<string, any>, itemId: string
         out.push({ kind: 'delete', table: 'customer_notes', id: String(p.id) })
       }
       break
+    case 'stock.adjust': {
+      const id = p.id || synthId('adj')
+      const isLoss = p.reason_code !== 'quantity_correction'
+      const note = (isLoss ? `Stock write-off (${p.reason_code})` : 'Stock quantity correction')
+        + (p.reason_details ? ` — ${p.reason_details}` : '')
+      const items = Array.isArray(p.items) ? p.items : []
+      items.forEach((it: any, i: number) => {
+        out.push({
+          kind: 'row',
+          table: 'stock_movements',
+          row: stamp({
+            id: synthId(`adj${i}`),
+            product_id: p.product_id ?? null,
+            warehouse_id: str(it.warehouse_id),
+            movement_type: 'adjustment',
+            quantity: num(it.delta),
+            unit_cost: num(it.unit_cost),
+            reference_type: 'stock_adjustment',
+            reference_id: id,
+            notes: note,
+          }),
+        })
+      })
+      break
+    }
     case 'stock_transfer.create': {
       const id = p.id || synthId('trf')
       const number = p.transfer_number || `TRF-OFF-${String(createdAt).slice(-6)}`

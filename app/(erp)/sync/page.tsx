@@ -38,6 +38,7 @@ const OP_LABELS: Record<string, string> = {
   'employee.update': 'Employee edit',
   'attendance.mark': 'Attendance mark',
   'attendance.details': 'Attendance details',
+  'stock.adjust': 'Stock adjustment',
 };
 
 function opLabel(op: string): string {
@@ -382,16 +383,20 @@ function ConflictCard({ item, busy, onOverwrite, onKeepServer }: {
   onKeepServer: () => void;
 }) {
   const [local, setLocal] = useState<Record<string, unknown> | null>(null);
-  const [server, setServer] = useState<{ reason?: string; server_row?: Record<string, unknown> } | null>(null);
+  const [server, setServer] = useState<{ reason?: string; server_row?: Record<string, unknown>; current_items?: { warehouse_id: string; on_hand: number }[] } | null>(null);
 
   useEffect(() => {
     void unsealPayload<Record<string, unknown>>(item).then(setLocal).catch(() => setLocal(null));
-    void unsealConflictData<{ reason?: string; server_row?: Record<string, unknown> }>(item).then(setServer).catch(() => setServer(null));
+    void unsealConflictData<{ reason?: string; server_row?: Record<string, unknown>; current_items?: { warehouse_id: string; on_hand: number }[] }>(item).then(setServer).catch(() => setServer(null));
   }, [item]);
 
   const serverRow = server?.server_row ?? null;
   const localData = (local?.data ?? local) as Record<string, unknown> | null;
-  const changed = serverRow && localData
+  // A queued stock adjustment conflicts on the on-hand baseline, not on a
+  // server row — "overwrite" would just re-conflict against the same guard,
+  // so it is suppressed and the fresh on-hand figures are shown instead.
+  const isStockAdjust = item.op === 'stock.adjust';
+  const changed = !isStockAdjust && serverRow && localData
     ? Object.keys(localData)
         .filter((k) => k !== 'expected_updated_at' && k !== 'force')
         .filter((k) => JSON.stringify((localData as Record<string, unknown>)[k]) !== JSON.stringify((serverRow as Record<string, unknown>)[k]))
@@ -405,6 +410,18 @@ function ConflictCard({ item, busy, onOverwrite, onKeepServer }: {
           <p className="text-xs text-muted-foreground">{opLabel(item.op)} · {server?.reason === 'missing' ? 'record no longer exists on the server' : 'changed on the server since your snapshot'}</p>
         </div>
       </div>
+      {isStockAdjust && (server?.current_items?.length ?? 0) > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs mb-2">
+          <p className="font-semibold text-slate-700 mb-1">Stock now on hand</p>
+          {server!.current_items!.map((it) => (
+            <div key={it.warehouse_id} className="flex justify-between gap-2">
+              <span className="text-muted-foreground truncate max-w-[240px]">{it.warehouse_id}</span>
+              <span className="font-medium">{Number(it.on_hand)}</span>
+            </div>
+          ))}
+          <p className="text-muted-foreground mt-1">Discard this adjustment and record it again from the inventory page with the figures above.</p>
+        </div>
+      )}
       {changed.length > 0 && (
         <div className="grid grid-cols-2 gap-2 text-xs mb-2">
           <div className="bg-blue-50 border border-blue-100 rounded-lg p-2">
@@ -430,12 +447,14 @@ function ConflictCard({ item, busy, onOverwrite, onKeepServer }: {
       <div className="flex gap-2">
         <button onClick={onKeepServer} disabled={busy}
           className="flex-1 px-3 py-1.5 text-xs border border-border rounded-lg hover:bg-muted transition">
-          Keep server version
+          {isStockAdjust ? 'Discard this adjustment' : 'Keep server version'}
         </button>
-        <button onClick={onOverwrite} disabled={busy}
-          className="flex-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition disabled:opacity-60">
-          Overwrite server with mine
-        </button>
+        {!isStockAdjust && (
+          <button onClick={onOverwrite} disabled={busy}
+            className="flex-1 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition disabled:opacity-60">
+            Overwrite server with mine
+          </button>
+        )}
       </div>
     </div>
   );
