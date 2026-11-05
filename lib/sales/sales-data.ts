@@ -31,6 +31,7 @@ import { cachedQuery, type CachedResult } from '@/lib/offline/cache';
 import type { Invoice, Customer, Product } from '@/lib/types';
 
 export interface InvoiceWithCustomer extends Omit<Invoice, 'customer'> {
+  is_quick_sell?: boolean;
   customer?: { name: string; code: string; phone?: string; address?: string };
   sales_returns?: { id: string; return_number: string; total_refund_amount: number; items: { quantity_returned: number }[] }[];
   payments?: { id: string; payment_method: string; amount: number; payment_date: string }[];
