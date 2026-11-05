@@ -997,7 +997,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                 available_units: units,
                 base_quantity: baseQty,
                 cost_price: unitPrice,
-                sale_price: p.sale_price || 0,
+                sale_price: defaultUnit ? (defaultUnit.price || 0) : (p.sale_price || 0),
                 force_cost_update: false,
                 warehouse_id: defaultWarehouseId,
               };
@@ -1056,7 +1056,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
               quantity, unit_price: unitPrice, discount_percent: 0,
               selected_unit: selectedUnit, available_units: units,
               base_quantity: baseQty, cost_price: unitPrice,
-              sale_price: p.sale_price || 0,
+              sale_price: selectedUnit ? (selectedUnit.price || 0) : (p.sale_price || 0),
               force_cost_update: false,
               warehouse_id: warehouseId,
             };
@@ -1136,7 +1136,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
       available_units: units,
       base_quantity: baseQty,
       cost_price: unitPrice,
-      sale_price: product.sale_price || 0,
+      sale_price: defaultUnit ? (defaultUnit.price || 0) : (product.sale_price || 0),
       force_cost_update: false,
       warehouse_id: defaultWarehouseId,
     }]);
@@ -1146,7 +1146,7 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
     const updated = [...items];
     if (field === 'selected_unit') {
       const unit = value as ProductUnit;
-      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0 };
+      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0, sale_price: unit.price || 0 };
     } else if (field === 'quantity') {
       // Decimal units (meter/foot/kg) accept fractions; discrete units keep
       // the legacy parseInt behaviour.
@@ -1421,9 +1421,9 @@ function CreatePOModal({ suppliers, products, prefillSupplierId, onClose, onSave
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-40">Warehouse</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Cost</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Cost / Unit</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Sale Price</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Sale / Unit</th>
                       <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-20">
                         <label className="flex flex-col items-center gap-1 cursor-pointer" title="On GRN, set the product cost price to this line's cost even if it is lower than the current cost">
                           <span>Cost Upd</span>
@@ -1759,7 +1759,7 @@ function ViewPOModal({ order, items, onClose, onUpdateStatus, onRecordPayment, o
                   <tr>
                     <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Qty</th>
-                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Cost</th>
+                    <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Cost / Unit</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Disc%</th>
                     <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2">Total</th>
                   </tr>
@@ -2174,7 +2174,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
           available_units: units.filter((u: any) => u.is_active),
           base_quantity: Number(it.base_quantity) || Number(it.quantity),
           cost_price: selectedUnit?.cost_price || 0,
-          sale_price: it.sale_price != null ? Number(it.sale_price) : (prod?.sale_price ?? 0),
+          sale_price: it.sale_price != null ? Number(it.sale_price) : (selectedUnit?.price ?? prod?.sale_price ?? 0),
           force_cost_update: !!it.force_cost_update,
           warehouse_id: it.warehouse_id || '',
         };
@@ -2187,7 +2187,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
     const updated = [...items];
     if (field === 'selected_unit') {
       const unit = value as ProductUnit;
-      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0 };
+      updated[index] = { ...updated[index], selected_unit: unit, unit_price: unit.cost_price || unit.price, base_quantity: convertToBaseUnit(updated[index].quantity, unit), cost_price: unit.cost_price || 0, sale_price: unit.price || 0 };
     } else if (field === 'quantity') {
       // Decimal units (meter/foot/kg) accept fractions; discrete units keep
       // the legacy parseInt behaviour.
@@ -2254,7 +2254,7 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
       available_units: units,
       base_quantity: baseQty,
       cost_price: unitPrice,
-      sale_price: product.sale_price || 0,
+      sale_price: defaultUnit ? (defaultUnit.price || 0) : (product.sale_price || 0),
       force_cost_update: false,
       warehouse_id: defaultWhId,
     }]);
@@ -2477,9 +2477,9 @@ function EditPOModal({ order, suppliers, products, onClose, onSaved }: {
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2">Product</th>
                       <th className="text-left text-xs font-semibold text-muted-foreground px-3 py-2 w-40">Warehouse</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-24">Qty</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Cost</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Cost / Unit</th>
                       <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-20">Disc%</th>
-                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Sale Price</th>
+                      <th className="text-right text-xs font-semibold text-muted-foreground px-3 py-2 w-32">Sale / Unit</th>
                       <th className="text-center text-xs font-semibold text-muted-foreground px-3 py-2 w-20">
                         <label className="flex flex-col items-center gap-1 cursor-pointer" title="On GRN, set the product cost price to this line's cost even if it is lower than the current cost">
                           <span>Cost Upd</span>
