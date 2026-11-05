@@ -98,6 +98,68 @@ describe('pending overlay op maps (lib/offline/pending)', () => {
       );
     }
   });
+
+  test('stock.adjust derives provisional movement rows and drops the stock aggregates', () => {
+    const effects = deriveEffects(
+      'stock.adjust',
+      {
+        id: 'adj-1',
+        idempotency_key: 'adj-1',
+        product_id: 'p1',
+        reason_code: 'damaged',
+        reason_details: 'water in storage',
+        items: [
+          { warehouse_id: 'w1', delta: -3, expected_on_hand: 10, unit_cost: 5 },
+          { warehouse_id: 'w2', delta: 2, expected_on_hand: 4, unit_cost: 5 },
+        ],
+      },
+      'item-adj',
+      1_700_000_000_000,
+    );
+
+    const rows = effects.filter((e) => e.kind === 'row' && e.table === 'stock_movements');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((e: any) => e.row)).toEqual([
+      expect.objectContaining({
+        product_id: 'p1',
+        warehouse_id: 'w1',
+        movement_type: 'adjustment',
+        quantity: -3,
+        reference_type: 'stock_adjustment',
+        reference_id: 'adj-1',
+        notes: 'Stock write-off (damaged) — water in storage',
+      }),
+      expect.objectContaining({
+        product_id: 'p1',
+        warehouse_id: 'w2',
+        movement_type: 'adjustment',
+        quantity: 2,
+        reference_type: 'stock_adjustment',
+        reference_id: 'adj-1',
+        notes: 'Stock write-off (damaged) — water in storage',
+      }),
+    ]);
+    expect(OP_TABLES['stock.adjust']).toContain('stock_movements');
+    expect(OP_CACHE_KEYS['stock.adjust']).toEqual(
+      expect.arrayContaining(['inventory:page-data', 'products:all', 'gate:stock'])
+    );
+  });
+
+  test('a quantity-correction adjustment reads as a correction, not a write-off', () => {
+    const effects = deriveEffects(
+      'stock.adjust',
+      {
+        id: 'adj-2',
+        product_id: 'p1',
+        reason_code: 'quantity_correction',
+        items: [{ warehouse_id: 'w1', delta: -1, expected_on_hand: 8 }],
+      },
+      'item-adj2',
+      1,
+    );
+    const row = effects.find((e) => e.kind === 'row') as any;
+    expect(row.row.notes).toBe('Stock quantity correction');
+  });
 });
 
 describe('natural-key dedupe (attendance upserts)', () => {

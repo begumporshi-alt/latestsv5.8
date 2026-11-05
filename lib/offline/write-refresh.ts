@@ -52,6 +52,17 @@ const RPC_TABLES: Record<string, string[]> = {
   create_opening_batch: ['Stock counters', 'Inventory batches'],
   create_stock_reduction: ['Stock counters', 'Inventory batches'],
 
+  // Typed-reason stock adjustment (corrections and write-offs): FIFO layers,
+  // counters, movements and the GL. Same table set the RPC itself touches.
+  sync_stock_adjustment: [
+    'Stock counters',
+    'Inventory batches',
+    'Stock movements',
+    'Journal entries',
+    'Journal lines',
+    'Accounts',
+  ],
+
   // Atomic goods receipt: GRN header, stock counters, movements, FIFO layers,
   // PO line received quantities, PO status, GL, reminders, product cost/sale
   // prices, and account balances.

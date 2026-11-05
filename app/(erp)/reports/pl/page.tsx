@@ -15,6 +15,8 @@ interface PnLData {
   totalOtherRevenue: number;
   totalRevenue: number;
   costOfGoodsSold: number;
+  /** Account 5900 — damaged/stolen/expired/destroyed/obsolete stock. */
+  inventoryWriteOffs: number;
   estimatedManualCogs: number;
   totalCogs: number;
   grossProfit: number;
@@ -42,6 +44,7 @@ export default function PLPage() {
     totalOtherRevenue: 0,
     totalRevenue: 0,
     costOfGoodsSold: 0,
+    inventoryWriteOffs: 0,
     estimatedManualCogs: 0,
     totalCogs: 0,
     grossProfit: 0,
@@ -161,6 +164,12 @@ export default function PLPage() {
     const cogsAccount = allAccounts.find(a => a.code === '5000');
     const costOfGoodsSold = cogsAccount ? await periodNetDebit(cogsAccount.id) : 0;
 
+    // Inventory Write-offs (code 5900) — stock lost to damage, theft, expiry,
+    // destruction or obsolescence. Part of the cost of goods THAT WERE NEVER
+    // SOLD, so it belongs inside Total COGS, not in operating expenses.
+    const writeOffAccount = allAccounts.find(a => a.code === '5900');
+    const inventoryWriteOffs = writeOffAccount ? await periodNetDebit(writeOffAccount.id) : 0;
+
     // Non-4000 revenue accounts, each listed under its REAL name. The old
     // single "Service Revenue" lump mislabeled 4001 (Sales Revenue - Manual,
     // no COGS) as service revenue — 4001 manual sales are sales, not services.
@@ -190,11 +199,12 @@ export default function PLPage() {
     const estimatedManualCogs = manualRevenue > 0
       ? Math.round(manualRevenue * manualCogsPercent) / 100
       : 0;
-    const totalCogs = costOfGoodsSold + estimatedManualCogs;
+    const totalCogs = costOfGoodsSold + inventoryWriteOffs + estimatedManualCogs;
     const grossProfit = totalRevenue - totalCogs;
 
-    // Operating expenses: all expense accounts except COGS (5000), Sales Returns (4050), Discount Given (4200)
-    const EXCLUDED_CODES = new Set(['5000', '4050', '4200']);
+    // Operating expenses: all expense accounts except COGS (5000), Inventory
+    // Write-offs (5900), Sales Returns (4050), Discount Given (4200)
+    const EXCLUDED_CODES = new Set(['5000', '5900', '4050', '4200']);
     const expenseAccounts = allAccounts.filter(a =>
       a.account_type === 'expense' && !EXCLUDED_CODES.has(a.code)
     );
@@ -223,6 +233,7 @@ export default function PLPage() {
       totalOtherRevenue,
       totalRevenue,
       costOfGoodsSold,
+      inventoryWriteOffs,
       estimatedManualCogs,
       totalCogs,
       grossProfit,
@@ -252,6 +263,7 @@ export default function PLPage() {
       [''],
       ['COST OF GOODS SOLD'],
       ['Cost of Goods Sold', data.costOfGoodsSold],
+      ...(data.inventoryWriteOffs !== 0 ? [['Inventory Write-offs / Shrinkage', data.inventoryWriteOffs]] : []),
       ...(data.estimatedManualCogs > 0 ? [['Estimated COGS - Manual Sales (no COGS posted)', data.estimatedManualCogs]] : []),
       ['Total COGS', data.totalCogs],
       [''],
@@ -303,6 +315,10 @@ export default function PLPage() {
                   <span className="font-semibold block">Cost of Goods Sold (COGS)</span>
                   Net debit balance on account code 5000. Automatically posted when each invoice is created via the accounting trigger — records the cost of inventory items sold.
                 </div>
+                <div>
+                  <span className="font-semibold block">Inventory Write-offs / Shrinkage</span>
+                  Net debit on account code 5900 — stock recorded off with reason Damaged, Stolen, Expired, Destroyed or Obsolete. It is the cost of goods that were never sold, so it sits inside Total COGS (quantity corrections go to Opening Balance Equity instead and never touch the P&amp;L).
+                </div>
               </div>
               <div className="space-y-2">
                 <div>
@@ -311,7 +327,7 @@ export default function PLPage() {
                 </div>
                 <div>
                   <span className="font-semibold block">Operating Expenses</span>
-                  Net debit on all expense accounts (except COGS 5000, Sales Returns 4050, Discount Given 4200) during the period. Includes salaries, rent, utilities, etc. logged in the Journal.
+                  Net debit on all expense accounts (except COGS 5000, Inventory Write-offs 5900, Sales Returns 4050, Discount Given 4200) during the period. Includes salaries, rent, utilities, etc. logged in the Journal.
                 </div>
                 <div>
                   <span className="font-semibold block">Net Profit = Gross Profit − Operating Expenses</span>
@@ -399,6 +415,9 @@ export default function PLPage() {
             <table className="w-full text-sm">
               <tbody>
                 <StatementRow label="Cost of Goods Sold" amount={data.costOfGoodsSold} />
+                {data.inventoryWriteOffs !== 0 && (
+                  <StatementRow label="Inventory Write-offs / Shrinkage" amount={data.inventoryWriteOffs} />
+                )}
                 {data.estimatedManualCogs > 0 && (
                   <StatementRow label="Estimated COGS — Manual Sales (no COGS posted)" amount={data.estimatedManualCogs} />
                 )}

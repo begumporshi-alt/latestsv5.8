@@ -113,6 +113,25 @@ describe('write-refresh routing', () => {
     expect(replica.refreshReplicaTables).toHaveBeenCalledWith(['Stock counters', 'Inventory batches'])
   })
 
+  // The typed-reason stock adjustment touches FIFO layers, counters, movements
+  // and the GL — exactly the six replica tables below, nothing more.
+  it('maps sync_stock_adjustment to its ledger and GL tables', async () => {
+    noteServerWrite('rpc', 'sync_stock_adjustment')
+    await awaitPendingWrites()
+
+    expect(replica.replicateAll).not.toHaveBeenCalled()
+    expect(replica.refreshReplicaTables).toHaveBeenCalledTimes(1)
+    const names = replica.refreshReplicaTables.mock.calls[0][0] as string[]
+    expect(names.sort()).toEqual([
+      'Accounts',
+      'Inventory batches',
+      'Journal entries',
+      'Journal lines',
+      'Stock counters',
+      'Stock movements',
+    ])
+  })
+
   it('routes .from() writes by table name', async () => {
     noteServerWrite('from', 'purchase_order_items')
     await awaitPendingWrites()
