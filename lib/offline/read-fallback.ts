@@ -37,6 +37,8 @@ import { networkMonitor } from './network'
 import { getDB } from './db'
 import { runReplicaQuery } from './replica-query'
 import { noteServerWrite } from './write-refresh'
+import { beginWrite, commitWrite, failWrite } from './write-status'
+import { reportRead } from './data-source'
 import { hasStoredSessionUser } from './stored-session'
 
 /** Builder methods that turn a chain into a write — never intercepted. */
@@ -255,18 +257,67 @@ async function serveFromFallback(
   state: BuilderState,
   target: string,
 ): Promise<any> {
+  const pageRead = isPageRead(state)
   const cached = await cacheGet<any>(key)
-  if (cached) return { ...cached, offline: true }
+  if (cached) {
+    if (pageRead) reportRead('cache', target, { offline: true })
+    return { ...cached, offline: true }
+  }
   const fromReplica = await replicaFallback(state)
-  if (fromReplica) return fromReplica
+  if (fromReplica) {
+    if (pageRead) reportRead('replica', target, { offline: true })
+    return fromReplica
+  }
+  if (pageRead) reportRead('none', target, { offline: true })
   emitOfflineMiss(target)
   return offlineNoCache(target)
+}
+
+/**
+ * Tables the app shell reads on every page (the signed-in profile, the
+ * notification bell). Reporting them would make every page claim "live
+ * server" regardless of where its own data came from.
+ */
+const CHROME_TABLES = new Set(['profiles', 'notifications'])
+
+function isPageRead(state: BuilderState): boolean {
+  return state.kind === 'from' && !CHROME_TABLES.has(state.name)
+}
+
+/**
+ * Writes the app performs for itself (the bell marking a notification read).
+ * Reporting these would put "Server committed…" on screen for something the
+ * user did not do.
+ */
+const SILENT_WRITE_TABLES = new Set(['notifications'])
+
+/**
+ * RPCs that write for the app rather than for the user. The number generators
+ * only advance a sequence (a form asking for the next invoice number), and
+ * counting them as a change would leave "1 saving" on the pill for a write the
+ * user never made.
+ */
+function isSilentRpc(name: string): boolean {
+  return name.startsWith('generate_')
+}
+
+function errorText(err: unknown): string {
+  if (!err) return 'Unknown error'
+  if (typeof err === 'object' && 'message' in err) return String((err as { message: unknown }).message)
+  return String(err)
 }
 
 async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
   const target = state.kind === 'rpc' ? `rpc ${state.name}` : state.name
   const key = await buildKey(state)
   const fallbackAllowed = !state.mutation
+  // Every mutation reports its lifecycle so the data-source pill can count what
+  // is still unsettled: whether the SERVER has the change, and whether THIS
+  // DEVICE has caught up.
+  const silentWrite =
+    (state.kind === 'from' && SILENT_WRITE_TABLES.has(state.name)) ||
+    (state.kind === 'rpc' && isSilentRpc(state.name))
+  const writeId = fallbackAllowed || silentWrite ? null : beginWrite(target)
 
   // Offline, or no usable session record on disk: never touch the network for
   // a read — serve the last copy now. The no-session guard matters even while
@@ -282,7 +333,12 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
     // Awaiting the raw builder performs the real request.
     const res: any = await rawBuilder
     if (!fallbackAllowed) {
-      if (!res?.error) noteServerWrite(state.kind, state.name)
+      if (res?.error) {
+        if (writeId != null) failWrite(writeId, errorText(res.error))
+      } else {
+        noteServerWrite(state.kind, state.name)
+        if (writeId != null) commitWrite(writeId)
+      }
       return res
     }
 
@@ -295,9 +351,11 @@ async function execute(rawBuilder: unknown, state: BuilderState): Promise<any> {
       return res
     }
 
+    if (isPageRead(state)) reportRead('server', target)
     void rememberResult(key, res)
     return res
   } catch (err) {
+    if (writeId != null) failWrite(writeId, errorText(err))
     if (fallbackAllowed && isNetworkError(err)) {
       networkMonitor.markOffline()
       return serveFromFallback(key, state, target)

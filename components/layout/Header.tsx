@@ -14,6 +14,7 @@ import { useGlobalCart, type GlobalCartItem } from '@/hooks/use-global-cart';
 import BarcodeScannerModal from '@/components/BarcodeScannerModal';
 import { QuickSellModal } from '@/components/quick-sell-modal';
 import OfflineStatusPill from '@/components/offline/OfflineStatusPill';
+import DataSourcePill from '@/components/offline/DataSourcePill';
 import NotificationBell from '@/components/notifications/NotificationBell';
 import InstallButton from '@/components/pwa/InstallButton';
 import { clearLocalData } from '@/lib/offline/db';
@@ -369,6 +370,7 @@ export default function Header({ onMenuToggle }: HeaderProps) {
       {/* Right actions */}
       <div className="flex items-center gap-1 ml-auto">
         <InstallButton />
+        <DataSourcePill />
         <OfflineStatusPill />
         <NotificationBell />
         {/* Quick-actions row is desktop-only — mobile still needs a Quick Sell entry point */}

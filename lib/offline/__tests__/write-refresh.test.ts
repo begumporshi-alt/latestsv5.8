@@ -22,8 +22,11 @@ jest.mock('../replica', () => {
     'Journal lines',
     'Accounts',
     'Products',
+    'Product units',
     'Purchase reminders',
     'Invoices',
+    'Invoice items',
+    'Customers',
   ]
   const REPLICA: Record<string, { name: string }> = {}
   for (const name of names) REPLICA[name] = { name }
@@ -31,6 +34,7 @@ jest.mock('../replica', () => {
     purchase_orders: REPLICA['Purchase orders'],
     purchase_order_items: REPLICA['Purchase order items'],
     invoices: REPLICA['Invoices'],
+    invoice_items: REPLICA['Invoice items'],
   }
   return {
     REPLICA,
@@ -78,12 +82,25 @@ describe('write-refresh routing', () => {
         'Journal lines',
         'Accounts',
         'Products',
+        'Product units',
         'Purchase reminders',
       ]),
     )
     // …and nothing else.
     expect(names).not.toContain('Invoices')
-    expect(names).toHaveLength(11)
+    expect(names).toHaveLength(12)
+  })
+
+  // The POS tile prices a multi-unit product from its default UNIT's price,
+  // which receive_grn rewrites in product_units. Leaving that table out of the
+  // declaration kept the old price on the tile until the POS's own ten-minute
+  // replica cycle refreshed it — the reported "takes ten minutes" symptom.
+  it('converges the per-unit prices a GRN rewrites', async () => {
+    noteServerWrite('rpc', 'receive_grn')
+    await awaitPendingWrites()
+
+    const names = replica.refreshReplicaTables.mock.calls[0][0] as string[]
+    expect(names).toEqual(expect.arrayContaining(['Products', 'Product units']))
   })
 
   it('does not refresh anything for a sequence generator', async () => {
@@ -138,6 +155,36 @@ describe('write-refresh routing', () => {
 
     expect(replica.refreshReplicaTables).toHaveBeenCalledWith(['Purchase order items'])
     expect(replica.replicateAll).not.toHaveBeenCalled()
+  })
+
+  // A POS sale writes invoice_items and nothing else: the DB trigger deducts
+  // stock, consumes FIFO layers and posts COGS. The client must converge those
+  // tables too, or every snapshot rebuilt from the replica shows the sold units
+  // as still on hand — the gallery quantity that "takes time to update".
+  it('converges the trigger-maintained tables a sale changes', async () => {
+    noteServerWrite('from', 'invoice_items')
+    await awaitPendingWrites()
+
+    expect(replica.replicateAll).not.toHaveBeenCalled()
+    expect(replica.refreshReplicaTables).toHaveBeenCalledTimes(1)
+    const names = replica.refreshReplicaTables.mock.calls[0][0] as string[]
+    expect(names.sort()).toEqual([
+      'Accounts',
+      'Inventory batches',
+      'Invoice items',
+      'Journal entries',
+      'Journal lines',
+      'Stock counters',
+      'Stock movements',
+    ])
+  })
+
+  it('recomputes the customer balance when an invoice is written', async () => {
+    noteServerWrite('from', 'invoices')
+    await awaitPendingWrites()
+
+    const names = replica.refreshReplicaTables.mock.calls[0][0] as string[]
+    expect(names.sort()).toEqual(['Customers', 'Invoices'])
   })
 
   it('collapses a burst into a single refresh', async () => {

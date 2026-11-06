@@ -21,6 +21,8 @@ import { networkMonitor } from './network'
 import { getDB, type CacheRow } from './db'
 import { getUserKey, seal, unseal } from './crypto'
 import { resolveUserId } from './session'
+import { getLastWriteAt } from './write-refresh'
+import { reportRead } from './data-source'
 import { mark } from '../perf/cold-start'
 
 export class OfflineError extends Error {
@@ -55,14 +57,27 @@ export function isNetworkError(err: unknown): boolean {
   return NETWORK_ERROR_RE.test(msg)
 }
 
-export async function cachePut(key: string, data: unknown): Promise<void> {
+/**
+ * Store a snapshot.
+ *
+ * `asOf` is the moment the fetch STARTED, not the moment it finished. A slow
+ * read that began before a write and landed after it would otherwise be
+ * stamped as newer than that write and survive invalidation with pre-write
+ * data — the exact race that made a freshly created product invisible in the
+ * POS catalogue.
+ */
+export async function cachePut(
+  key: string,
+  data: unknown,
+  opts: { asOf?: number } = {},
+): Promise<void> {
   try {
     const userId = await resolveUserId()
     if (!userId) return
     const fullKey = `${userId}:${key}`
     const k = await getUserKey(userId)
     const blob = await seal(k, data)
-    await getDB().cache.put({ key: fullKey, blob, updatedAt: Date.now() })
+    await getDB().cache.put({ key: fullKey, blob, updatedAt: opts.asOf ?? Date.now() })
   } catch {
     // Caching is best-effort; a failure must never break the page.
   }
@@ -138,8 +153,16 @@ export async function cachedQuery<T>(
   const cached = row ? await safeUnseal<T>(row) : null
   mark('cache:read-end')
 
+  // Any successful write after this snapshot was taken makes it stale,
+  // whatever its TTL says. Call sites used to delete individual keys by hand;
+  // one missing call — or a write from another tab — left the page showing
+  // pre-write data for the whole TTL (10 minutes on the POS catalogue).
+  const lastWriteAt = await getLastWriteAt()
+  const invalidatedByWrite = row != null && row.updatedAt < lastWriteAt
+
   if (!networkMonitor.getState().online) {
     if (cached !== null) {
+      reportRead('cache', key, { offline: true })
       return { data: cached, fresh: false, cachedAt: row!.updatedAt, offline: true }
     }
     // No page cache — but the app-wide client may still answer this fetcher
@@ -161,18 +184,20 @@ export async function cachedQuery<T>(
     }
   }
 
-  if (cached !== null && row && Date.now() - row.updatedAt < ttlMs) {
+  if (!invalidatedByWrite && cached !== null && row && Date.now() - row.updatedAt < ttlMs) {
     // Fresh enough — hand it back and touch nothing. The TTL is the egress
     // budget: a background refresh here would re-download the payload on
     // every mount/keystroke, which is exactly what the cache exists to stop.
+    reportRead('cache', key)
     return { data: cached, fresh: true, cachedAt: row.updatedAt, offline: false }
   }
 
-  if (options.staleWhileRevalidate && cached !== null && row) {
+  if (options.staleWhileRevalidate && !invalidatedByWrite && cached !== null && row) {
     // Hand back what we have and rebuild behind the caller. Errors are
     // swallowed: the caller already has usable data, and the blocking path's
     // failure handling (mark offline, fall back to cache) belongs to the next
     // read rather than to a promise nobody is waiting on.
+    reportRead('cache', key)
     void refreshOnce(key, fetcher)
       .then((res) => {
         if (res.fresh) options.onRevalidated?.(res.data)
@@ -220,12 +245,14 @@ async function safeUnseal<T>(row: CacheRow): Promise<T | null> {
 async function refresh<T>(key: string, fetcher: () => Promise<T>): Promise<CachedResult<T>> {
   const row = await cacheGetRow(key)
   const cached = row ? await safeUnseal<T>(row) : null
+  // Stamped on the value the fetch actually reflects: the moment it started.
+  const startedAt = Date.now()
   try {
     mark('cache:fetch-start')
     const data = await fetcher()
     mark('cache:fetch-end')
     mark('cache:put-start')
-    await cachePut(key, data)
+    await cachePut(key, data, { asOf: startedAt })
     mark('cache:put-end')
     return { data, fresh: true, cachedAt: Date.now(), offline: false }
   } catch (err) {

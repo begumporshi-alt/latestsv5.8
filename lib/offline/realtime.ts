@@ -20,13 +20,24 @@
  *   - The channel is best-effort: if Realtime is disabled on the project the
  *     subscription simply never fires and the hourly cycle remains the
  *     fallback. Nothing else depends on it.
+ *   - Postgres only streams changes for tables that are members of the
+ *     `supabase_realtime` publication. This module was subscribing for months
+ *     while only `notifications` was published, so none of these handlers ever
+ *     ran — a silent failure that looks exactly like "the other terminal's
+ *     change took ten minutes". The tables are added in
+ *     supabase/migrations/20261106120000_realtime_replica_tables.sql; a
+ *     CHANNEL_ERROR is logged once if the subscription cannot be established.
  */
 
 import { supabaseRaw } from '../supabase-raw'
 import { networkMonitor } from './network'
 
-/** Tables whose changes another device must see promptly. */
-const WATCHED_TABLES = [
+/** Tables whose changes another device must see promptly.
+ *
+ *  Exported for the parity test: every table here must also be a member of the
+ *  `supabase_realtime` publication (migration 20261106120000). A table listed
+ *  here but not published is accepted by the client and never fires. */
+export const WATCHED_TABLES = [
   // Goods receipt and its downstream effects
   'goods_receipt_notes',
   'stock_movements',
@@ -59,11 +70,19 @@ const WATCHED_TABLES = [
  * Page-level aggregates (lib/offline/keys.ts) that must be dropped when one of
  * these tables changes remotely. Without this the local replica would be
  * correct while a page still rendered its cached 60s snapshot.
+ *
+ * The catalogue snapshot (`products:all`) embeds BOTH the unit rows and the
+ * stock counters — the POS grid renders a multi-unit product's price from its
+ * default unit and its quantity from the counters — so every one of the three
+ * tables has to drop it. A unit-price change that only refreshed the replica
+ * left the grid on its cached copy until the snapshot's ten-minute TTL ran out,
+ * which is the same symptom from the other end.
  */
 const TABLE_AGGREGATES: Record<string, string[]> = {
-  inventory_items: ['inventory:page-data'],
+  inventory_items: ['inventory:page-data', 'products:all', 'gate:stock'],
   inventory_batches: ['inventory:page-data'],
-  products: ['inventory:page-data', 'products:all'],
+  product_units: ['inventory:page-data', 'products:all'],
+  products: ['inventory:page-data', 'products:all', 'gate:stock'],
   purchase_orders: ['purchases:list'],
   purchase_order_items: ['purchases:list'],
   goods_receipt_notes: ['purchases:list'],
@@ -82,6 +101,18 @@ let channel: Channel | null = null
 let timer: ReturnType<typeof setTimeout> | null = null
 const dirtyTables = new Set<string>()
 let started = false
+/** A broken socket is reported once per session, not once per event. */
+let statusWarned = false
+
+async function invalidate(tables: string[], prefixes: string[]): Promise<void> {
+  try {
+    const { invalidateCachesForTables, invalidateCacheKeys } = await import('./pending')
+    await invalidateCachesForTables(tables)
+    await invalidateCacheKeys(prefixes)
+  } catch {
+    // best-effort — the TTL is the backstop
+  }
+}
 
 async function flush(): Promise<void> {
   timer = null
@@ -93,24 +124,30 @@ async function flush(): Promise<void> {
   const tables = [...dirtyTables]
   dirtyTables.clear()
 
-  try {
-    const [{ REPLICA_BY_TABLE, refreshReplicaTables }, { invalidateCachesForTables, invalidateCacheKeys }] =
-      await Promise.all([import('./replica'), import('./pending')])
+  const prefixes = new Set<string>(['dashboard:page-data'])
+  for (const t of tables) for (const p of TABLE_AGGREGATES[t] || []) prefixes.add(p)
+  const keys = [...prefixes]
 
+  try {
+    const { REPLICA_BY_TABLE, refreshReplicaTables } = await import('./replica')
     const specs = tables
       .map((t) => REPLICA_BY_TABLE[t]?.name)
       .filter((n): n is string => Boolean(n))
 
-    // Caches first: a page rendering during the pull should miss its stale
+    // Drop first: a page rendering during the pull must miss its stale
     // aggregate rather than serve it for the whole refresh window.
-    const prefixes = new Set<string>(['dashboard:page-data'])
-    for (const t of tables) for (const p of TABLE_AGGREGATES[t] || []) prefixes.add(p)
-    void invalidateCachesForTables(tables)
-    void invalidateCacheKeys([...prefixes])
+    await invalidate(tables, keys)
 
     // refreshReplicaTables queues instead of dropping when a local run is in
     // flight, so a remote change can never be silently skipped.
-    if (specs.length > 0) void refreshReplicaTables(specs)
+    if (specs.length > 0) await refreshReplicaTables(specs)
+
+    // Drop again, now that the replica has converged. A reader that ran
+    // between the first invalidation and the end of the pull rebuilt its
+    // snapshot from a partly-converged replica and stamped it fresh — the
+    // timestamp cannot catch that, because the write happened on another
+    // device. Without this second pass that copy would stand for its full TTL.
+    await invalidate(tables, keys)
   } catch {
     // best-effort — the hourly cycle is the safety net
   }
@@ -143,7 +180,20 @@ export function startRealtimeSync(): void {
         () => onTableChange(table),
       )
     }
-    channel = ch.subscribe()
+    channel = ch.subscribe((status: string) => {
+      // A table that is not in the `supabase_realtime` publication, or a
+      // project with Realtime switched off, reports a channel error and then
+      // stays silent — indistinguishable from "nothing changed" without this
+      // line. It is a warning, not a failure: every table still converges on
+      // the replica cycle, just slowly.
+      if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && !statusWarned) {
+        statusWarned = true
+        console.warn(
+          '[realtime] replica-sync channel could not subscribe (' + status +
+          '). Check that the watched tables are in the supabase_realtime publication.',
+        )
+      }
+    })
   } catch {
     // Realtime unavailable (disabled on the project, blocked network) — the
     // hourly replica cycle still converges every table.

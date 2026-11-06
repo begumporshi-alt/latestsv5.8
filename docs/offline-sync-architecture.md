@@ -118,24 +118,30 @@ ElectricSQL use post-commit WAL tails; this system uses trigger-maintained
 
 - **Eventual consistency, bounded.** Writes are durable locally first (sealed
   IndexedDB), so an offline sale can't be lost by a crash; server application is
-  retried idempotently. Reads converge within one refresh cycle (≤10 min for POS
-  tables) plus a 24 h hard reset.
+  retried idempotently. Reads converge on a Realtime push, or within one refresh
+  cycle (≤10 min for POS tables) when the socket is down, plus a 24 h hard reset.
 - **Egress is now proportional to *change*, not to *attention*.** Delta cursors
   mean a day where nothing changed costs a handful of head-count probes instead of
   megabytes of re-downloads — this was the point of the egress project.
-- **No real-time push.** There is no Supabase Realtime subscription; a record
-  another user created lands on this device within the next tick (≤10 min for POS
-  tables, ≤30 s for outbox-triggered convergence after your own writes). The
-  oversell gate and credit gate still verify live at the moment of checkout, which
-  is where staleness would actually cost money.
+- **Real-time push, with polling as the floor.** `lib/offline/realtime.ts`
+  subscribes to Postgres changes on the replicated tables and turns each event
+  into the same targeted refresh an online write triggers locally, so another
+  terminal's price or stock change lands in seconds instead of at the next tick.
+  Two requirements, both silent when missed: the tables must be members of the
+  `supabase_realtime` publication (migration `20261106120000`, guarded by a
+  parity test against `WATCHED_TABLES`), and the client only needs the table
+  name — it re-pulls the rows, so nothing depends on `REPLICA IDENTITY`. Without
+  either, the system degrades to the pull-only behaviour below rather than
+  breaking.
 - **Known blind spot, self-healing:** a server-side row edit that deletes and
   re-inserts the row with a *new* id keeps the count equal, so its ghost row can
   linger until the daily full replace. Documented in `replicateOne`'s comment —
   this is why the 24 h refresh exists.
-- **Two devices, no peer sync.** Device B sees device A's sale when B's next
-  delta tick runs (up to 10 min), or instantly after B makes its own write.
-  Conflict resolution is last-writer-wins at the server with `sync_apply`
-  conflict parking for the cases it detects.
+- **Two devices.** Device B sees device A's write through Realtime within a few
+  seconds (1.2 s coalescing window plus one targeted delta pull), or at its next
+  delta tick (≤10 min) when the socket is down. Conflict resolution is
+  last-writer-wins at the server with `sync_apply` conflict parking for the
+  cases it detects.
 
 ## 6. Quick reference
 

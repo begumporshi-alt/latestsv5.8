@@ -32,6 +32,7 @@ import { networkMonitor } from '@/lib/offline/network';
 import { cachedQuery, cacheGet, cachePut, cacheDelete, mutateCache, isNetworkError } from '@/lib/offline/cache';
 import { readData } from '@/lib/offline/read-result';
 import { CACHE_KEYS } from '@/lib/offline/keys';
+import { reportRead } from '@/lib/offline/data-source';
 import { enqueueOp } from '@/lib/offline/outbox';
 import { fetchAll } from '@/lib/fetch-all';
 import { REPLICA, replicaRows, buildPosSnapshotFromReplica, refreshReplicaTables, subscribeReplica, isReplicating } from '@/lib/offline/replica';
@@ -989,10 +990,27 @@ export default function POSPage() {
   useEffect(() => {
     const refreshPosTables = () => {
       if (document.visibilityState !== 'visible') return;
-      void refreshReplicaTables(['Products', 'Stock counters', 'Product units', 'Customers', 'Customer advances']).catch(() => {});
+      void refreshReplicaTables(['Products', 'Stock counters', 'Product units', 'Customers', 'Customer advances'])
+        .then(() => {
+          // Stock is now converged, so dropping the catalogue snapshot is safe:
+          // the rebuild that follows reads post-change quantities. Dropping it
+          // BEFORE the pull would repaint pre-change stock for the TTL.
+          if (networkMonitor.getState().online) void cacheDelete(CACHE_KEYS.products);
+        })
+        .catch(() => {});
     };
     const timer = setInterval(refreshPosTables, POS_REPLICA_REFRESH_MS);
-    return () => clearInterval(timer);
+    // A cashier who leaves this tab open (or switches back to it) must not
+    // wait up to ten minutes for another terminal's product or price change:
+    // converge the moment the tab is visible again.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshPosTables();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // An open gallery and an open customer dropdown both render from React
@@ -1018,6 +1036,14 @@ export default function POSPage() {
       timer = setTimeout(() => {
         timer = null;
         // Depth-aware: keep whatever the cashier has already paged through.
+        //
+        // Deliberately does NOT drop the catalogue snapshot first. A replica
+        // notification only means *some* table converged — often not the stock
+        // counters — so rebuilding here would repaint the grid from pre-sale
+        // quantities and then cache them for the snapshot's TTL. The optimistic
+        // decrement applied by applySaleToSnapshot is the fresher copy until
+        // the periodic convergence below (which does refresh stock) replaces
+        // it.
         void loadProducts(search, false, Math.max(productOffsetRef.current, POS_GRID_PAGE_SIZE));
         // The customer list feeds the picker's name/code/phone AND the "Due:"
         // badge, which comes from customers.outstanding_balance — recomputed
@@ -1101,6 +1127,7 @@ export default function POSPage() {
       if (!cached || cached.length === 0) {
         throw new Error('Offline — no product cache yet. Open the POS once while online to build its offline product list.');
       }
+      reportRead('cache', CACHE_KEYS.products, { offline: !networkMonitor.getState().online });
       applySnapshotPage(cached);
     }
 
@@ -1212,27 +1239,47 @@ export default function POSPage() {
   // online checkout and the offline-queue path so a completed sale updates
   // the grid locally instead of triggering a full catalog re-download; the
   // next TTL refresh (or replica sync) self-corrects any FIFO/warehouse drift.
+  /**
+   * Decrement one product's stock counters by what a sale drew.
+   *
+   * Shared by the visible grid and the persisted snapshot so the two cannot
+   * disagree. Only the warehouses named on the cart lines are touched; the
+   * tile's quantity is the sum across warehouses, so the total always drops by
+   * exactly the base quantity sold.
+   */
+  function decrementSnapshotStock<T extends { id: string; inventory_items?: any[] }>(
+    list: T[],
+    lines: Pick<CartItem, 'id' | 'base_quantity' | 'warehouse_id'>[],
+  ): T[] {
+    return list.map(p => {
+      const sold = lines.filter(i => i.id === p.id);
+      if (sold.length === 0) return p;
+      const perWh: Record<string, number> = {};
+      for (const l of sold) {
+        const wh = l.warehouse_id || defaultWarehouseId;
+        if (wh) perWh[wh] = (perWh[wh] || 0) + l.base_quantity;
+      }
+      let touched = false;
+      const inventory_items = (p.inventory_items || []).map(inv => {
+        if (perWh[inv.warehouse_id] != null) {
+          touched = true;
+          return { ...inv, quantity_on_hand: Number(inv.quantity_on_hand) - perWh[inv.warehouse_id] };
+        }
+        return inv;
+      });
+      return touched ? { ...p, inventory_items } : p;
+    });
+  }
+
   async function applySaleToSnapshot(lines: Pick<CartItem, 'id' | 'base_quantity' | 'warehouse_id'>[]) {
+    // Visible grid FIRST. Re-sealing the multi-megabyte snapshot to IndexedDB
+    // (and reading it back in loadProducts) takes long enough that the tile
+    // kept showing the pre-sale quantity; the cashier reads that as "the sale
+    // did not come off the stock".
+    setProducts(prev => decrementSnapshotStock(prev, lines));
     await mutateCache<ProductData[]>(CACHE_KEYS.products, list => {
       if (!list) return list;
-      return list.map(p => {
-        const sold = lines.filter(i => i.id === p.id);
-        if (sold.length === 0) return p;
-        const perWh: Record<string, number> = {};
-        for (const l of sold) {
-          const wh = l.warehouse_id || defaultWarehouseId;
-          if (wh) perWh[wh] = (perWh[wh] || 0) + l.base_quantity;
-        }
-        let touched = false;
-        const inventory_items = (p.inventory_items || []).map(inv => {
-          if (perWh[inv.warehouse_id] != null) {
-            touched = true;
-            return { ...inv, quantity_on_hand: Number(inv.quantity_on_hand) - perWh[inv.warehouse_id] };
-          }
-          return inv;
-        });
-        return touched ? { ...p, inventory_items } : p;
-      });
+      return decrementSnapshotStock(list, lines);
     });
     await mutateCache<LedgerStock>(CACHE_KEYS.gateStock, stock => {
       const base = stock ?? { byPair: {}, defaultWarehouseId };

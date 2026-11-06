@@ -10,6 +10,7 @@ import SearchableSelect from '@/components/ui/SearchableSelect';
 import { UnitInput } from '@/components/ui/unit-input';
 import { networkMonitor } from '@/lib/offline/network';
 import { enqueueOp } from '@/lib/offline/outbox';
+import { awaitPendingWrites } from '@/lib/offline/write-refresh';
 import { cacheDelete } from '@/lib/offline/cache';
 import { CACHE_KEYS } from '@/lib/offline/keys';
 import { patchInventoryAggregateAfterProductOp, patchPosSnapshotAfterProductOp } from '@/lib/offline/optimistic';
@@ -475,11 +476,16 @@ export default function ProductModal({ categories, brands, warehouses, unitTypes
       }
 
       toast({ title: 'Success', description: isEdit ? 'Product updated successfully' : 'Product created successfully' });
-      // The POS gallery and the oversell gate read local snapshots — drop
-      // them so the next visit rebuilds from the freshly refreshed replica
-      // instead of serving the pre-save copy for the TTL window.
-      void cacheDelete(CACHE_KEYS.products);
-      void cacheDelete(CACHE_KEYS.gateStock);
+      // The POS gallery and the oversell gate read local snapshots. Drop them
+      // BEFORE the modal closes — the POS reads this key on mount, so a
+      // fire-and-forget delete could lose the race and leave the new product
+      // hidden for the snapshot's full 10-minute TTL.
+      await cacheDelete(CACHE_KEYS.products);
+      await cacheDelete(CACHE_KEYS.gateStock);
+      // Converge the device copy in the background; the data-source pill counts
+      // the write until the replica pull finishes and then shows it saved (the
+      // POS awaits the same pass before rebuilding its catalogue).
+      void awaitPendingWrites();
       onSaved();
       onClose();
     } catch (err: any) {

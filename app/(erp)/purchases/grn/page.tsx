@@ -633,7 +633,9 @@ function GRNModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => vo
       // Track it so the panel can state which of the two is true.
       setLocalSync('syncing');
       void awaitPendingWrites()
-        .then(() => setLocalSync('synced'))
+        // Resolves false when the local pass failed: say so instead of
+        // claiming the device copy is up to date.
+        .then((ok) => setLocalSync(ok ? 'synced' : 'idle'))
         .catch(() => setLocalSync('idle'));
     } catch (err: any) {
       setError(err.message);

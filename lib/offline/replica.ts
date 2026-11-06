@@ -39,6 +39,7 @@ import { getUserKey, seal, unseal } from './crypto'
 import { networkMonitor } from './network'
 import { isNetworkError } from './cache'
 import { resolveUserId } from './session'
+import { reportRead } from './data-source'
 import { mark } from '../perf/cold-start'
 
 /**
@@ -482,6 +483,9 @@ export async function buildPosSnapshotFromReplica(): Promise<any[] | null> {
   mark('snapshot:build-start')
   const products = await replicaRows<any>(REPLICA['Products'])
   if (products.length === 0) return null
+  // Provenance for the header pill: this catalogue was assembled from the
+  // device's own copy, not from the server.
+  reportRead('replica', 'products')
   const invItems = await replicaRows<any>(REPLICA['Stock counters'])
   const units = await replicaRows<any>(REPLICA['Product units'])
   mark('snapshot:decrypt-end')
