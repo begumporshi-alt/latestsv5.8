@@ -99,6 +99,7 @@ export default function SalesPage() {
   const router = useRouter();
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [filterSource, setFilterSource] = useState<'' | 'quick_sell' | 'other'>('');
   const [filterPaymentMethod, setFilterPaymentMethod] = useState('');
   const [filterProduct, setFilterProduct] = useState('');
   const [filterCustomer, setFilterCustomer] = useState('');
@@ -283,6 +284,8 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
   const searchTokens = tokenizeSearch(search);
   const filtered = rankRows(
     invoices.filter(i => {
+      if (filterSource === 'quick_sell' && !i.is_quick_sell) return false;
+      if (filterSource === 'other' && i.is_quick_sell) return false;
       // Basic filters
       if (search && !matchValues([i.invoice_number, i.customer?.name, i.reference, i.client_temp_number], searchTokens)) return false;
     if (filterStatus === 'refundable') {
@@ -341,7 +344,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
   // (Same pattern as purchases/page.tsx and reports/inventory/page.tsx.)
   useEffect(() => {
     setInvPage(1);
-  }, [search, filterStatus, filterPaymentMethod, filterProduct, filterCustomer, period, filterDateFrom, filterDateTo]);
+  }, [search, filterStatus, filterSource, filterPaymentMethod, filterProduct, filterCustomer, period, filterDateFrom, filterDateTo]);
   const invTotalPages = Math.max(1, Math.ceil(displayInvoices.length / invPageSize));
   const safeInvPage = Math.min(invPage, invTotalPages);
   const pagedInvoices = displayInvoices.slice((safeInvPage - 1) * invPageSize, safeInvPage * invPageSize);
@@ -537,6 +540,16 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
             <option value="paid_partial">Partial & On credit</option>
             {Object.entries(statusConfig).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </select>
+          <select
+            aria-label="Invoice source"
+            value={filterSource}
+            onChange={e => setFilterSource(e.target.value as typeof filterSource)}
+            className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          >
+            <option value="">All sources</option>
+            <option value="quick_sell">Quick Sell</option>
+            <option value="other">Other sales</option>
+          </select>
           <select value={filterPaymentMethod} onChange={e => setFilterPaymentMethod(e.target.value)} className="border border-border rounded-lg px-3 py-2 text-sm focus:outline-none">
             <option value="">All Payment Methods</option>
             {paymentMethods.map(pm => <option key={pm.code} value={pm.code}>{pm.name}</option>)}
@@ -572,8 +585,21 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
           </div>
         )}
 
-        {(filterProduct || filterCustomer) && (
+        {filterSource && (
+          <p className="text-xs text-muted-foreground">
+            {filterSource === 'quick_sell' ? 'Invoices created through Quick Sell.' : 'Invoices created outside Quick Sell, including regular POS sales.'}{' '}
+            Summary cards above are not narrowed by invoice-list filters.
+          </p>
+        )}
+
+        {(filterSource || filterProduct || filterCustomer) && (
           <div className="flex flex-wrap gap-2 pt-2">
+            {filterSource && (
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 text-amber-700 text-xs rounded-full">
+                Source: {filterSource === 'quick_sell' ? 'Quick Sell' : 'Other sales'}
+                <button onClick={() => setFilterSource('')} aria-label="Clear invoice source filter" className="hover:text-amber-900"><X className="w-3 h-3" /></button>
+              </span>
+            )}
             {filterProduct && (
               <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded-full">
                 Product: {products.find(p => p.id === filterProduct)?.name || ''}
@@ -587,7 +613,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
               </span>
             )}
             <button
-              onClick={() => { setFilterProduct(''); setFilterCustomer(''); }}
+              onClick={() => { setSearch(''); setFilterStatus(''); setFilterSource(''); setFilterPaymentMethod(''); setFilterProduct(''); setFilterCustomer(''); }}
               className="text-xs text-muted-foreground hover:text-red-600 underline"
             >
               Clear all
@@ -626,9 +652,9 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
                     // empty result is self-explanatory — a status like
                     // "Refunded" usually has no match inside the default
                     // "Today" window, and "No invoices found" hid that reason.
-                    const what = filterStatus ? `${statusFilterLabel(filterStatus)} invoices` : 'invoices';
+                    const what = [filterStatus && statusFilterLabel(filterStatus), filterSource === 'quick_sell' ? 'Quick Sell' : filterSource === 'other' ? 'other sales' : '', 'invoices'].filter(Boolean).join(' ');
                     if (period === 'all') {
-                      return filterStatus ? `No ${what} match the current filters.` : 'No invoices found';
+                      return `No ${what} match the current filters.`;
                     }
                     const when = period === 'today' ? 'today'
                       : period === 'custom' ? 'in the selected dates'
@@ -655,7 +681,7 @@ const invoicePrintRef = useRef<HTMLDivElement>(null);
                   <tr key={inv.id} className="hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3">
                       <span className="text-sm font-semibold text-blue-600">{inv.invoice_number}</span>
-                      {(inv as any).is_quick_sell && (
+                      {inv.is_quick_sell && (
                         <span className="inline-flex items-center gap-0.5 ml-1 px-1.5 py-0.5 bg-amber-50 text-amber-600 text-[10px] font-semibold rounded" title="Quick Sell — non-stock item bought on demand, never stocked">
                           <Zap className="w-2.5 h-2.5" />
                           QS
